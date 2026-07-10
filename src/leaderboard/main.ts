@@ -29,10 +29,12 @@ function playUrlForSeed(seed: number): string {
 }
 
 function placeClass(rank: number): string {
-  if (rank === 1) return "place-1";
-  if (rank === 2) return "place-2";
-  if (rank === 3) return "place-3";
-  return "";
+  const parts: string[] = [];
+  if (rank === 1) parts.push("place-1");
+  else if (rank === 2) parts.push("place-2");
+  else if (rank === 3) parts.push("place-3");
+  if (rank <= 10) parts.push("top-ten");
+  return parts.join(" ");
 }
 
 function rungHtml(): string {
@@ -70,7 +72,7 @@ function renderLadderSkeleton(rows: ScoreEntry[]): string {
           </div>
           <span class="time">${escapeHtml(formatUtcTimestamp(r.createdAt))}</span>
           <div class="costume" title="Costume">
-            <img class="costume-icon" data-costume-for="${escapeHtml(r.id)}" alt="" width="40" height="40" />
+            <img class="costume-icon" data-costume-for="${escapeHtml(r.id)}" alt="" width="${rank <= 10 ? 52 : 40}" height="${rank <= 10 ? 52 : 40}" />
           </div>
         </div>
         <span class="rail" aria-hidden="true"></span>
@@ -93,12 +95,13 @@ async function fillCostumeIcons(rows: ScoreEntry[]): Promise<void> {
   }
 
   await Promise.all(
-    rows.map(async (r) => {
+    rows.map(async (r, i) => {
       const img = document.querySelector<HTMLImageElement>(
         `img[data-costume-for="${CSS.escape(r.id)}"]`,
       );
       if (!img) return;
-      img.src = await renderCostumeIdleIcon(r.itemIds ?? [], layers, 40);
+      const size = i < 10 ? 52 : 40;
+      img.src = await renderCostumeIdleIcon(r.itemIds ?? [], layers, size);
       img.alt = r.itemIds?.length ? "Run costume" : "Default Vernan";
     }),
   );
