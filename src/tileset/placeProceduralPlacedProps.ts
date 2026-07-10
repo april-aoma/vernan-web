@@ -17,6 +17,8 @@ import {
   TILE_BREAKABLE,
   TILE_DOOR,
   TILE_EMPTY,
+  TILE_KEYBLOCK,
+  TILE_KEYBLOCK_CONNECTOR,
   TILE_LADDER,
   TILE_PLATFORM,
   TILE_SOLID,
@@ -445,9 +447,9 @@ function gameplayTileFromMapTerrain(raw: string | undefined): number {
     case "BREAKABLE":
       return TILE_BREAKABLE;
     case "KEYBLOCK":
-      return 6;
+      return TILE_KEYBLOCK;
     case "KEYBLOCK_CONNECTOR":
-      return 7;
+      return TILE_KEYBLOCK_CONNECTOR;
     default:
       return TILE_EMPTY;
   }
