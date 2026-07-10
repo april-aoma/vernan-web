@@ -1,8 +1,10 @@
 import type { WorldCamera } from "../camera/WorldCamera";
 import { CAMERA_ZOOM, TILE_SIZE } from "../specs";
 import type { RoomKind } from "../world/DungeonTypes";
+import type { PlacedRoomObject } from "../world/PlacedRoomObject";
 import type { TileMap } from "../world/TileMap";
 import { TILE_BREAKABLE, TILE_SOLID } from "../world/TileMap";
+import { packCell } from "../world/BossDoorSealAnim";
 import type { SheetAtlas } from "./SheetAtlas";
 import type { DecoStamp } from "./placeAmbientDeco";
 import { decoOverlayFromStamps, type ContextThemeRule } from "./ContextThemeSubstitution";
@@ -12,6 +14,13 @@ import {
   sourceTileIdForObject,
 } from "./QuadrantCompositeAutotile";
 import type { AutotileMassContext } from "./MemberGraphAutotile";
+import {
+  expandPlacedRoomObjectsForDraw,
+  filterPlacedPropsForGroundSupport,
+  placedPropOwnedCells,
+  resolvePlacedTileId,
+  shouldDrawPlacedPropTile,
+} from "./placeProceduralPlacedProps";
 import { resolveDisplayTileId } from "./resolveDisplayTile";
 import { resolveShellTileId } from "./ShellTileResolve";
 import type { TerrainTileBridge } from "./TerrainTileBridge";
@@ -29,6 +38,8 @@ export type ShellDrawExtras = {
   roomKind?: RoomKind;
   displaySalt?: bigint;
   decoStamps?: DecoStamp[];
+  /** Pixel-placed props (Java placedRoomObjects) — drawn after terrain. */
+  placedRoomObjects?: PlacedRoomObject[];
   /** Java decorationAnimTime * 60 — drives visualClips / warp / glow. */
   simTick?: number;
   /** Composite renderer for animated tiles (grass / flame). */
@@ -67,9 +78,21 @@ export function drawShellTiles(
     contextThemeRules: themeRules,
   };
 
+  const placedExpanded =
+    project && extras.placedRoomObjects?.length
+      ? filterPlacedPropsForGroundSupport(
+          expandPlacedRoomObjectsForDraw(extras.placedRoomObjects, project),
+          project,
+          map,
+        )
+      : [];
+  const propOwned = placedPropOwnedCells(placedExpanded);
+
   // Deco underlay on EMPTY cells (behind terrain) — full opacity (Java ambient deco).
+  // Skip cells owned by placed props so only one visual layer occupies each cell.
   if (atlas && extras.decoStamps?.length) {
     for (const stamp of extras.decoStamps) {
+      if (propOwned.has(packCell(stamp.tx, stamp.ty))) continue;
       const wx = stamp.tx * TILE_SIZE;
       const wy = stamp.ty * TILE_SIZE;
       const dx = camera.worldToDeviceX(wx);
@@ -182,6 +205,38 @@ export function drawShellTiles(
         continue;
       }
       colorFallback(terrain, dx, dy, dw, dh);
+    }
+  }
+
+  // Placed props after terrain (Java drawPlacedRoomObjects).
+  if (atlas && project && placedExpanded.length) {
+    const sorted = [...placedExpanded].sort((a, b) => a.zOrder - b.zOrder);
+    for (const p of sorted) {
+      const tid = resolvePlacedTileId(p, project);
+      if (!tid) continue;
+      if (!shouldDrawPlacedPropTile(project, map, tid, p.xPx, p.yPx)) continue;
+      const wx = p.xPx;
+      const wy = p.yPx;
+      const dx = camera.worldToDeviceX(wx);
+      const dy = camera.worldToDeviceY(wy);
+      const dw = Math.floor(CAMERA_ZOOM * TILE_SIZE);
+      const dh = Math.floor(CAMERA_ZOOM * TILE_SIZE);
+      if (
+        tileWorld?.drawTileIfAnimated(
+          g,
+          project,
+          tid,
+          simTick,
+          dx,
+          dy,
+          CAMERA_ZOOM,
+          wx,
+          wy,
+        )
+      ) {
+        continue;
+      }
+      atlas.drawTileId(g, tid, dx, dy, dw, dh, sheetOverride);
     }
   }
 }

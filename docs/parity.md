@@ -270,6 +270,14 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - Wired through `drawShellTiles` with `simTick = floor(timeSec * 60)`; static tiles still use `SheetAtlas`
 - Acceptance: grass tufts sway (position-desynced); flame/candle cycles + halo + warp
 
+### Phase placed-props notes
+
+- **Types**: `PlacedRoomObject` + `RoomArtData.placedRoomObjects`; pool parse widens optional `z` / `solidsOnly`
+- **Place**: `placeProceduralPlacedProps` after ambient deco + context flank bake in `enrichRoomArt` (not `buildDungeon`); skip START; weighted slots; ladder±1 / door columns avoided; ground-top + SOLID/PLATFORM stamp; `evictDecoOverlappingPlacedProps`
+- **Draw**: expand object refs → members, ground-support filter, zOrder sort; blit after terrain in `drawShellTiles`; deco skip on prop-owned cells
+- Shipped `tileset.json` pools are empty — scaffolding ready when pools are filled
+- Still stubbed: `start.json` merge, biome-row placedProps merge, HVST strip widening, keyblock sprites
+
 ## Adapters
 
 | Java | Web |

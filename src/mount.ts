@@ -1425,6 +1425,7 @@ function drawTiles(
       roomKind: room.kind,
       displaySalt: node.contentSeed,
       decoStamps: art?.decoStamps,
+      placedRoomObjects: art?.placedRoomObjects,
       simTick,
       tileWorld,
       doorDestByCell,

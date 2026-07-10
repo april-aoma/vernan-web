@@ -56,7 +56,11 @@ export function enrichRoomArt(
       themeRules,
       tileAllowed,
     );
-    const placed = placeAndEvict(room, project, contentSeed, floorOrdinal, stamps);
+    // Place once (empty array = already attempted with empty pools).
+    let placed = room.art.placedRoomObjects;
+    if (placed == null) {
+      placed = placeAndEvict(room, project, contentSeed, floorOrdinal, stamps);
+    }
     room.art.decoStamps = stamps;
     room.art.placedRoomObjects = placed;
     room.art.biomeId = biome.biomeId;
