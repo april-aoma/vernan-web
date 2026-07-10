@@ -128,6 +128,9 @@ export class Player {
   /** Per-tick pedestal one-way deck rects (Java tickPedestalOneWayPlatforms). */
   private tickPedestalPlatforms: Aabb[] | null = null;
   private tickStandSegments: StandSurfaceQuery.Segment[] = [];
+  /** Pedestal deck contact this tick / previous tick (Java ramp touchdown). */
+  private tickPedestalGroundContact = false;
+  private prevPedestalGroundContact = false;
   /** Down held this tick (for shy-mask charge squash draw). */
   private duckHeld = false;
 
@@ -404,14 +407,7 @@ export class Player {
 
   collisionPoseAt(anchorX: number, anchorY: number): HitboxPose {
     if (this.usesJumpCollisionHull()) {
-      return new HitboxPose(
-        PLAYER_JUMP_LOCAL,
-        anchorX,
-        anchorY,
-        this.facing,
-        PLAYER_JUMP_PIVOT_X,
-        this.h / PLAYER_JUMP_STAND_HITBOX_H,
-      );
+      return this.jumpCollisionPoseAt(anchorX, anchorY);
     }
     return new HitboxPose(
       PLAYER_STAND_LOCAL,
@@ -420,6 +416,18 @@ export class Player {
       this.facing,
       PLAYER_PIVOT_LOCAL_X,
       this.h / PLAYER_STAND_HITBOX_H,
+    );
+  }
+
+  /** Air collision hull at anchor — same parts as {@link hitboxPose} while jump strip is active. */
+  private jumpCollisionPoseAt(anchorX: number, anchorY: number): HitboxPose {
+    return new HitboxPose(
+      PLAYER_JUMP_LOCAL,
+      anchorX,
+      anchorY,
+      this.facing,
+      PLAYER_JUMP_PIVOT_X,
+      this.h / PLAYER_JUMP_STAND_HITBOX_H,
     );
   }
 
@@ -471,6 +479,7 @@ export class Player {
       return;
     }
 
+    this.prevPedestalGroundContact = this.tickPedestalGroundContact;
     this.wasOnGround = this.onGround;
     this.justLanded = false;
     this.landedThisTick = false;
@@ -595,6 +604,12 @@ export class Player {
       this.onGround &&
       !this.crouchJumpMode &&
       !this.climbing &&
+      !(
+        this.prevPedestalGroundContact &&
+        this.extendedFallFrames === 0 &&
+        !this.normalJumpAirborne &&
+        this.jumpSquatRemaining === 0
+      ) &&
       this.normalJumpAirborne
     ) {
       this.finishJumpLandingCollision(map);
@@ -604,7 +619,7 @@ export class Player {
     this.detectWalkOff();
     this.finishJumpSquat(map, dt);
     this.tickExtendedFall(dt);
-    this.applyLandingFromTouchdown(map);
+    this.applyLandingFromTouchdown();
     if (this.justLanded) {
       const recover = Math.max(1, this.landingLockFrames || SquashStretch.DEFAULT_RECOVER_FRAMES);
       this.squash.applyStretchX(1.2, recover);
@@ -644,10 +659,10 @@ export class Player {
       this.nudgeCollisionPoseOutOfSolids(map);
     }
     if (!this.wasOnGround && this.onGround) {
-      if (this.normalJumpAirborne) {
+      if (this.normalJumpAirborne && !this.crouchJumpMode && !this.climbing) {
         this.finishJumpLandingCollision(map);
-        this.normalJumpAirborne = false;
       }
+      this.normalJumpAirborne = false;
       this.hurtLocked = false;
       this.hurtAirAnimAccum = 0;
       this.hurtAirFrame = 0;
@@ -1814,17 +1829,26 @@ export class Player {
    * On touchdown: variable landing lock from extended-fall airtime, or fixed attack land lock.
    * Java: `landingLockFrames = (extendedFallFrames / 5) * 2` (+ walk-off floor 5, cap 20).
    */
-  private applyLandingFromTouchdown(map: TileMap): void {
+  private applyLandingFromTouchdown(): void {
     if (this.wasOnGround || !this.onGround) return;
 
     this.landedThisTick = true;
     this.crouchJumpMode = false;
 
-    // Align stand feet after jump-hull land (Java finishJumpLandingCollision).
-    if (this.normalJumpAirborne) {
-      this.finishJumpLandingCollision(map);
+    const pedestalRampTouchdown =
+      (this.prevPedestalGroundContact || this.tickPedestalGroundContact) &&
+      this.extendedFallFrames === 0 &&
+      !this.normalJumpAirborne &&
+      this.jumpSquatRemaining === 0;
+    if (pedestalRampTouchdown) {
       this.normalJumpAirborne = false;
+      this.walkOffLedgeActive = false;
+      this.extendedFallFrames = 0;
+      this.fallPhaseTimer = 0;
+      return;
     }
+
+    this.normalJumpAirborne = false;
 
     // Any in-progress swing landing from air cancels with fixed lock (Java ATTACK_LANDING_LOCK_FRAMES).
     // Includes true air swings and jumpsquat X rising attacks (ground-latched but airborne).
@@ -1865,17 +1889,7 @@ export class Player {
    * Must test the stand hull explicitly — hitboxPose() is still the jump strip this tick.
    */
   private finishJumpLandingCollision(map: TileMap): void {
-    if (this.h < PLAYER_STAND_H - 0.5) {
-      this.h = PLAYER_STAND_H;
-    }
-    const jumpPose = new HitboxPose(
-      PLAYER_JUMP_LOCAL,
-      this.x,
-      this.y,
-      this.facing,
-      PLAYER_JUMP_PIVOT_X,
-      this.h / PLAYER_JUMP_STAND_HITBOX_H,
-    );
+    const jumpPose = this.jumpCollisionPoseAt(this.x, this.y);
     const bottomJump = this.jumpHullStandAlignFootY(jumpPose, map);
     const standPose = this.standCollisionPoseAt(this.x, this.y);
     const bottomStand = standPose.bounds().y + standPose.bounds().h;
@@ -2828,6 +2842,7 @@ export class Player {
 
   /** Snap feet down along pedestal exit feathers while grounded (Java followPedestalDeckWhileGrounded). */
   private followPedestalDeckWhileGrounded(): void {
+    this.tickPedestalGroundContact = false;
     if (!this.onGround || this.climbing || this.vy < -1e-3 || !this.tickPedestalPlatforms) return;
     const feet = this.poseForFeetSupport().bounds();
     if (
@@ -2851,12 +2866,17 @@ export class Player {
     if (!StandSurfaceQuery.footNearDeck(footY, deck)) return;
     if (footY < deck - 1e-3) return;
     this.snapFootToFloorY(deck);
+    this.tickPedestalGroundContact = true;
+    if (!this.climbing && this.vy >= -1e-3) {
+      this.onGround = true;
+    }
   }
 
   private moveAndCollide(dt: number, map: TileMap): void {
     const poseBefore = this.hitboxPose();
     const prevStepFeet = JumpFoot.jumpFootProbeFrom(poseBefore);
     const prevTop = poseBefore.bounds().y;
+    this.rebuildStandSegments();
     const predictedStepFeet = JumpFoot.jumpFootProbeFrom(
       this.collisionPoseAt(this.x + this.vx * dt, this.y + this.vy * dt),
     );
@@ -2866,6 +2886,7 @@ export class Player {
     this.resolveHorizontal(map, xBefore, prevStepFeet, predictedStepFeet);
 
     const feetBeforeVertical = JumpFoot.jumpFootProbeFrom(this.hitboxPose());
+    this.rebuildStandSegments();
     this.y += this.vy * dt;
     this.onGround = false;
     this.resolveVertical(map, feetBeforeVertical, prevTop);
@@ -3028,12 +3049,7 @@ export class Player {
             floorY,
             0,
           );
-          // Solids: full snap to lowest foot (Java pins max(lead, trail) when both land).
-          if (jumpHull) {
-            if (leadHit || trailHit) {
-              JumpFoot.noteLandingFloor(floorY, true, true, landing);
-            }
-          } else if (leadHit || trailHit) {
+          if (leadHit || trailHit) {
             JumpFoot.noteLandingFloor(floorY, leadHit, trailHit, landing);
           }
         }
@@ -3079,7 +3095,7 @@ export class Player {
                 PLATFORM_DECK_SLACK_PX,
               ) && JumpFoot.footXOverTile(trailFootX, tx);
             if (leadHit || trailHit) {
-              JumpFoot.noteLandingFloor(floorY, true, true, landing);
+              JumpFoot.noteLandingFloor(floorY, leadHit, trailHit, landing);
             }
           }
         }
@@ -3201,10 +3217,6 @@ export class Player {
         const tile = { x: tx * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
         if (!pose.intersectsRect(tile)) continue;
         if (map.isSolidTile(tx, ty)) {
-          if (jumpHull) {
-            const deckTop = ty * TILE_SIZE;
-            if (!JumpFoot.jumpFeetOnSolidFloor(footProbe, deckTop)) continue;
-          }
           return true;
         }
       }
@@ -3373,8 +3385,7 @@ export class Player {
       return false;
     }
     if (map.isPlatformTile(tx, ty) && !this.dropsThroughOneWayPlatformTile(map, tx, ty)) {
-      const footY = this.collisionFootWorldY(pose);
-      if (footY >= deckTop - 1e-3 && footY <= deckTop + PLATFORM_DECK_SLACK_PX + 1e-3) {
+      if (JumpFoot.eitherJumpFootNearDeck(pose, deckTop)) {
         return false;
       }
     }
