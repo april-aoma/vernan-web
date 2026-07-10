@@ -31,7 +31,10 @@ npm run sync-assets -- --zip "/path/to/vernan-runtime-assets.zip"
 ```
 
 The pack is a **filtered** runtime subset (PNGs/JSON/rigs that `./run.sh` loads),
-not the full Desktop tree — no `.aseprite`, tools, or `sounds/`.
+not the full Desktop tree — no `.aseprite`, tools, or `sounds/`. Commit the synced
+`public/assets/` so CI can deploy; pushes to `master` auto-publish GitHub Pages.
+
+Live build: https://april-aoma.github.io/vernan-web/
 
 See [docs/hosting.md](docs/hosting.md) and [docs/parity.md](docs/parity.md).
 

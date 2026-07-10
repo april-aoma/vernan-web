@@ -84,14 +84,14 @@ function blendPixel(destArgb: number, srcArgb: number, globalOpacity: number, mo
       nb = clampAdd(db, sb, fa);
       break;
     case "multiply":
-      nr = lerp(dr, (dr * sr) / 255, fa);
-      ng = lerp(dg, (dg * sg) / 255, fa);
-      nb = lerp(db, (db * sb) / 255, fa);
+      nr = lerp(dr, ((dr * sr) / 255) | 0, fa);
+      ng = lerp(dg, ((dg * sg) / 255) | 0, fa);
+      nb = lerp(db, ((db * sb) / 255) | 0, fa);
       break;
     case "screen":
-      nr = lerp(dr, 255 - ((255 - dr) * (255 - sr)) / 255, fa);
-      ng = lerp(dg, 255 - ((255 - dg) * (255 - sg)) / 255, fa);
-      nb = lerp(db, 255 - ((255 - db) * (255 - sb)) / 255, fa);
+      nr = lerp(dr, 255 - ((((255 - dr) * (255 - sr)) / 255) | 0), fa);
+      ng = lerp(dg, 255 - ((((255 - dg) * (255 - sg)) / 255) | 0), fa);
+      nb = lerp(db, 255 - ((((255 - db) * (255 - sb)) / 255) | 0), fa);
       break;
     case "overlay":
       nr = lerp(dr, overlayChannel(dr, sr), fa);

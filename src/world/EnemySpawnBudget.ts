@@ -1,4 +1,8 @@
 import { pickBossPhase5a } from "../boss/BossRegistry";
+import {
+  possessedHpForVariant,
+  rollPossessedVariant,
+} from "../combat/EnemyVariantRegistry";
 import { JavaRandom } from "../util/JavaRandom";
 import { CRAWLER_MAX_HP, CRAWLER_SPAWN_H } from "../config/CombatStats";
 import { TILE_SIZE } from "../specs";
@@ -14,6 +18,8 @@ export type EnemySpawn = {
   maxHealth: number;
   kind: EnemySpawnKind;
   countsForRoomClear: boolean;
+  /** Optional variant id (e.g. Possessed NORMAL|SHINY). */
+  variantId?: string;
 };
 
 const MAX_PLACE_ATTEMPTS = 160;
@@ -70,13 +76,16 @@ function rollBossSpawns(g: GeneratedRoom, contentSeed: bigint): EnemySpawn[] {
   const bossAnchorX = midX * TILE_SIZE + TILE_SIZE * 0.5;
   const bossAnchorY = h * TILE_SIZE * 0.4;
   const entry = pickBossPhase5a(1, contentSeed);
+  const variantId = rollPossessedVariant(contentSeed);
+  const maxHealth = possessedHpForVariant(variantId, entry.maxHealth);
   return [
     {
       xPx: Math.round(bossAnchorX),
       yPx: Math.round(bossAnchorY),
-      maxHealth: entry.maxHealth,
+      maxHealth,
       kind: "possessed",
       countsForRoomClear: true,
+      variantId,
     },
   ];
 }

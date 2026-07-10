@@ -76,3 +76,58 @@ export function itemStripCapacity(x0: number, x1: number): number {
 export function weaponSlotsLeftX(jaX: number): number {
   return jaX - WEAPON_SLOT * WEAPON_SLOT_COUNT;
 }
+
+/** Touch-control chrome geometry (Java BottomHud drawButtonBox cluster). */
+export type TouchControlsGeometry = {
+  up: { x: number; y: number; w: number; h: number };
+  left: { x: number; y: number; w: number; h: number };
+  down: { x: number; y: number; w: number; h: number };
+  right: { x: number; y: number; w: number; h: number };
+  jump: { x: number; y: number; w: number; h: number };
+  attack: { x: number; y: number; w: number; h: number };
+  sub: { x: number; y: number; w: number; h: number };
+  /** Pause / menu (left shoulder slot). */
+  pause: { x: number; y: number; w: number; h: number };
+};
+
+export function computeTouchControlsGeometry(
+  internalWidth: number,
+  hudY0: number,
+  hudH: number,
+): TouchControlsGeometry {
+  const pad = PAD_R;
+  const box = CONTROL_BOX;
+  const gap = CONTROL_GAP;
+  const shoulder = CONTROL_SHOULDER;
+  const right = internalWidth - pad;
+  const top = hudY0 + Math.floor((hudH - (box * 2 + gap)) / 2);
+  const rightX = right - box;
+  const downX = rightX - (box + gap);
+  const leftX = downX - (box + gap);
+  const upX = downX;
+  const upY = top;
+  const rowY = top + box + gap;
+  const jaX = controlsLeftX(internalWidth);
+  const jumpW = box * 2;
+  const shoulderY = top + Math.floor((box - shoulder) / 2);
+  const lShoulderX = jaX - gap - shoulder;
+  const atkW = Math.floor((jumpW - gap) / 2);
+  return {
+    up: { x: upX, y: upY, w: box, h: box },
+    left: { x: leftX, y: rowY, w: box, h: box },
+    down: { x: downX, y: rowY, w: box, h: box },
+    right: { x: rightX, y: rowY, w: box, h: box },
+    jump: { x: jaX, y: top, w: jumpW, h: box },
+    attack: { x: jaX, y: top + box + gap, w: atkW, h: box },
+    sub: { x: jaX + atkW + gap, y: top + box + gap, w: atkW, h: box },
+    pause: { x: lShoulderX, y: shoulderY, w: shoulder, h: shoulder },
+  };
+}
+
+export function hitTestRect(
+  x: number,
+  y: number,
+  r: { x: number; y: number; w: number; h: number },
+): boolean {
+  return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}

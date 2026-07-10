@@ -55,7 +55,59 @@ function copyPackDir(fromDir) {
   if (copied === 0) {
     throw new Error(`No pack contents found under ${fromDir}`);
   }
+  installExactSourcePaletteKeys();
   console.log(`Synced ${copied} entries → ${outAssets}`);
+}
+
+/** Java rebuildExactSourceColors keys — committed seed, refreshed when dumping from Java. */
+function installExactSourcePaletteKeys() {
+  const seed = join(webRoot, "data", "palette-exact-source-keys.json");
+  if (!existsSync(seed)) {
+    console.warn(`Missing ${seed} — palette clamp will only preserve grid swatches`);
+    return;
+  }
+  const destDir = join(outAssets, "data");
+  mkdirSync(destDir, { recursive: true });
+  cpSync(seed, join(destDir, "palette-exact-source-keys.json"));
+}
+
+/**
+ * Rebuild exact-source keys from the Java SoT (InGameSpritePaths + game-palette.png).
+ * Requires a prior ./run.sh compile so /tmp/vernan-out-* classes exist.
+ */
+function dumpExactSourcePaletteKeys(javaRoot) {
+  const dumpSrc = join(javaRoot, "tmp", "DumpExactSourcePaletteKeys.java");
+  if (!existsSync(dumpSrc)) {
+    console.warn(`Skip palette key dump: missing ${dumpSrc}`);
+    return;
+  }
+  const hash = execFileSync("shasum", ["-a", "256"], {
+    input: javaRoot,
+    encoding: "utf8",
+  })
+    .trim()
+    .slice(0, 16);
+  const cp = join("/tmp", `vernan-out-${hash}`);
+  if (!existsSync(join(cp, "game", "render", "GameColorPalette.class"))) {
+    console.warn(
+      `Skip palette key dump: compile Java first (./run.sh) — missing ${cp}/game/render/GameColorPalette.class`,
+    );
+    return;
+  }
+  const outJson = join(webRoot, "data", "palette-exact-source-keys.json");
+  const tmpOut = join(webRoot, ".tmp-palette-dump");
+  rmSync(tmpOut, { recursive: true, force: true });
+  mkdirSync(tmpOut, { recursive: true });
+  execFileSync(
+    "javac",
+    ["-encoding", "UTF-8", "--release", "17", "-cp", cp, "-d", tmpOut, dumpSrc],
+    { stdio: "inherit" },
+  );
+  execFileSync("java", ["-cp", `${tmpOut}:${cp}`, "DumpExactSourcePaletteKeys", javaRoot, outJson], {
+    stdio: "inherit",
+  });
+  rmSync(tmpOut, { recursive: true, force: true });
+  installExactSourcePaletteKeys();
 }
 
 function unpackZip(zipPath) {
@@ -109,7 +161,17 @@ function packFromJava(javaRoot) {
 function main() {
   const zip = argValue("--zip");
   const fromDist = argValue("--from-dist");
+  const dumpOnly = process.argv.includes("--dump-palette-keys");
   const javaRoot = argValue("--java-root") ?? (!zip && !fromDist ? defaultJavaRoot() : undefined);
+
+  if (dumpOnly) {
+    if (!javaRoot) {
+      console.error("--dump-palette-keys requires --java-root or sibling ../new vernan!");
+      process.exit(1);
+    }
+    dumpExactSourcePaletteKeys(resolve(javaRoot));
+    return;
+  }
 
   if (zip) {
     unpackZip(resolve(zip));
@@ -120,7 +182,9 @@ function main() {
     return;
   }
   if (javaRoot) {
-    packFromJava(resolve(javaRoot));
+    const root = resolve(javaRoot);
+    packFromJava(root);
+    dumpExactSourcePaletteKeys(root);
     return;
   }
 
@@ -128,6 +192,7 @@ function main() {
   node scripts/pack-assets.mjs --java-root "/path/to/java/vernan"
   node scripts/pack-assets.mjs --zip "/path/to/vernan-runtime-assets.zip"
   node scripts/pack-assets.mjs --from-dist "/path/to/unpacked/pack"
+  node scripts/pack-assets.mjs --dump-palette-keys [--java-root ...]
 
 Default java root (if present): ../new vernan!`);
   process.exit(1);

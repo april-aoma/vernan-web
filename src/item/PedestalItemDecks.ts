@@ -39,6 +39,14 @@ export class PedestalItemDecks {
     this.shopQueue = this.shopQueue.filter((x) => x !== id);
   }
 
+  /**
+   * Java `commitAssigned` — reserve id for a pedestal this level without drawing from the deck
+   * (boss-specific drops that bypass `drawBossClear`).
+   */
+  commitAssigned(id: string): void {
+    this.placedThisLevel.add(id);
+  }
+
   /** New dungeon floor: clear per-level placement, keep run-wide acquired. */
   beginDungeonLevel(): void {
     this.placedThisLevel.clear();

@@ -233,6 +233,11 @@ export class Input {
   get debugTogglePressed(): boolean {
     return this.wasPressed("F3") || this.wasPressed("Backquote");
   }
+
+  /** Java VK_ENTER pause toggle (also Escape for web UX). */
+  get pauseTogglePressed(): boolean {
+    return this.wasPressed("Enter") || this.wasPressed("Escape");
+  }
 }
 
 function shouldPrevent(code: string): boolean {
@@ -245,6 +250,8 @@ function shouldPrevent(code: string): boolean {
     code === "KeyW" ||
     code === "KeyA" ||
     code === "KeyS" ||
-    code === "KeyD"
+    code === "KeyD" ||
+    code === "Enter" ||
+    code === "Escape"
   );
 }

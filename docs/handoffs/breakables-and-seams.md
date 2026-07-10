@@ -69,7 +69,9 @@ Seams belong here because they are breakable shells, not a separate movement sys
 - [x] ASCII shells + second wall + shop flat + Java gen order (planner / two-pass / finish)
 - [x] Breakable loot rolls / sprite-subimage chunks
 - [x] Playable-scroll override during pan; step/pillar caps (thin)
-- [ ] Softlock nav audit (`ProceduralBreakableNav`); dual-seam height bridge; deco-breakable loot
+- [x] Softlock nav audit (`ProceduralBreakableNav` thin); dual-seam height bridge still open
+- [x] Deco-breakable loot (canBreakAsDeco roll + strike + decoLootKind)
+- [x] Terrain-core first cut: RoomGenerator interior + post–Pass B order (ladder align / secret loot); still stubbed keyblocks, deco-in-generate, placed props, start.json
 
 ## Coordination
 

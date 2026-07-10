@@ -8,6 +8,7 @@ import { resolveDisplayTileId } from "./resolveDisplayTile";
 import { resolveShellTileId } from "./ShellTileResolve";
 import type { TerrainTileBridge } from "./TerrainTileBridge";
 import type { TilesetProject } from "./TilesetProject";
+import type { TileWorldRenderer } from "./TileWorldRenderer";
 
 export type ShellDrawExtras = {
   /** When true for (tx,ty), draw sealed boss door placeholder instead of door art. */
@@ -20,10 +21,14 @@ export type ShellDrawExtras = {
   roomKind?: RoomKind;
   displaySalt?: bigint;
   decoStamps?: DecoStamp[];
+  /** Java decorationAnimTime * 60 — drives visualClips / warp / glow. */
+  simTick?: number;
+  /** Composite renderer for animated tiles (grass / flame). */
+  tileWorld?: TileWorldRenderer | null;
 };
 
 /**
- * Blit shell terrain (C+ bridge + MemberGraph when available) and thin deco underlay.
+ * Blit shell terrain (C+ bridge + MemberGraph when available) and ambient deco underlay.
  */
 export function drawShellTiles(
   g: CanvasRenderingContext2D,
@@ -38,12 +43,12 @@ export function drawShellTiles(
   const bridge = extras.bridge ?? null;
   const roomKind = extras.roomKind;
   const displaySalt = extras.displaySalt ?? 0n;
+  const simTick = extras.simTick ?? 0;
+  const tileWorld = extras.tileWorld ?? null;
   const useCPlus = !!(project && bridge && roomKind != null);
 
-  // Deco underlay on EMPTY cells (behind terrain).
+  // Deco underlay on EMPTY cells (behind terrain) — full opacity (Java ambient deco).
   if (atlas && extras.decoStamps?.length) {
-    g.save();
-    g.globalAlpha = 0.4;
     for (const stamp of extras.decoStamps) {
       const wx = stamp.tx * TILE_SIZE;
       const wy = stamp.ty * TILE_SIZE;
@@ -51,9 +56,14 @@ export function drawShellTiles(
       const dy = camera.worldToDeviceY(wy);
       const dw = Math.floor(CAMERA_ZOOM * TILE_SIZE);
       const dh = Math.floor(CAMERA_ZOOM * TILE_SIZE);
+      if (
+        project &&
+        tileWorld?.drawTileIfAnimated(g, project, stamp.tileId, simTick, dx, dy, CAMERA_ZOOM)
+      ) {
+        continue;
+      }
       atlas.drawTileId(g, stamp.tileId, dx, dy, dw, dh, sheetOverride);
     }
-    g.restore();
   }
 
   for (let ty = 0; ty < map.getHeight(); ty++) {
@@ -92,6 +102,13 @@ export function drawShellTiles(
       }
       if (!tileId) {
         tileId = resolveShellTileId(map, tx, ty);
+      }
+      if (
+        tileId &&
+        project &&
+        tileWorld?.drawTileIfAnimated(g, project, tileId, simTick, dx, dy, CAMERA_ZOOM)
+      ) {
+        continue;
       }
       if (tileId && atlas?.drawTileId(g, tileId, dx, dy, dw, dh, sheetOverride)) {
         continue;

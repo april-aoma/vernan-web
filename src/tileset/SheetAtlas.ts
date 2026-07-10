@@ -29,6 +29,11 @@ export class SheetAtlas {
     return this.bitmaps.has(sheetId);
   }
 
+  /** Raw sheet bitmap for TileWorldRenderer composite. */
+  getBitmap(sheetId: string): ImageBitmap | null {
+    return this.bitmaps.get(sheetId) ?? null;
+  }
+
   drawCell(
     g: CanvasRenderingContext2D,
     cell: SheetCell,

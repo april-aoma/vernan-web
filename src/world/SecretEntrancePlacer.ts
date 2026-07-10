@@ -218,6 +218,40 @@ export function placeSecretEntrances(
   return out;
 }
 
+/**
+ * True when this room is the north room of a vertical secret pair with ladderSouth and the
+ * south-face shell is still sealed (mouth row must stay `#`, not `-`).
+ */
+export function isNorthRoomSouthFaceSealed(
+  layout: DungeonLayout,
+  seams: SecretSeam[],
+  roomId: number,
+  ladderTx: number,
+): boolean {
+  if (!layout.room(roomId).ladderSouth) return false;
+  for (const seam of seams) {
+    if (seam.kind !== SeamKind.VERTICAL_LADDER || seam.roomA !== roomId) continue;
+    if (seam.ladderTxInRoom(roomId) !== ladderTx) continue;
+    return seam.hasBreakablesRemaining();
+  }
+  return false;
+}
+
+/** Re-stamp vertical seam seals / strike lanes after shaft finalize (Java reapplyVerticalSeamTerrain). */
+export function reapplyVerticalSeamTerrain(
+  layout: DungeonLayout,
+  rooms: GeneratedRoom[],
+  seams: SecretSeam[],
+): void {
+  for (const seam of seams) {
+    if (seam.kind !== SeamKind.VERTICAL_LADDER) continue;
+    reseatNorthRoomSouthFaceSeal(layout, rooms, seam);
+    applyVerticalNorthSealedSolids(layout, rooms, seam);
+    carveVerticalStrikeLanes(layout, rooms, seam);
+  }
+  enforceVerticalSouthSealedBands(layout, rooms, seams);
+}
+
 function edgeKey(a: number, b: number): string {
   return `${a}:${b}`;
 }
@@ -620,6 +654,11 @@ export class SecretSeam {
 
   isDone(): boolean {
     return this.breakablesRemaining < 0;
+  }
+
+  /** True while south-face / door shell breakables remain sealed. */
+  hasBreakablesRemaining(): boolean {
+    return this.breakablesRemaining > 0;
   }
 
   linksRooms(a: number, b: number): boolean {

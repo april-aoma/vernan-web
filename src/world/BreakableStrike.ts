@@ -11,13 +11,13 @@ import {
   type PlayableScrollX,
 } from "../camera/playableScroll";
 import { WorldCamera } from "../camera/WorldCamera";
-import { terrainBrickRng, terrainLootKind } from "./BreakableLootRoll";
+import { terrainBrickRng, terrainLootKind, decoBrickRng, decoLootKind } from "./BreakableLootRoll";
 import type { DungeonLayout } from "./DungeonLayout";
 import type { GeneratedRoom } from "./RoomGenerator";
 import type { SecretSeam } from "./SecretEntrancePlacer";
 import { SeamKind } from "./SecretEntrancePlacer";
 import { SecretSeamOpenAnim } from "./SecretSeamOpenAnim";
-import { TILE_EMPTY, type TileMap } from "./TileMap";
+import { TILE_BREAKABLE, TILE_EMPTY, type TileMap } from "./TileMap";
 import { WorldPickup } from "./WorldPickup";
 
 /** Java CombatJuice.BLOCK_BREAK_HITLAG_FRAMES. */
@@ -36,6 +36,8 @@ export type BreakableStrikeContext = {
   worldPickups: WorldPickup[];
   /** Optional 16×16 tile snapshot for sprite-subimage chunks. */
   snapshotTile?: (tx: number, ty: number) => HTMLCanvasElement | null;
+  /** Snapshot a deco overlay tile id for brick VFX. */
+  snapshotDecoTile?: (tileId: string) => HTMLCanvasElement | null;
   /** Current active seam anim, or null. Mutated by this module. */
   activeSeamOpenAnim: { current: SecretSeamOpenAnim | null };
   /** Playable scroll while H SEAM-ANIM pans (Java seamAnimPlayableScrollOverride). */
@@ -43,9 +45,8 @@ export type BreakableStrikeContext = {
 };
 
 /**
- * Sword vs TILE_BREAKABLE (Java trySwordStrikeTiles / destroyBreakableTile).
+ * Sword vs TILE_BREAKABLE + breakable deco overlays (Java trySwordStrikeTiles / tryStrikeBreakableDeco).
  * Call from mount after player.applyAttackHits — does not edit Player.ts.
- * Does not latch attackHitLanded (mount latches after enemies + blocks so both connect same frame).
  * @returns hitlag frames to apply (BLOCK_BREAK_HITLAG_FRAMES), or 0 if none / already latched.
  */
 export function applySwordBreakables(ctx: BreakableStrikeContext): number {
@@ -53,8 +54,9 @@ export function applySwordBreakables(ctx: BreakableStrikeContext): number {
   const sword = player.attackHitbox();
   if (!sword || player.attackHitLanded) return 0;
   if (ctx.activeSeamOpenAnim.current) return 0;
-  const any = strikeBreakablesInAabb(sword, ctx);
-  if (!any) return 0;
+  const terrainHit = strikeBreakablesInAabb(sword, ctx);
+  const decoHit = tryStrikeBreakableDeco(sword, ctx);
+  if (!terrainHit && !decoHit) return 0;
   player.hitlagFrames = Math.max(player.hitlagFrames, BLOCK_BREAK_HITLAG_FRAMES);
   return BLOCK_BREAK_HITLAG_FRAMES;
 }
@@ -96,6 +98,65 @@ function destroyBreakableTile(tx: number, ty: number, ctx: BreakableStrikeContex
       if (!seam.isDone()) seam.onTileOpened(ctx.rooms, ctx.roomId, tx, ty, ctx.layout);
     }
   }
+}
+
+/**
+ * Java tryStrikeBreakableDeco — remove breakableDeco stamps overlapping the sword AABB.
+ * If the map cell is already TILE_BREAKABLE, terrain path owns destruction (skip overlay).
+ */
+function tryStrikeBreakableDeco(hit: Aabb, ctx: BreakableStrikeContext): boolean {
+  const room = ctx.rooms[ctx.roomId];
+  const art = room?.art;
+  if (!art?.decoStamps?.length) return false;
+
+  const kept: typeof art.decoStamps = [];
+  let any = false;
+  for (const d of art.decoStamps) {
+    if (!d.breakableDeco) {
+      kept.push(d);
+      continue;
+    }
+    // Terrain breakable owns the cell.
+    if (ctx.map.tileAt(d.tx, d.ty) === TILE_BREAKABLE) {
+      kept.push(d);
+      continue;
+    }
+    const cell: Aabb = {
+      x: d.tx * TILE_SIZE,
+      y: d.ty * TILE_SIZE,
+      w: TILE_SIZE,
+      h: TILE_SIZE,
+    };
+    if (!aabbIntersects(hit, cell)) {
+      kept.push(d);
+      continue;
+    }
+    destroyBreakableDeco(d.tx, d.ty, d.tileId, ctx);
+    any = true;
+  }
+  if (any) art.decoStamps = kept;
+  return any;
+}
+
+function destroyBreakableDeco(
+  tx: number,
+  ty: number,
+  tileId: string,
+  ctx: BreakableStrikeContext,
+): void {
+  const bx = tx * TILE_SIZE;
+  const by = ty * TILE_SIZE;
+  const brickRnd = decoBrickRng(ctx.runSeed, ctx.roomId, tx, ty, tileId);
+  const tileSnap = ctx.snapshotDecoTile?.(tileId) ?? null;
+  spawnBreakableBrickChunks(bx, by, brickRnd, ctx.brickChunks, 1, "#8a5a3a", tileSnap);
+  const loot = decoLootKind(ctx.runSeed, ctx.roomId, tx, ty, tileId);
+  if (loot != null) {
+    ctx.worldPickups.push(WorldPickup.createFromBreakable(loot, bx + 8, by + 8, brickRnd));
+  }
+}
+
+function aabbIntersects(a: Aabb, b: Aabb): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
 function tryBeginSeamOpenAnim(

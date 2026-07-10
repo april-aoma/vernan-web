@@ -9,6 +9,7 @@ import {
   TILE_SOLID,
 } from "../world/TileMap";
 import { rebuildTerrainBridgeFromObjects } from "./rebuildTerrainBridge";
+import { allowsRoomKind, type TileRoomScope } from "./RoomScope";
 
 export type SheetCell = { sheetId: string; row: number; col: number };
 
@@ -28,11 +29,21 @@ export type AutotileObject = {
   tileIds: string[];
   anchorTileId: string;
   roomKinds: string[];
+  /** `all` | `red` | `blue` — ambient blob channel filter. */
+  decoBlobClusterChannel: "all" | "red" | "blue";
   memberGraphLayout: { cells: Array<{ tileId: string; x: number; y: number }> } | null;
   islands: MemberGraphIsland[];
   usesMemberGraph: boolean;
   isFullObject: boolean;
   isHorizontalStripAutotile: boolean;
+};
+
+/** Per-tile deco placement rule (Java DecoPlacementRules.Rule subset). */
+export type DecoPlacementRule = {
+  spawnWeight: number;
+  preferAboveWeight: number;
+  preferredAboveObjectIds: string[];
+  scatterOnEligibleGround: boolean;
 };
 
 export type BiomePoolEntry = { objectId: string; weight: number };
@@ -54,14 +65,38 @@ export type TerrainBridgeBucket = {
   connectAsTileIdByRoomKind: Map<string, string>;
 };
 
+/** Full tile JSON subset for composite animation (Java TileRenderResolve input). */
+export type TileDefJson = {
+  id: string;
+  renderLayers?: unknown[];
+  visualClips?: unknown[];
+  visualPlayback?: Record<string, unknown>;
+  variations?: unknown[];
+  sprite?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
 type RawTile = {
   id?: string;
   renderLayers?: Array<{
     sprite?: { sheetId?: string; cell?: { row?: number; col?: number } };
   }>;
-  roomScope?: { allowRoomKinds?: string[]; allowFloors?: number[] };
+  visualClips?: unknown[];
+  visualPlayback?: Record<string, unknown>;
+  variations?: unknown[];
+  sprite?: Record<string, unknown>;
+  roomScope?: {
+    allowRoomKinds?: string[];
+    denyRoomKinds?: string[];
+    allowFloors?: number[];
+  };
   terrainBridgeWeight?: number;
   terrainBridgeConnectAnchor?: boolean;
+  sceneRoles?: unknown;
+  mapTerrain?: string;
+  canBreakAsDeco?: boolean;
+  breakableDeco?: boolean;
+  breakableDecoChance?: number;
 };
 
 type RawSheet = {
@@ -86,11 +121,29 @@ export class TilesetProject {
   readonly biomesBySheet = new Map<string, BiomeRow[]>();
   readonly decoPoolsByRoomKind = new Map<string, BiomePoolEntry[]>();
   readonly terrainBridgePoolByRoomKind = new Map<string, BiomePoolEntry[]>();
+  /** Legacy placedPropsByRoomKind (merged into terrainBridgePool when missing). */
+  readonly placedPropsByRoomKind = new Map<string, BiomePoolEntry[]>();
   readonly tunablesByRoomKind = new Map<
     string,
     { decoClusterCountMin: number; decoClusterCountMax: number }
   >();
   readonly decoClusterFallbackByRoomKind = new Map<string, { red: string; blue: string }>();
+  /** Tile id → breakable-deco roll probability (only tiles with canBreakAsDeco). */
+  readonly decoBreakableChanceByTileId = new Map<string, number>();
+  /** Tile ids with sceneRoles containing `background` — excluded from ambient blobs. */
+  readonly backgroundSceneTileIds = new Set<string>();
+  /** Tile ids with sceneRoles containing `foreground`. */
+  readonly foregroundSceneTileIds = new Set<string>();
+  /** Tile id → EMPTY mapTerrain (procedural deco-capable). */
+  readonly emptyMapTerrainTileIds = new Set<string>();
+  /** Tile id → uppercase mapTerrain (EMPTY if missing). */
+  readonly tileMapTerrain = new Map<string, string>();
+  /** Tile id → roomScope (missing = unrestricted). */
+  readonly tileRoomScope = new Map<string, TileRoomScope>();
+  /** Full tile defs for composite draw (clips / warp / glow). */
+  readonly tileDefs = new Map<string, TileDefJson>();
+  /** decoTilePlacementRules keyed by tile id. */
+  readonly decoPlacementRules = new Map<string, DecoPlacementRule>();
   private readonly tileBridgeWeight = new Map<string, number>();
   private readonly tileConnectAnchor = new Set<string>();
 
@@ -102,13 +155,34 @@ export class TilesetProject {
     proj.loadObjects(raw.objects as Array<Record<string, unknown>> | undefined);
     proj.loadTerrainBridge(raw.terrainBridge as Record<string, unknown> | undefined);
     proj.loadProcedural(raw.proceduralRoomGen as Record<string, unknown> | undefined);
+    proj.loadDecoPlacementRules(raw.decoTilePlacementRules as Record<string, unknown> | undefined);
     // Java TilesetRuntime.load always rebuilds from objects (anchors only).
     rebuildTerrainBridgeFromObjects(proj);
     return proj;
   }
 
+  /** Tile ids owned by scatterOnEligibleGround rules — excluded from ambient blob pools. */
+  groundScatterTileIds(): Set<string> {
+    const out = new Set<string>();
+    for (const [tid, rule] of this.decoPlacementRules) {
+      if (rule.scatterOnEligibleGround) out.add(tid);
+    }
+    return out;
+  }
+
+  /** Channel for a tile via owning object (`all` if orphan). */
+  decoBlobChannelForTile(tileId: string): "all" | "red" | "blue" {
+    const obj = this.objectByTileId.get(tileId);
+    return obj?.decoBlobClusterChannel ?? "all";
+  }
+
   cell(tileId: string): SheetCell | null {
     return this.tileCells.get(tileId) ?? null;
+  }
+
+  /** Full authored tile def for composite animation, or null. */
+  tileDef(tileId: string): TileDefJson | null {
+    return this.tileDefs.get(tileId) ?? null;
   }
 
   tileTerrainBridgeWeight(tileId: string): number {
@@ -131,6 +205,16 @@ export class TilesetProject {
     const range = this.sheetFloorRanges.get(cell.sheetId);
     if (!range) return true;
     return floorOrdinal >= range.min && floorOrdinal <= range.max;
+  }
+
+  /** Java RoomScope.allowsRoomKind on the tile def. */
+  tileAllowedInRoomKind(tileId: string, roomKind: RoomKind): boolean {
+    return allowsRoomKind(this.tileRoomScope.get(tileId), roomKind);
+  }
+
+  /** Combined floor + room-kind gate (Java TilesetRuntime draw predicate). */
+  tileAllowed(tileId: string, floorOrdinal: number, roomKind: RoomKind): boolean {
+    return this.tileAllowedOnFloor(tileId, floorOrdinal) && this.tileAllowedInRoomKind(tileId, roomKind);
   }
 
   /** Java FloorScope.primarySheetIdForFloor — narrowest bounded match wins. */
@@ -188,15 +272,69 @@ export class TilesetProject {
   private loadTiles(tiles: RawTile[] | undefined): void {
     for (const tile of tiles ?? []) {
       if (!tile.id) continue;
-      const sprite = tile.renderLayers?.[0]?.sprite;
-      const sheetId = sprite?.sheetId;
-      const row = sprite?.cell?.row;
-      const col = sprite?.cell?.col;
-      if (sheetId == null || row == null || col == null) continue;
+      const sprite = tile.renderLayers?.[0]?.sprite ?? tile.sprite;
+      const sheetId =
+        sprite && typeof sprite === "object"
+          ? str((sprite as { sheetId?: unknown }).sheetId)
+          : "";
+      const cell =
+        sprite && typeof sprite === "object"
+          ? ((sprite as { cell?: { row?: number; col?: number } }).cell ?? null)
+          : null;
+      const row = cell?.row;
+      const col = cell?.col;
+      if (!sheetId || row == null || col == null) continue;
       this.tileCells.set(tile.id, { sheetId, row, col });
+      // Keep full def for TileWorldRenderer (visualClips / scanlineWarp / glowPulse).
+      this.tileDefs.set(tile.id, {
+        id: tile.id,
+        renderLayers: tile.renderLayers as unknown[] | undefined,
+        visualClips: tile.visualClips,
+        visualPlayback: tile.visualPlayback,
+        variations: tile.variations,
+        sprite: tile.sprite,
+      });
       const w = typeof tile.terrainBridgeWeight === "number" ? tile.terrainBridgeWeight : 1;
       this.tileBridgeWeight.set(tile.id, Math.max(1, Math.floor(w)));
       if (tile.terrainBridgeConnectAnchor === true) this.tileConnectAnchor.add(tile.id);
+
+      const mt = (tile.mapTerrain ?? "EMPTY").toString().trim().toUpperCase() || "EMPTY";
+      this.tileMapTerrain.set(tile.id, mt);
+      if (mt === "EMPTY") this.emptyMapTerrainTileIds.add(tile.id);
+
+      if (tile.roomScope) {
+        const allow = Array.isArray(tile.roomScope.allowRoomKinds)
+          ? tile.roomScope.allowRoomKinds.filter((s): s is string => typeof s === "string")
+          : undefined;
+        const deny = Array.isArray(tile.roomScope.denyRoomKinds)
+          ? tile.roomScope.denyRoomKinds.filter((s): s is string => typeof s === "string")
+          : undefined;
+        if ((allow && allow.length) || (deny && deny.length)) {
+          this.tileRoomScope.set(tile.id, {
+            allowRoomKinds: allow?.length ? allow : undefined,
+            denyRoomKinds: deny?.length ? deny : undefined,
+          });
+        }
+      }
+
+      if (Array.isArray(tile.sceneRoles)) {
+        for (const role of tile.sceneRoles) {
+          if (typeof role !== "string") continue;
+          const r = role.trim().toLowerCase();
+          if (r === "background") this.backgroundSceneTileIds.add(tile.id);
+          if (r === "foreground") this.foregroundSceneTileIds.add(tile.id);
+        }
+      }
+
+      let canBreak = tile.canBreakAsDeco === true;
+      if (!canBreak && tile.breakableDeco === true) canBreak = true;
+      if (canBreak) {
+        let p = 1;
+        if (typeof tile.breakableDecoChance === "number" && Number.isFinite(tile.breakableDecoChance)) {
+          p = Math.max(0, Math.min(1, tile.breakableDecoChance));
+        }
+        this.decoBreakableChanceByTileId.set(tile.id, p);
+      }
     }
   }
 
@@ -217,6 +355,9 @@ export class TilesetProject {
         layout != null && layout.cells.length >= 1
           ? buildMemberGraphIslands(tileIds, layout, anchorTileId)
           : [];
+      const channelRaw = str(raw.decoBlobClusterChannel).toLowerCase();
+      const decoBlobClusterChannel: "all" | "red" | "blue" =
+        channelRaw === "red" ? "red" : channelRaw === "blue" ? "blue" : "all";
       const obj: AutotileObject = {
         id,
         objectType,
@@ -224,6 +365,7 @@ export class TilesetProject {
         tileIds,
         anchorTileId,
         roomKinds: asStringList(raw.roomKinds),
+        decoBlobClusterChannel,
         memberGraphLayout: layout,
         islands,
         usesMemberGraph,
@@ -289,6 +431,10 @@ export class TilesetProject {
     for (const [kind, list] of Object.entries(tbPools)) {
       this.terrainBridgePoolByRoomKind.set(kind.toUpperCase(), parsePoolEntries(list));
     }
+    const placed = (prg.placedPropsByRoomKind ?? {}) as Record<string, unknown>;
+    for (const [kind, list] of Object.entries(placed)) {
+      this.placedPropsByRoomKind.set(kind.toUpperCase(), parsePoolEntries(list));
+    }
     const tunables = (prg.tunablesByRoomKind ?? {}) as Record<string, Record<string, unknown>>;
     for (const [kind, row] of Object.entries(tunables)) {
       this.tunablesByRoomKind.set(kind.toUpperCase(), {
@@ -304,6 +450,21 @@ export class TilesetProject {
       this.decoClusterFallbackByRoomKind.set(kind.toUpperCase(), {
         red: str(row.red) || "main_10_0",
         blue: str(row.blue) || "main_9_0",
+      });
+    }
+  }
+
+  private loadDecoPlacementRules(raw: Record<string, unknown> | undefined): void {
+    if (!raw) return;
+    for (const [tileId, entry] of Object.entries(raw)) {
+      if (!tileId || !entry || typeof entry !== "object") continue;
+      const row = entry as Record<string, unknown>;
+      const preferAbove = asStringList(row.preferAboveObjects);
+      this.decoPlacementRules.set(tileId, {
+        spawnWeight: Math.max(0, num(row.spawnWeight, 1)),
+        preferAboveWeight: Math.max(0, Math.min(1, num(row.preferAboveWeight, 1))),
+        preferredAboveObjectIds: preferAbove,
+        scatterOnEligibleGround: row.scatterOnEligibleGround === true,
       });
     }
   }
@@ -462,7 +623,11 @@ function parsePoolEntries(raw: unknown): BiomePoolEntry[] {
     if (!e || typeof e !== "object") continue;
     const row = e as Record<string, unknown>;
     const objectId = str(row.objectId);
-    const weight = Math.max(0, num(row.weight, 1));
+    // Java DecoEligibility.placedPropWeightFromEntry: weight, else legacy count, else 1.
+    let weight = 1;
+    if (row.weight != null) weight = num(row.weight, 0);
+    else if (row.count != null) weight = num(row.count, 0);
+    weight = Math.max(0, weight);
     if (objectId && weight > 0) out.push({ objectId, weight });
   }
   return out;

@@ -16,7 +16,7 @@ export type AutotileMassContext = {
   bridge: TerrainTileBridge;
   displaySalt: bigint;
   roomKind: RoomKind;
-  /** Floor gate for neighbor bridge picks (Java tileAllowedOnFloor). */
+  /** Floor + room-kind gate for neighbor bridge picks (Java TilesetRuntime predicate). */
   floorOrdinal?: number;
   project?: TilesetProject;
 };
@@ -436,7 +436,7 @@ function terrainConnects(
   if (map.tileAt(tx, ty) !== terrainCode) return false;
   if (!massCtx) return true;
   const floor = massCtx.floorOrdinal ?? 1;
-  const tileAllowed = (id: string) => project.tileAllowedOnFloor(id, floor);
+  const tileAllowed = (id: string) => project.tileAllowed(id, floor, massCtx.roomKind);
   const neighborPick = massCtx.bridge.displayTileIdForRoomKind(
     terrainCode,
     tx,

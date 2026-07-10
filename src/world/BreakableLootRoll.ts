@@ -8,6 +8,7 @@ export enum PickupKind {
 }
 
 const LOOT_SALT = 0x1007ab1e10adn;
+const DECO_HASH_SALT = 0xd1b54a32d192ed03n;
 
 /**
  * Deterministic loot inside TILE_BREAKABLE (Java BreakableLootRoll).
@@ -29,6 +30,25 @@ export function terrainLootKind(
   return rollKind(mulberry(Number(seed & 0xffffffffn)));
 }
 
+/** Predetermined loot for a breakable deco overlay. */
+export function decoLootKind(
+  runSeed: bigint,
+  roomId: number,
+  tx: number,
+  ty: number,
+  decoTileId: string,
+): PickupKind | null {
+  const seed =
+    (runSeed ^
+      BigInt(tx) * 0x9e3779b1n ^
+      BigInt(ty) * 0x85ebca77n ^
+      BigInt(roomId) * 37n ^
+      BigInt(javaStringHash(decoTileId)) * DECO_HASH_SALT ^
+      LOOT_SALT) &
+    0xffffffffffffffffn;
+  return rollKind(mulberry(Number(seed & 0xffffffffn)));
+}
+
 export function terrainBrickRng(
   runSeed: bigint,
   roomId: number,
@@ -40,6 +60,25 @@ export function terrainBrickRng(
     (tx * 0x9e3779b1) ^
     (ty * 0x85ebca77) ^
     roomId * 37;
+  return () => {
+    state = (state * 1664525 + 1013904223) | 0;
+    return (state >>> 0) / 0x100000000;
+  };
+}
+
+export function decoBrickRng(
+  runSeed: bigint,
+  roomId: number,
+  tx: number,
+  ty: number,
+  decoTileId: string,
+): () => number {
+  let state =
+    Number(runSeed & 0xffffffffn) ^
+    (tx * 0x9e3779b1) ^
+    (ty * 0x85ebca77) ^
+    roomId * 37 ^
+    javaStringHash(decoTileId) * 0xd1b54a32;
   return () => {
     state = (state * 1664525 + 1013904223) | 0;
     return (state >>> 0) / 0x100000000;
@@ -68,4 +107,12 @@ function mulberry(seed: number): () => number {
     state = (state * 1664525 + 1013904223) | 0;
     return (state >>> 0) / 0x100000000;
   };
+}
+
+function javaStringHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  }
+  return h;
 }

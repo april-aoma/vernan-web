@@ -1,11 +1,11 @@
 import { resolveBiome } from "./NormalRoomBiomes";
-import { placeAmbientDeco, placeStepBreakables } from "./placeAmbientDeco";
+import { placeAmbientDeco } from "./placeAmbientDeco";
 import type { TilesetProject } from "./TilesetProject";
 import type { BuiltDungeon } from "../world/buildDungeon";
 import type { GeneratedRoom, RoomArtData } from "../world/RoomGenerator";
-import { RoomKind } from "../world/DungeonTypes";
 
-/** Attach biome + deco + breakables once tileset is loaded (and after floor ascend). */
+/** Attach biome + deco once tileset is loaded (and after floor ascend).
+ * Step breakables are placed in RoomGenerator.generate (not here) to match Java. */
 export function enrichDungeonArt(
   dungeon: BuiltDungeon,
   project: TilesetProject,
@@ -25,23 +25,13 @@ export function enrichRoomArt(
   floorOrdinal: number,
 ): RoomArtData {
   const biome = resolveBiome(project, room.kind, contentSeed, floorOrdinal);
-  // Java: NORMAL / BOSS only (not SECRET).
-  if (room.kind === RoomKind.NORMAL || room.kind === RoomKind.BOSS) {
-    placeStepBreakables(room.map, contentSeed, room.kind, {
-      leftDoorX: room.leftDoorTileX,
-      rightDoorX: room.rightDoorTileX,
-      leftDoorTopY: room.leftDoorTopTileY,
-      rightDoorTopY: room.rightDoorTopTileY,
-      ladderTx: room.ladderColumnTx,
-      maxReach: 3,
-    });
-  }
   const decoStamps = placeAmbientDeco(
     project,
     room.map,
     contentSeed,
     biome,
     room.ladderColumnTx,
+    floorOrdinal,
   );
   const art: RoomArtData = {
     biomeId: biome.biomeId,

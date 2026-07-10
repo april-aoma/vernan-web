@@ -17,7 +17,12 @@ import {
   resolvePedestalTileX,
   type ItemPedestal,
 } from "./pedestal";
-import { defaultSpawnPx, horizontalDoorSpawnPx, type GeneratedRoom } from "./RoomGenerator";
+import {
+  defaultSpawnPx,
+  horizontalDoorSpawnPx,
+  PLAYER_STAND_SPAWN_H,
+  type GeneratedRoom,
+} from "./RoomGenerator";
 import {
   beginFadeInAfterAscend,
   beginFadeInAfterSwap,
@@ -35,6 +40,10 @@ import { TILE_BREAKABLE, TILE_DOOR, TILE_EMPTY, TILE_LADDER, TILE_SOLID } from "
 import { RoomKind } from "./DungeonTypes";
 import { BossDoorSealAnim, packCell } from "./BossDoorSealAnim";
 import { injectBossExitLadder } from "./BossAscend";
+import {
+  bossRoomHasPossessed,
+  pickPossessedSpecialReward,
+} from "../item/possessedBossReward";
 
 export enum SpawnKind {
   INITIAL = 0,
@@ -130,29 +139,30 @@ export function applyRoomAndSpawn(
   session.roomId = roomId;
   const g = session.dungeon.rooms[roomId]!;
   resolvePedestal(session, g);
+  // Spawn helpers return player top Y (groundTop − standH). spawnAt expects groundTop.
   if (spawnKind === SpawnKind.FROM_WEST) {
     const spawn = horizontalDoorSpawnPx(g, true);
-    player.spawnAt(spawn.x, spawn.y + 18);
+    player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
   } else if (spawnKind === SpawnKind.FROM_EAST) {
     const spawn = horizontalDoorSpawnPx(g, false);
-    player.spawnAt(spawn.x, spawn.y + 18);
+    player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
   } else if (spawnKind === SpawnKind.FROM_ABOVE) {
     if (g.ladderFromNorthSpawnX >= 0) {
       player.spawnAtWorld(g.ladderFromNorthSpawnX, g.ladderFromNorthSpawnY, true);
     } else {
       const spawn = defaultSpawnPx(g);
-      player.spawnAt(spawn.x, spawn.y + 18);
+      player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
     }
   } else if (spawnKind === SpawnKind.FROM_BELOW) {
     if (g.ladderFromSouthSpawnX >= 0) {
       player.spawnAtWorld(g.ladderFromSouthSpawnX, g.ladderFromSouthSpawnY, true);
     } else {
       const spawn = defaultSpawnPx(g);
-      player.spawnAt(spawn.x, spawn.y + 18);
+      player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
     }
   } else {
     const spawn = defaultSpawnPx(g);
-    player.spawnAt(spawn.x, spawn.y + 18);
+    player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
   }
   session.enemies = spawnEnemiesForRoom(session);
   maybeBeginBossDoorSealAnim(session);
@@ -182,7 +192,7 @@ function spawnEnemiesForRoom(session: RoomSession): CombatEnemy[] {
     if (s.kind === "crawler") {
       out.push(new Crawler(s.xPx, s.yPx, s.maxHealth));
     } else if (s.kind === "possessed") {
-      const boss = new Possessed(s.xPx, s.yPx, s.maxHealth);
+      const boss = new Possessed(s.xPx, s.yPx, s.maxHealth, s.variantId);
       boss.bindRoom(g.map);
       out.push(boss);
     }
@@ -322,7 +332,16 @@ function spawnBossRoomClearPedestal(
   const groundTop = map.groundTopWorldYAtColumn(tx);
   const anchorX = tx * TILE_SIZE + TILE_SIZE * 0.5;
   if (!session.bossClearPedestals[roomId]) {
-    const itemId = session.decks.drawBossClear();
+    let itemId: string | null = null;
+    if (bossRoomHasPossessed(g.enemySpawns)) {
+      const node = session.dungeon.layout.room(roomId);
+      itemId = pickPossessedSpecialReward(player.inventory, node.contentSeed);
+      if (itemId) {
+        // Reserve on decks (Java commitAssigned); collect path markAcquired.
+        session.decks.commitAssigned(itemId);
+      }
+    }
+    if (!itemId) itemId = session.decks.drawBossClear();
     session.bossClearPedestals[roomId] = makeItemPedestal(itemId, anchorX, groundTop);
   }
   if (injectLadder) {

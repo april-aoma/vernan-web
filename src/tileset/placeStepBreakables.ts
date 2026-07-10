@@ -28,8 +28,8 @@ export function placeStepBreakables(
     maxReach?: number;
     max?: number;
   } = {},
-): number {
-  if (kind !== RoomKind.NORMAL && kind !== RoomKind.BOSS) return 0;
+): Array<{ tx: number; ty: number }> {
+  if (kind !== RoomKind.NORMAL && kind !== RoomKind.BOSS) return [];
   const max = opts.max ?? MAX_PROCEDURAL_BREAKABLES;
   const maxReach = opts.maxReach ?? 3;
   const leftDoorX = opts.leftDoorX ?? -1;
@@ -91,15 +91,15 @@ export function placeStepBreakables(
     cands[j] = tmp;
   }
 
-  let placed = 0;
+  const placed: Array<{ tx: number; ty: number }> = [];
   for (const c of cands) {
-    if (placed >= max) break;
+    if (placed.length >= max) break;
     if (ladderTx >= 0 && c.tx === ladderTx) continue;
     if (usedFaceColumns.has(c.tx)) continue;
     if (map.tileAt(c.tx, c.ty) !== TILE_SOLID) continue;
     map.setTile(c.tx, c.ty, TILE_BREAKABLE);
     usedFaceColumns.add(c.tx);
-    placed++;
+    placed.push(c);
   }
   return placed;
 }

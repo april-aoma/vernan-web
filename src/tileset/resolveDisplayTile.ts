@@ -43,7 +43,7 @@ export function resolveDisplayTileId(
   const terrain = map.tileAt(tx, ty);
   if (terrain === TILE_EMPTY) return null;
 
-  const tileAllowed = (id: string) => project.tileAllowedOnFloor(id, floorOrdinal);
+  const tileAllowed = (id: string) => project.tileAllowed(id, floorOrdinal, roomKind);
 
   if (terrain === TILE_DOOR) {
     return resolveDoorTile(bridge, map, tx, ty, roomKind, displaySalt, tileAllowed);

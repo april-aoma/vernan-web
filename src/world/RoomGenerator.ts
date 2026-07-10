@@ -1,6 +1,14 @@
 import { TILE_SIZE } from "../specs";
 import { JavaRandom } from "../util/JavaRandom";
+import { placeStepBreakables } from "../tileset/placeStepBreakables";
+import { PickupKind } from "./BreakableLootRoll";
 import { RoomKind, type RoomNode } from "./DungeonTypes";
+import type { DungeonLayout } from "./DungeonLayout";
+import {
+  MAX_PROCEDURAL_LADDER_RUNGS,
+  stripSpuriousLaddersFromGrid,
+  stripSpuriousLaddersFromMap,
+} from "./DungeonVerticalShaftRules";
 import type { EnemySpawn } from "./EnemySpawnBudget";
 import {
   makeItemPedestal,
@@ -8,16 +16,26 @@ import {
   resolvePedestalTileX,
   type ItemPedestal,
 } from "./pedestal";
+import {
+  auditAndStripIllegalBreakables,
+  type ExitSpec,
+} from "./ProceduralBreakableNav";
 import type { NeighborSecretFaces, SecretRoomSeams } from "./SecretHorizontalSeamSpec";
 import {
   alignAsciiGroundYToSeams,
+  capInteriorSolidPillarsOnMap,
+  enforceInteriorPlayFloorSteps,
   finishSecretRoomMap,
+  groundYFromMap,
 } from "./SecretRoomMapBuild";
-import { TileMap } from "./TileMap";
+import { TILE_SOLID, TileMap } from "./TileMap";
 import type { TerrainTileBridge } from "../tileset/TerrainTileBridge";
+import { resolvedLadderRunwayRowAt } from "./VerticalSeamGeometry";
+import { WorldPickup } from "./WorldPickup";
 
-const PLAYER_STAND_SPAWN_H = 18;
+export const PLAYER_STAND_SPAWN_H = 18;
 const GOLDEN = 0x9e3779b97f4a7c15n;
+const SECRET_CONTENT_SEED_SALT = 0x517cc1b727220a95n;
 
 /** Options for SecretRoomMapBuild.finish (Java SecretGenFinishOptions). */
 export type SecretGenFinishOptions = {
@@ -36,9 +54,23 @@ export type RoomConnectivity = {
 export type RoomArtData = {
   biomeId: string;
   sheetId: string;
-  decoStamps: Array<{ tx: number; ty: number; tileId: string; channel: 0 | 1 }>;
+  decoStamps: Array<{
+    tx: number;
+    ty: number;
+    tileId: string;
+    channel: 0 | 1;
+    breakableDeco?: boolean;
+    groundHugging?: boolean;
+  }>;
   /** Cached biome terrain bridge for draw (Phase C+). */
   bridge: TerrainTileBridge;
+};
+
+/** Deferred secret-room floor loot (spawned on room enter). */
+export type DeferredFloorPickup = {
+  kind: PickupKind;
+  feetCenterX: number;
+  feetY: number;
 };
 
 export type GeneratedRoom = {
@@ -57,15 +89,39 @@ export type GeneratedRoom = {
   ladderFromSouthSpawnX: number;
   ladderFromSouthSpawnY: number;
   enemySpawns: EnemySpawn[];
-  /** ITEM rooms: deferred item id (null until decks resolve). */
+  /** ITEM / secret pedestal rooms: deferred item id (null until decks resolve). */
   itemPedestal: ItemPedestal | null;
+  /** SECRET / SUPER_SECRET deferred floor pickups (spawned on enter; cleared when mounted). */
+  deferredFloorPickups: DeferredFloorPickup[];
   /** Phase C+: biome + deco (filled when tileset loads). */
   art?: RoomArtData;
 };
 
+/** {@code gridY} below this uses easy 2-tile reach; at/above uses standard 3. */
+export const STANDARD_TERRAIN_REACH_FROM_GRID_Y = 4;
+export const EASY_TERRAIN_MAX_VERTICAL_REACH_TILES = 2;
+export const STANDARD_TERRAIN_MAX_VERTICAL_REACH_TILES = 3;
+export const UNKNOWN_DUNGEON_GRID_Y = Number.MAX_SAFE_INTEGER;
+
+/** Max adjacent-column play-floor step for procedural terrain on this dungeon floor. */
+export function maxVerticalReachTilesForGridY(gridY: number): number {
+  return gridY < STANDARD_TERRAIN_REACH_FROM_GRID_Y
+    ? EASY_TERRAIN_MAX_VERTICAL_REACH_TILES
+    : STANDARD_TERRAIN_MAX_VERTICAL_REACH_TILES;
+}
+
+/** Foot row for shaft finalize — flank runway (not column L). */
+export function resolvedLadderShaftFootRowAt(
+  map: TileMap,
+  ladderTx: number,
+  ladderSouth: boolean,
+): number {
+  return resolvedLadderRunwayRowAt(map, ladderTx, ladderSouth);
+}
+
 /**
- * ASCII shell generator: frame, padding, ground, doors, entry pad + SecretRoomMapBuild.finish.
- * Biomes/deco attached later via enrichDungeonArt (Phase C+).
+ * ASCII shell + interior terrain: maxReach steps, GEN-LADDER-1 / platforms,
+ * step breakables, pillar/play-floor caps, softlock nav (Java generate subset).
  */
 export function generateRoomShell(
   seed: bigint,
@@ -74,11 +130,13 @@ export function generateRoomShell(
   conn: RoomConnectivity,
   kind: RoomKind,
   finishOpts?: SecretGenFinishOptions | null,
+  gridY: number = UNKNOWN_DUNGEON_GRID_Y,
 ): GeneratedRoom {
   const largeArena = kind === RoomKind.NORMAL || kind === RoomKind.SECRET;
   const w = Math.max(largeArena ? 24 : 10, widthTiles);
   const h = Math.max(largeArena ? 12 : 8, heightTiles);
-  void new JavaRandom(seed ^ GOLDEN);
+  const maxReach = maxVerticalReachTilesForGridY(gridY);
+  const rng = new JavaRandom(seed ^ GOLDEN);
 
   const noise = valueNoise1D(seed, w, 8);
   const groundY = new Array<number>(w).fill(0);
@@ -182,6 +240,15 @@ export function generateRoomShell(
   if (!conn.doorWest) leftDoorTopY = -1;
   if (!conn.doorEast) rightDoorTopY = -1;
 
+  // PROP-TRAV-1: cap adjacent groundY steps (skip SECRET / SUPER / SHOP).
+  if (
+    kind !== RoomKind.SECRET &&
+    kind !== RoomKind.SUPER_SECRET &&
+    kind !== RoomKind.SHOP
+  ) {
+    enforceMaxWalkableGroundYStep(groundY, maxReach);
+  }
+
   for (let x = 1; x < w - 1; x++) {
     // Preserve SECRET west padding column stamped above.
     if (kind === RoomKind.SECRET && !conn.doorWest && x === 1) continue;
@@ -199,15 +266,71 @@ export function generateRoomShell(
     grid[rightDoorTopY + 1]![rightDoorX] = "D";
   }
 
+  // GEN-LADDER-1 / GEN-PLATFORM: random H + floating `-` before dungeon shaft.
+  let dungeonLadderTx = conn.ladderColumnTx;
+  if (dungeonLadderTx >= 0) dungeonLadderTx = Math.max(3, Math.min(dungeonLadderTx, w - 4));
+  const placeRandomLadders = kind === RoomKind.NORMAL;
+  // Web only has Possessed boss — treat BOSS as possessed arena (GEN-PLATFORM-BOSS).
+  const possessedBossArena = kind === RoomKind.BOSS;
+  const placeRandomPlatforms = kind === RoomKind.NORMAL || possessedBossArena;
+  const dungeonVerticalLink =
+    dungeonLadderTx >= 0 && (conn.ladderNorth || conn.ladderSouth);
+
+  for (let x = 3; x < w - 3; x++) {
+    if (x === leftDoorX || x === rightDoorX) continue;
+    if (dungeonLadderTx >= 0 && x === dungeonLadderTx) continue;
+    if (placeRandomLadders) {
+      if (rng.nextInt(10) === 0) {
+        const gy = clampInt(groundY[x]!, 2, h - 2);
+        const ladderH = 3 + rng.nextInt(MAX_PROCEDURAL_LADDER_RUNGS - 2); // 3..6
+        for (let y = Math.max(1, gy - ladderH); y <= gy - 1; y++) {
+          if (grid[y]![x] === ".") grid[y]![x] = "H";
+        }
+      }
+    }
+    if (placeRandomPlatforms) {
+      if (rng.nextInt(7) === 0) {
+        const gy = clampInt(groundY[x]!, 4, h - 2);
+        let py: number;
+        if (possessedBossArena) {
+          const rise = 1 + rng.nextInt(maxReach);
+          py = gy - rise;
+        } else {
+          py = clampInt(gy - (3 + rng.nextInt(5)), 2, h - 4); // 3..7 above ground
+        }
+        if (py < 2 || py >= gy - 1) continue;
+        const len = rng.nextInt(5) === 0 ? 2 : 3 + rng.nextInt(3);
+        const sx = clampInt(x - rng.nextInt(2), 2, w - 3);
+        for (let dx = 0; dx < len; dx++) {
+          const tx = sx + dx;
+          if (tx <= 1 || tx >= w - 2) continue;
+          if (dungeonLadderTx >= 0 && tx === dungeonLadderTx) continue;
+          if (
+            possessedBossArena &&
+            !platformReachableFromFloor(tx, py, groundY, w, maxReach)
+          ) {
+            continue;
+          }
+          if (grid[py]![tx] === ".") grid[py]![tx] = "-";
+        }
+      }
+    }
+  }
+
   // Optional dungeon ladder shaft — Mega Man–style seam through N/S borders when linked.
-  let ladderTx = conn.ladderColumnTx;
-  if (ladderTx >= 0) ladderTx = Math.max(3, Math.min(ladderTx, w - 4));
+  let ladderTx = dungeonLadderTx;
   let ladderFromNorthSpawnX = -1;
   let ladderFromNorthSpawnY = -1;
   let ladderFromSouthSpawnX = -1;
   let ladderFromSouthSpawnY = -1;
+  let dungeonLadderFloorRow = -1;
   if (ladderTx >= 0 && (conn.ladderNorth || conn.ladderSouth)) {
-    const mouthRow = clampInt(groundY[ladderTx]!, 2, h - 2);
+    const mouthRow = resolvedLadderRunwayRowOnGrid(
+      groundY,
+      ladderTx,
+      conn.ladderSouth,
+    );
+    dungeonLadderFloorRow = mouthRow;
     const y1 = mouthRow - 1;
     let y0: number;
     if (conn.ladderNorth && conn.ladderSouth) {
@@ -224,10 +347,7 @@ export function generateRoomShell(
     }
     const L = ladderTx;
     if (conn.ladderSouth) {
-      // Mouth deck at runway; shaft continues through bottom seam.
-      if (mouthRow >= 1 && mouthRow < h - 1 && grid[mouthRow]![L] !== "D") {
-        grid[mouthRow]![L] = "-";
-      }
+      // Mouth deck placed later by LadderVerticalSeamAlign (LADDER-MOUTH-2).
       for (let y = mouthRow + 1; y < h - 1; y++) {
         if (grid[y]![L] === "D") continue;
         grid[y]![L] = "H";
@@ -253,10 +373,99 @@ export function generateRoomShell(
       ladderFromSouthSpawnX = lSpawnX;
       ladderFromSouthSpawnY = h * TILE_SIZE - 32;
     }
+    stripSpuriousLaddersFromGrid(grid, w, h, ladderTx, groundY);
   }
 
   const rows = grid.map((row) => row.join(""));
   const map = TileMap.fromAscii(rows);
+
+  if (kind === RoomKind.NORMAL || kind === RoomKind.BOSS || kind === RoomKind.ITEM) {
+    capInteriorSolidPillarsOnMap(
+      map,
+      ladderTx >= 0 ? ladderTx : -1,
+      conn.doorWest ? leftDoorX : -1,
+      conn.doorEast ? rightDoorX : -1,
+      seed,
+      maxReach,
+    );
+  }
+
+  if (dungeonVerticalLink && ladderTx >= 0) {
+    stripSpuriousLaddersFromMap(map, ladderTx, dungeonLadderFloorRow);
+  } else if (kind === RoomKind.NORMAL || kind === RoomKind.BOSS) {
+    stripSpuriousLaddersFromMap(map, -1);
+  }
+
+  // Step-face breakables in generate (not enrich) — NORMAL / BOSS.
+  let proceduralBreakables: Array<{ tx: number; ty: number }> = [];
+  if (kind === RoomKind.NORMAL || kind === RoomKind.BOSS) {
+    proceduralBreakables = placeStepBreakables(map, seed, kind, {
+      leftDoorX: conn.doorWest ? leftDoorX : -1,
+      rightDoorX: conn.doorEast ? rightDoorX : -1,
+      leftDoorTopY,
+      rightDoorTopY,
+      ladderTx: ladderTx >= 0 ? ladderTx : -1,
+      maxReach,
+    });
+    // Sync grid chars for softlock audit.
+    for (const c of proceduralBreakables) {
+      if (c.ty >= 0 && c.ty < h && c.tx >= 0 && c.tx < w) {
+        grid[c.ty]![c.tx] = "B";
+      }
+    }
+    const groundYFinal = groundYFromMap(map);
+    const exitSpec: ExitSpec = {
+      doorWest: conn.doorWest,
+      doorEast: conn.doorEast,
+      leftDoorX,
+      rightDoorX,
+      leftDoorTopY,
+      rightDoorTopY,
+      ladderTx: ladderTx >= 0 ? ladderTx : -1,
+      ladderFloorRow: dungeonLadderFloorRow,
+    };
+    proceduralBreakables = auditAndStripIllegalBreakables(
+      grid,
+      w,
+      h,
+      groundYFinal,
+      exitSpec,
+      proceduralBreakables,
+      maxReach,
+      (tx, ty) => map.setTile(tx, ty, TILE_SOLID),
+    );
+    void proceduralBreakables;
+    capInteriorSolidPillarsOnMap(
+      map,
+      ladderTx >= 0 ? ladderTx : -1,
+      conn.doorWest ? leftDoorX : -1,
+      conn.doorEast ? rightDoorX : -1,
+      seed,
+      maxReach,
+    );
+    enforceInteriorPlayFloorSteps(
+      map,
+      conn.doorWest ? leftDoorX : -1,
+      conn.doorEast ? rightDoorX : -1,
+      ladderTx >= 0 ? ladderTx : -1,
+      maxReach,
+    );
+  }
+
+  if (kind === RoomKind.ITEM) {
+    enforceInteriorPlayFloorSteps(
+      map,
+      conn.doorWest ? leftDoorX : -1,
+      conn.doorEast ? rightDoorX : -1,
+      ladderTx >= 0 ? ladderTx : -1,
+      maxReach,
+    );
+  }
+
+  const finalGroundY = groundYFromMap(map);
+  for (let i = 0; i < finalGroundY.length && i < groundY.length; i++) {
+    groundY[i] = finalGroundY[i]!;
+  }
 
   let itemPedestal: ItemPedestal | null = null;
   if (kind === RoomKind.ITEM) {
@@ -287,6 +496,7 @@ export function generateRoomShell(
     ladderFromSouthSpawnY,
     enemySpawns: [],
     itemPedestal,
+    deferredFloorPickups: [],
   };
 
   // Java SecretRoomMapBuild.finish — SEC-SHELL-COL-1, padding seal, SUPER flat unify.
@@ -297,10 +507,135 @@ export function generateRoomShell(
       conn,
       finishOpts.secretSeams ?? null,
       finishOpts.neighborFaces ?? null,
+      maxReach,
+      seed,
     );
   }
 
   return room;
+}
+
+/**
+ * Pickups and pedestals for secret rooms — after terrain post-processing, before enemies.
+ * (Java RoomGenerator.applySecretPostGenerationContent)
+ */
+export function applySecretPostGenerationContent(
+  layout: DungeonLayout,
+  rooms: GeneratedRoom[],
+): void {
+  for (let id = 0; id < layout.roomCount(); id++) {
+    const room = rooms[id];
+    if (!room) continue;
+    const kind = layout.room(id).kind;
+    if (kind !== RoomKind.SECRET && kind !== RoomKind.SUPER_SECRET) continue;
+    applySecretPostGenerationContentToRoom(room, layout.room(id).contentSeed, kind);
+  }
+}
+
+function applySecretPostGenerationContentToRoom(
+  g: GeneratedRoom,
+  contentSeed: bigint,
+  kind: RoomKind,
+): void {
+  const map = g.map;
+  const w = map.getWidth();
+  const groundY = groundYFromMap(map);
+  const ladderTx = g.ladderColumnTx;
+  const rng = new JavaRandom(contentSeed ^ SECRET_CONTENT_SEED_SALT);
+
+  const deferred: DeferredFloorPickup[] = [];
+  let itemPedestal: ItemPedestal | null = null;
+
+  if (kind === RoomKind.SECRET) {
+    const roll = rng.nextInt(4);
+    if (roll === 0) {
+      const cx = resolvePedestalTileX(
+        w,
+        Math.floor(w / 2),
+        ladderTx,
+        g.leftDoorTileX,
+        g.rightDoorTileX,
+      );
+      const gyc = groundY[clampInt(cx, 1, w - 2)]!;
+      const anchorX = cx * TILE_SIZE + TILE_SIZE * 0.5;
+      const groundTop = gyc * TILE_SIZE;
+      itemPedestal = makeItemPedestal(null, anchorX, groundTop);
+    } else if (roll === 1) {
+      addPickupCluster(deferred, rng, w, groundY, PickupKind.KEY, 3);
+    } else if (roll === 2) {
+      addPickupCluster(deferred, rng, w, groundY, PickupKind.HEART, 3);
+    } else {
+      addPickupCluster(deferred, rng, w, groundY, PickupKind.COIN_1, 10);
+    }
+  } else if (kind === RoomKind.SUPER_SECRET) {
+    deferred.push(...rollSuperSecretLoot(rng, w, groundY));
+  }
+
+  g.deferredFloorPickups = deferred;
+  if (itemPedestal) g.itemPedestal = itemPedestal;
+}
+
+function addPickupCluster(
+  out: DeferredFloorPickup[],
+  rng: JavaRandom,
+  w: number,
+  groundY: number[],
+  kind: PickupKind,
+  count: number,
+): void {
+  const mid = clampInt(Math.floor(w / 2), 4, w - 5);
+  for (let i = 0; i < count; i++) {
+    const x = clampInt(mid + (i - Math.floor(count / 2)) * 2 + rng.nextInt(3) - 1, 2, w - 3);
+    const gy = groundY[x]!;
+    out.push({
+      kind,
+      feetCenterX: x * TILE_SIZE + TILE_SIZE * 0.5,
+      feetY: gy * TILE_SIZE,
+    });
+  }
+}
+
+function rollSuperSecretLoot(
+  rng: JavaRandom,
+  w: number,
+  groundY: number[],
+): DeferredFloorPickup[] {
+  const out: DeferredFloorPickup[] = [];
+  const v = rng.nextInt(8);
+  const mid = clampInt(Math.floor(w / 2), 4, w - 5);
+  const gy = groundY[mid]!;
+  const baseX = mid * TILE_SIZE + TILE_SIZE * 0.5;
+  const baseY = gy * TILE_SIZE;
+  switch (v) {
+    case 0:
+      addPickupCluster(out, rng, w, groundY, PickupKind.HEART, 6);
+      break;
+    case 1:
+      addPickupCluster(out, rng, w, groundY, PickupKind.HEART, 3);
+      break;
+    case 2:
+      out.push({ kind: PickupKind.HEART, feetCenterX: baseX, feetY: baseY });
+      break;
+    case 3:
+      addPickupCluster(out, rng, w, groundY, PickupKind.COIN_10, 3);
+      break;
+    case 4:
+      addPickupCluster(out, rng, w, groundY, PickupKind.COIN_1, 6);
+      break;
+    case 5:
+      out.push({ kind: PickupKind.KEY, feetCenterX: baseX, feetY: baseY });
+      break;
+    case 6:
+      addPickupCluster(out, rng, w, groundY, PickupKind.HEART, 3);
+      out.push({ kind: PickupKind.KEY, feetCenterX: baseX + 24, feetY: baseY });
+      break;
+    default:
+      out.push({ kind: PickupKind.HEART, feetCenterX: baseX - 16, feetY: baseY });
+      out.push({ kind: PickupKind.KEY, feetCenterX: baseX, feetY: baseY });
+      addPickupCluster(out, rng, w, groundY, PickupKind.COIN_1, 5);
+      break;
+  }
+  return out;
 }
 
 /** First column for left entry pad (SECRET west padding starts pad at x=2). */
@@ -354,6 +689,62 @@ export function horizontalDoorSpawnPx(g: GeneratedRoom, fromWest: boolean): { x:
   return defaultSpawnPx(g);
 }
 
+/** PROP-TRAV-1 / ASCII-TRAV-1: no column may jump more than maxStep tiles. */
+function enforceMaxWalkableGroundYStep(groundY: number[], maxStep: number): void {
+  const w = groundY.length;
+  for (let pass = 0; pass < w; pass++) {
+    let changed = false;
+    for (let x = 1; x < w; x++) {
+      if (groundY[x]! - groundY[x - 1]! > maxStep) {
+        groundY[x] = groundY[x - 1]! + maxStep;
+        changed = true;
+      }
+      if (groundY[x - 1]! - groundY[x]! > maxStep) {
+        groundY[x - 1] = groundY[x]! + maxStep;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+}
+
+function platformReachableFromFloor(
+  tx: number,
+  py: number,
+  groundY: number[],
+  w: number,
+  maxReach: number,
+): boolean {
+  const lo = Math.max(1, tx - 1);
+  const hi = Math.min(w - 2, tx + 1);
+  for (let c = lo; c <= hi; c++) {
+    const floor = groundY[c]!;
+    if (floor - py >= 1 && floor - py <= maxReach) return true;
+  }
+  return false;
+}
+
+function resolvedLadderRunwayRowOnGrid(
+  groundY: number[],
+  ladderTx: number,
+  ladderSouth: boolean,
+): number {
+  if (ladderTx < 1) return 1;
+  const l = Math.max(1, Math.min(ladderTx, groundY.length - 2));
+  const left = flankPlayFloorRow(groundY, l - 1);
+  const right = flankPlayFloorRow(groundY, l + 1);
+  if (left !== right) {
+    return ladderSouth ? Math.max(left, right) : Math.min(left, right);
+  }
+  return left;
+}
+
+function flankPlayFloorRow(groundY: number[], flankTx: number): number {
+  if (groundY.length === 0) return 1;
+  const col = Math.max(1, Math.min(flankTx, groundY.length - 2));
+  return groundY[col]!;
+}
+
 function flattenGroundRun(groundY: number[], lo: number, hi: number): void {
   if (lo > hi) return;
   let floor = groundY[lo]!;
@@ -378,6 +769,21 @@ function valueNoise1D(seed: bigint, n: number, periodTiles: number): number[] {
     out[x] = a + (b - a) * s;
   }
   return out;
+}
+
+/**
+ * Thin mount hook: push deferred secret floor pickups into the live world list on room enter.
+ * Pedestal is already on GeneratedRoom.itemPedestal (resolved via existing resolvePedestal).
+ * Call after worldPickups is cleared for the new room.
+ */
+export function mountDeferredRoomPickups(
+  room: GeneratedRoom,
+  worldPickups: WorldPickup[],
+): void {
+  for (const d of room.deferredFloorPickups) {
+    worldPickups.push(WorldPickup.createFromDeferred(d.kind, d.feetCenterX, d.feetY));
+  }
+  room.deferredFloorPickups = [];
 }
 
 function clampInt(v: number, lo: number, hi: number): number {

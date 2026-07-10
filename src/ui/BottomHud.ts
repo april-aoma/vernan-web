@@ -8,6 +8,7 @@ import type { DungeonLayout } from "../world/DungeonLayout";
 import { RoomKind } from "../world/DungeonTypes";
 import {
   computeBottomHudGeometry,
+  computeTouchControlsGeometry,
   ECON_ICON,
   HEART_GAP,
   HEART_SLOT,
@@ -89,7 +90,7 @@ const MINIMAP_HUD_GAP = 8;
 
 /**
  * Draw the full Java-style bottom HUD band.
- * Touch controls omitted (keyboard).
+ * Touch chrome: pause button always; full d-pad/JUMP/ATK optional later.
  */
 export function drawBottomHud(
   g: CanvasRenderingContext2D,
@@ -102,6 +103,7 @@ export function drawBottomHud(
   roomId: number,
   miniMap: MiniMapState,
   subCooldowns: SubweaponCooldowns,
+  opts: { paused?: boolean } = {},
 ): void {
   const hud = computeBottomHudGeometry(INTERNAL_WIDTH, INTERNAL_HEIGHT, HUD_HEIGHT);
   const slots = player.health.hudSlotCount();
@@ -117,6 +119,47 @@ export function drawBottomHud(
   drawPassiveStrip(g, player, catalog, itemBitmaps, hud);
   drawWeaponSlots(g, player, catalog, itemBitmaps, sprites, hud, subCooldowns);
   drawMiniMap(g, layout, roomId, miniMap, hud, miniMapRevealFlags(player.inventory));
+  drawPauseButton(g, hud, opts.paused === true);
+}
+
+/** Pause control in the left-shoulder HUD slot (Java touch chrome L). */
+export function drawPauseButton(
+  g: CanvasRenderingContext2D,
+  hud: BottomHudGeometry,
+  pressed: boolean,
+): void {
+  const tc = computeTouchControlsGeometry(INTERNAL_WIDTH, hud.y0, HUD_HEIGHT);
+  drawButtonBox(g, tc.pause.x, tc.pause.y, tc.pause.w, tc.pause.h, "II", pressed);
+}
+
+export function pauseButtonRect(hudY0: number): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  return computeTouchControlsGeometry(INTERNAL_WIDTH, hudY0, HUD_HEIGHT).pause;
+}
+
+function drawButtonBox(
+  g: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  label: string,
+  pressed: boolean,
+): void {
+  g.strokeStyle = pressed ? "#f0dc78" : "rgba(255,255,255,0.43)";
+  g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  if (pressed) {
+    g.fillStyle = "rgba(240,220,120,0.275)";
+    g.fillRect(x + 1, y + 1, Math.max(0, w - 2), Math.max(0, h - 2));
+  }
+  g.fillStyle = "#ffffff";
+  g.font = "8px monospace";
+  const tw = g.measureText(label).width;
+  g.fillText(label, x + Math.max(1, Math.floor((w - tw) / 2)), y + Math.floor(h / 2) + 3);
 }
 
 function drawHeartsRow(

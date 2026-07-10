@@ -64,6 +64,7 @@ export function finishSecretRoomMap(
   secretSeams: SecretRoomSeams | null | undefined,
   neighborFaces: NeighborSecretFaces | null | undefined,
   maxStep = MAX_SECRET_STEP_HEIGHT_TILES,
+  pillarThinSeed = 0n,
 ): void {
   const map = room.map;
   const ladderTx = room.ladderColumnTx;
@@ -151,7 +152,7 @@ export function finishSecretRoomMap(
         ladderTx,
         room.leftDoorTileX,
         room.rightDoorTileX,
-        0n,
+        pillarThinSeed,
         maxStep,
       );
     }
@@ -642,5 +643,234 @@ export function refreshRoomGroundY(room: GeneratedRoom): void {
   const gy = groundYFromMap(room.map);
   for (let i = 0; i < gy.length && i < room.groundY.length; i++) {
     room.groundY[i] = gy[i]!;
+  }
+}
+
+/** SEC-LADDER-2: remove procedural mouth platforms in the shaft before reconcile. */
+export function clearStrayLadderPlatforms(
+  map: TileMap,
+  ladderTx: number,
+  mouthRow: number,
+  keepMouthAtFloorRow: boolean,
+): void {
+  const h = map.getHeight();
+  for (let y = 1; y < h - 1; y++) {
+    if (keepMouthAtFloorRow && y === mouthRow) continue;
+    if (map.tileAt(ladderTx, y) === TILE_PLATFORM) {
+      map.setTile(ladderTx, y, TILE_EMPTY);
+    }
+  }
+}
+
+/**
+ * LADDER-MOUTH-2: rungs through floorRow−1, mouth deck at floorRow when ladderSouth.
+ * Java SecretRoomMapBuild.finalizeLadderShaft / reconcileLadderShaftToFloorRow.
+ */
+export function finalizeLadderShaft(
+  map: TileMap,
+  ladderTx: number,
+  floorRow: number,
+  conn: RoomConnectivity,
+  leftDoorX = -1,
+  rightDoorX = -1,
+): void {
+  reconcileLadderShaftToFloorRow(map, ladderTx, floorRow, conn, leftDoorX, rightDoorX);
+}
+
+/** GEO-DOOR-2: re-stamp solid under connected D doors after shaft flank clears. */
+export function restoreConnectedDoorRunwayFloors(
+  map: TileMap,
+  leftDoorX: number,
+  leftDoorTopY: number,
+  rightDoorX: number,
+  rightDoorTopY: number,
+  ladderTx: number,
+): void {
+  restoreConnectedDoorRunwayFloor(map, leftDoorX, leftDoorTopY, ladderTx);
+  restoreConnectedDoorRunwayFloor(map, rightDoorX, rightDoorTopY, ladderTx);
+}
+
+function restoreConnectedDoorRunwayFloor(
+  map: TileMap,
+  doorX: number,
+  doorTopY: number,
+  ladderTx: number,
+): void {
+  if (doorX < 1 || doorTopY < 1) return;
+  if (ladderTx >= 0 && doorX === ladderTx) return;
+  if (map.tileAt(doorX, doorTopY) !== TILE_DOOR || map.tileAt(doorX, doorTopY + 1) !== TILE_DOOR) {
+    return;
+  }
+  const floorRow = Math.min(map.getHeight() - 2, doorTopY + 2);
+  const t = map.tileAt(doorX, floorRow);
+  if (t === TILE_EMPTY || t === TILE_LADDER) {
+    map.setTile(doorX, floorRow, TILE_SOLID);
+  }
+}
+
+/**
+ * LADDER-MOUTH-SOUTH-1 / LADDER-DEAD-END-NORTH-ONLY: south mouth is `-` at runway when
+ * ladderSouth and not secret-sealed; north-only dead-end is `#` at runway.
+ */
+export function enforceRunwayCellAtShaft(
+  map: TileMap,
+  ladderTx: number,
+  runwayRow: number,
+  ladderSouth: boolean,
+  _ladderNorth: boolean,
+  southFaceSecretSealed: boolean,
+): void {
+  if (ladderTx < 1 || runwayRow < 1 || runwayRow >= map.getHeight() - 1) return;
+  if (ladderSouth && !southFaceSecretSealed) {
+    if (!isShaftMouthCellPreserved(map.tileAt(ladderTx, runwayRow))) {
+      map.setTile(ladderTx, runwayRow, TILE_PLATFORM);
+    }
+  } else if (!ladderSouth) {
+    if (!isShaftMouthCellPreserved(map.tileAt(ladderTx, runwayRow))) {
+      map.setTile(ladderTx, runwayRow, TILE_SOLID);
+    }
+    if (map.tileAt(ladderTx, runwayRow) === TILE_LADDER) {
+      map.setTile(ladderTx, runwayRow, TILE_SOLID);
+    }
+    sealSouthDeadEndBelowFoot(map, ladderTx, runwayRow);
+  }
+}
+
+/** GEN-LADDER-L-1: never leave open air in column L at y != 0. */
+export function fillShaftColumnGaps(
+  map: TileMap,
+  ladderTx: number,
+  footRow: number,
+  conn: RoomConnectivity,
+): void {
+  if (ladderTx < 1) return;
+  const h = map.getHeight();
+  for (let y = 1; y < h - 1; y++) {
+    if (map.tileAt(ladderTx, y) !== TILE_EMPTY) continue;
+    if (y === footRow) {
+      map.setTile(ladderTx, y, conn.ladderSouth ? TILE_PLATFORM : TILE_SOLID);
+      continue;
+    }
+    if (conn.ladderSouth || y < footRow) {
+      carveLadderRung(map, ladderTx, y);
+    } else {
+      map.setTile(ladderTx, y, TILE_SOLID);
+    }
+  }
+}
+
+/** GEN-SHAFT-FLANK-1: clear tall stacks in L±2 (never door/shell columns). */
+export function stripShaftFlankSolidPillars(
+  map: TileMap,
+  ladderTx: number,
+  footRow: number,
+  leftDoorX = -1,
+  rightDoorX = -1,
+): void {
+  if (ladderTx < 1 || footRow < 2) return;
+  const w = map.getWidth();
+  const l = Math.max(1, Math.min(ladderTx, w - 2));
+  const radius = 2;
+  for (let dx = -radius; dx <= radius; dx++) {
+    if (dx === 0) continue;
+    const tx = l + dx;
+    if (tx < 1 || tx >= w - 1) continue;
+    if (isStepColumnExcluded(tx, leftDoorX, rightDoorX, ladderTx)) continue;
+    for (let y = 1; y < footRow; y++) {
+      const t = map.tileAt(tx, y);
+      if (isShaftMouthCellPreserved(t)) continue;
+      if (t === TILE_SOLID || t === TILE_BREAKABLE) {
+        map.setTile(tx, y, TILE_EMPTY);
+      }
+    }
+  }
+}
+
+function reconcileLadderShaftToFloorRow(
+  map: TileMap,
+  ladderTx: number,
+  footRow: number,
+  conn: RoomConnectivity,
+  leftDoorX: number,
+  rightDoorX: number,
+): void {
+  const h = map.getHeight();
+  if (conn.ladderSouth) {
+    for (let y = 1; y < footRow; y++) carveLadderRung(map, ladderTx, y);
+    if (!isShaftMouthCellPreserved(map.tileAt(ladderTx, footRow))) {
+      map.setTile(ladderTx, footRow, TILE_PLATFORM);
+    }
+    for (let y = footRow + 1; y < h - 1; y++) carveLadderRung(map, ladderTx, y);
+    if (
+      map.tileAt(ladderTx, h - 1) !== TILE_DOOR &&
+      map.tileAt(ladderTx, h - 1) !== TILE_BREAKABLE
+    ) {
+      map.setTile(ladderTx, h - 1, TILE_LADDER);
+    }
+  } else {
+    for (let y = 1; y < footRow; y++) carveLadderRung(map, ladderTx, y);
+    if (!isShaftMouthCellPreserved(map.tileAt(ladderTx, footRow))) {
+      map.setTile(ladderTx, footRow, TILE_SOLID);
+    }
+    for (let y = footRow + 1; y < h - 1; y++) {
+      const t = map.tileAt(ladderTx, y);
+      if (t === TILE_DOOR || t === TILE_BREAKABLE) continue;
+      map.setTile(ladderTx, y, TILE_SOLID);
+    }
+  }
+  if (conn.ladderNorth || conn.ladderSouth) {
+    if (
+      map.tileAt(ladderTx, 0) !== TILE_DOOR &&
+      map.tileAt(ladderTx, 0) !== TILE_BREAKABLE
+    ) {
+      map.setTile(ladderTx, 0, conn.ladderNorth ? TILE_EMPTY : TILE_SOLID);
+    }
+  }
+  enforceRunwayCellAtShaft(
+    map,
+    ladderTx,
+    footRow,
+    conn.ladderSouth,
+    conn.ladderNorth,
+    false,
+  );
+  if (!conn.ladderSouth) {
+    sealSouthDeadEndBelowFoot(map, ladderTx, footRow);
+  }
+  stripShaftFlankSolidPillars(map, ladderTx, footRow, leftDoorX, rightDoorX);
+  fillShaftColumnGaps(map, ladderTx, footRow, conn);
+}
+
+function sealSouthDeadEndBelowFoot(map: TileMap, ladderTx: number, footRow: number): void {
+  const h = map.getHeight();
+  for (let y = footRow + 1; y < h - 1; y++) {
+    if (isShaftMouthCellPreserved(map.tileAt(ladderTx, y))) continue;
+    map.setTile(ladderTx, y, TILE_SOLID);
+  }
+}
+
+function isShaftMouthCellPreserved(t: number): boolean {
+  return (
+    t === TILE_DOOR ||
+    t === TILE_BREAKABLE ||
+    t === TILE_KEYBLOCK ||
+    t === TILE_KEYBLOCK_CONNECTOR
+  );
+}
+
+function carveLadderRung(map: TileMap, ladderTx: number, y: number): void {
+  const t = map.tileAt(ladderTx, y);
+  if (
+    t === TILE_BREAKABLE ||
+    t === TILE_KEYBLOCK ||
+    t === TILE_KEYBLOCK_CONNECTOR
+  ) {
+    return;
+  }
+  if (t === TILE_SOLID || t === TILE_PLATFORM) {
+    map.setTile(ladderTx, y, TILE_EMPTY);
+  }
+  if (map.tileAt(ladderTx, y) === TILE_EMPTY) {
+    map.setTile(ladderTx, y, TILE_LADDER);
   }
 }

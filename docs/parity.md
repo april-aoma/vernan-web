@@ -90,7 +90,8 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - **Sprite chunks**: 8×8 subimages from tileset snapshot when atlas available
 - **Step faces**: cliff-mesa placement (NORMAL/BOSS, max 6) with reachability after break
 - **Pillar/step caps**: `capInteriorSolidPillarsOnMap` + `enforceInteriorPlayFloorSteps` in `finishSecretRoomMap`
-- Stubbed: softlock nav audit (`ProceduralBreakableNav`), dual-seam height bridge, deco-breakable loot, room-persisted chunks
+- Stubbed: softlock nav audit (`ProceduralBreakableNav`), dual-seam height bridge, room-persisted chunks
+- **Breakable deco**: `canBreakAsDeco` / chance roll at gen; sword clears overlays + `decoLootKind` / brick VFX (persists on room art)
 
 ### Phase C++ notes (object-based terrain + deco)
 
@@ -98,7 +99,9 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - **Floor filter** on bridge picks (`tileAllowedOnFloor`) so floors 1–2 don’t draw sheet_2/sheet_3 tiles
 - SOLID/BREAKABLE: pick is package tag → `connectAs` MemberGraph remaps draw (contiguous block/cave/flesh)
 - **DOOR**: full-object top/bottom pairs in layout order; `displayTileIdForDoorIfPaired` (not a single weighted pick)
-- Ambient deco: ellipse clusters; **full-object** footprints stamp as a unit; tile+variations expand all members
+- Ambient deco: ellipse clusters with **red/blue channel pools** (`decoBlobClusterChannel`); exclude background-scene + ground-scatter tiles; **full-object** footprints; tile+variations expand; **scatterOnEligibleGround** post-pass (grass etc.); drawn at **full opacity**
+- **Palette clamp**: `GameColorPalette` snaps full backbuffer to `game-palette.png` (nearest chromatic swatch + black/white clamps); preserves exact in-game sprite colors via `data/palette-exact-source-keys.json` (Java `rebuildExactSourceColors`)
+- Room void is **black**; BOSS / SECRET / SUPER_SECRET use Earthbound-style **math backgrounds** (`sprites/background/*.preset.json`, seeded pick)
 - Step-face **breakables** (up to 6) in NORMAL/BOSS via cliff-mesa faces + reachability
 - Stubbed: placed props, context theme rules, quadrant composites, variation profiles, softlock-safe breakable reachability, door destination theming (uses current room kind)
 
@@ -148,7 +151,8 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - **Item pickup overlay**: full-frame dim + pickup art + name/flavor/effect; Vernan **item pose** (`vernan item.png`) with held item above head; auto-dismiss **2.75s**; freezes sim while active
 - **Soul / black hearts**: container `Health` (RED/SOUL/BLACK); grants from `soulHeartsOnPickup` / `blackHeartsOnPickup`; HUD uses `soul heart.png` / `black heart.png` (2 frames)
 - **Subweapon HUD**: equip on pickup (`PlayerItemInventory.equippedSubweapon`); pickup icon in sub slot; cooldown tint/band via `SubweaponCooldowns` (tick ready; fire stubbed)
-- Stubbed: costumes/layered body, secret pedestals, full `ItemEffects`, subweapon *gameplay*, touch-control chrome, K_CANDY uses badge
+- **Pause**: Enter/Esc or HUD left-shoulder **II** toggles `paused`; freezes sim; dim overlay + “PAUSE” + item grid menu (`PauseOverlay`); button highlights while paused
+- Stubbed: costumes/layered body, secret pedestals, full `ItemEffects`, subweapon *gameplay*, full touch-control chrome, K_CANDY uses badge
 
 ### Phase shop notes (Shop A)
 
@@ -157,6 +161,7 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - Price labels in device space; free ITEM/boss pedestals unchanged
 - Run starts with **30** coins (stub until combat coin drops)
 - Stubbed: mini-buy lift overlay, heart/key world pickups priced in shop, subweapon shop swap
+- **Math backgrounds**: boss/secret presets via `BackgroundPresetRegistry` + `BackgroundRendererV3` (scroll/parallax/distortions/blends); occlusion skips solid tiles + deco cells
 
 ### Phase 5a notes
 
@@ -164,7 +169,7 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - `roomCombatCleared` prevents respawn; death waits **4 s** (`DEATH_REWARD_DELAY_SEC`) before clear
 - On clear: kill explosion + **BOSS_CLEAR** pedestal (`PedestalItemDecks.drawBossClear`)
 - HUD: boss HP bar; hit flash on Possessed
-- Stubbed (5b): bullets/rig, Nephilim, Modern Chicken, door seal, floor-ascend ladder, Possessed special drops
+- Stubbed (5b): Nephilim, Modern Chicken; scanline / full PartSim wall bounce / Lil familiar
 
 ### Phase 6a notes
 
@@ -174,7 +179,7 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - **Attack buffer** (~0.14 s): X during recover / landing lock / hitlag chains into next swing
 - Jump buffer already existed; presses also latch during hitlag
 - **Browser input machine** (Java `Input` parity): press edges survive key-up; lag-stash when sim skips a frame; `primeLagInputBuffers` during timestop; window capture listeners
-- Stubbed: layered body/costumes (climb+hurt use base/hair composites), turn/hurt/airdodge full costume routes, Possessed multi-part rig
+- Stubbed: layered body/costumes (climb+hurt use base/hair composites), turn/hurt/airdodge full costume routes
   - Room terrain art: Phase C++ (object-based bridge + MemberGraph + full-object deco + step breakables)
 
 ### Phase 5b-thin notes
@@ -183,16 +188,25 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - On clear: unseal + BOSS_CLEAR pedestal + full-height **ascend ladder** (opposite pedestal)
 - Climb ascend shaft to ceiling → fade → blackout climb/`leveltransition` strip → rebuild dungeon at `floorOrdinal + 1` (same run seed; decks keep acquired)
 - HUD shows `floor N`
-- Stubbed: seal tile art, Possessed bullets/rig, Nephilim/Chicken, special Possessed drops
+- Stubbed: seal tile art, Nephilim/Chicken
+  - Special Possessed drops (Lil / Head) live — see Phase 5b-possessed
   - (Normal door/ladder room fades are in Phase room-transition)
 
 ### Phase 5b-possessed notes
 
 - Possessed clamps to **camera viewport** (28px margin) so it stays on-screen with Vernan
 - Vision radius = `min(viewW, viewH)`; Phase B orbit standoff + aggression scaling
-- Aimed + volley 8-dir bullets (speed 110, dmg 1, lead aim, 0.6s wind-up telegraph)
-- Body contact damage disabled (Java: contact only during dodge/dash — stubbed)
-- Stubbed: multi-part rig, fan/nova/dash, kite, dodge-counter, bullet-die FX
+- **Live combat (Java parity):** aimed / volley / fan (±45°) / 8-way nova / dash-through; kite at ≤1/3 HP; dodge+counter when threat closing; contact damage only during juke/dash windows
+- Pattern unlock at ≤50% HP (`PATTERN_HP_FRAC`); dash chance in mid range at any HP
+- Multi-part draw from `possessed.rig.json` (head/body/hands + pose offsets + bob); charge ring / nova ring telegraph
+- **Boss arena platforms** live in RoomGenerator (`possessedBossArena` floating `-` platforms)
+- **Shiny variant** (`EnemyVariantRegistry`): 33% via `contentSeed ^ 0x51E0E5055`, HP 24, shiny strip; AI deltas (×1.2 move, kite ≤50%, dodge+counter from full HP, no dash / range-keyed attacks, upward dodge, down counter aim, start Phase A)
+- **Special boss drops** (`possessedBossReward`): Lil / Head until both owned (50/50 seed `^ 0x10557055ED`), else BOSS_CLEAR; `commitAssigned` on place
+- **Bullet die FX**: despawn queue + 2-frame die strip draw
+- **Light knock-loose limbs**: hurt hull AABBs from rig; sword knock offset+spin, spring back `SETTLED_K=220` (no wall bounce)
+- **Possessed Head** melee: horizontal bullet on attackPhase 2 rising edge (`PossessedHead.ts`)
+- **Death debris**: 4 colored BrickChunks from part centers on death start
+- Stubbed: scanline warp, full PartSim wall bounce, **LilPossessed familiar** (Head works; familiar deferred — see `LilPossessed.ts`)
 
 ### Phase 1b notes (movement parity)
 
@@ -220,6 +234,25 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - **Kill explosions**: feet-centered (top = feetY − dh); crawler waits until death hitstun ends
 - **Hit sparks**: sword `HitVfx` slash (2-frame hitlag→fade rotate); pickup collect strips rise + sine wobble
 - Stubbed: landing dust, heavy-attack camera shake, black-heart overlay, non-slash HitVfx kinds
+
+### Phase terrain-core notes
+
+- **RoomGenerator** thickened toward Java `generate`: `maxVerticalReachTilesForGridY` (easy 2 / standard 3), `enforceMaxWalkableGroundYStep`, GEN-LADDER-1 random `H`, floating `-` platforms (NORMAL + BOSS), step breakables in generate + softlock strip (`ProceduralBreakableNav`), pillar/play-floor caps with content `pillarThinSeed`
+- **Post–Pass B order** (GEN-ORDER-1 minus keyblocks/deco): secret content → `LadderVerticalSeamAlign.applyAll` → `placeSecretEntrances` → `applyFinalShaftPass` → enemies
+- **Secret loot**: `applySecretPostGenerationContent` (pedestal / key×3 / heart×3 / coin×10; SUPER cluster); `mountDeferredRoomPickups` thin hook in `mount.ts`
+- Still stubbed: keyblocks, deco-in-generate, dual-seam bridge, placed props, `start.json`, full `TerrainSolidConnectivity` / `LadderSafetyPlatforms`
+
+### Phase terrain-bridge-v3 notes
+
+- **Rebuild** matches Java `TerrainBridgeFromObjects`: global tile scan with eligibility / object-scope / non-anchor skips; objects → per-kind; legacy `placedPropsByRoomKind` merge; pool weight apply
+- **RoomScope** on tile defs (`allowRoomKinds` / `denyRoomKinds`, `SECRET_ROOM` alias) filters rebuild members and draw picks (`tileAllowed` = floor + room kind)
+- Still stubbed: editor write-back / `scrubRootDecoTilePool`; EMPTY terrain bridge entry
+
+### Phase animated-tiles notes
+
+- **Composite path** (`TileRenderResolve` / `TileCompositeRenderer` / `TileWorldRenderer`): `visualClips` (loop/pingpong), `scanlineWarp` (pinned-row sway), `glowPulse`, multi-layer + `add` blend
+- Wired through `drawShellTiles` with `simTick = floor(timeSec * 60)`; static tiles still use `SheetAtlas`
+- Acceptance: grass tufts sway (position-desynced); flame/candle cycles + halo + warp
 
 ## Adapters
 

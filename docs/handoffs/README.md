@@ -19,4 +19,5 @@
 2. ~~Double-tap Down on ladder mouths → getup / drop-through~~ — `LADDER_MOUTH_DOUBLE_TAP_FRAMES = 18`, `GETUP_LOCK_FRAMES = 10`; top step-off getup too
 3. ~~Boss floor-ascend cinematic~~ — fade → `LEVEL_LOAD_BLACK` climb + `leveltransition` strip → next floor mid-blackout → fade in
 4. ~~Collision polish~~ — horizontal deck exemption + mouth-only drop-through + `poseForFeetSupport`
-5. **Next:** (open — Mouse enemy, Possessed rig, or air dodge if wanted)
+5. ~~Possessed full combat + follow-up~~ — attacks/rig; shiny; Lil/Head drops; Head melee; knock-loose; bullet die; death debris (Lil familiar still stubbed)
+6. **Next:** (open — Lil familiar, Mouse enemy, air dodge, or costumes)

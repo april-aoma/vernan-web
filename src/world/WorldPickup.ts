@@ -50,6 +50,11 @@ export class WorldPickup {
     );
   }
 
+  /** Spawn deferred secret-room floor loot (resting on play floor; no pop). */
+  static createFromDeferred(kind: PickupKind, feetCenterX: number, feetY: number): WorldPickup {
+    return new WorldPickup(kind, feetCenterX, feetY, 0, 0);
+  }
+
   /** Visual / collect center (mid of sprite). */
   renderCenterX(): number {
     return this.x;

@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "sync-assets": "node scripts/pack-assets.mjs",
+    "dump-palette-keys": "node scripts/pack-assets.mjs --dump-palette-keys",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

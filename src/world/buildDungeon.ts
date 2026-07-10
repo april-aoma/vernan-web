@@ -2,7 +2,9 @@ import { TILE_SIZE, WORLD_VIEWPORT_H, WORLD_VIEWPORT_W } from "../specs";
 import { DungeonLayout } from "./DungeonLayout";
 import { RoomKind, type RoomNode } from "./DungeonTypes";
 import { rollEnemySpawns } from "./EnemySpawnBudget";
+import { applyAll as ladderAlignApplyAll, applyFinalShaftPass } from "./LadderVerticalSeamAlign";
 import {
+  applySecretPostGenerationContent,
   connectivityFromNode,
   generateRoomShell,
   type GeneratedRoom,
@@ -28,9 +30,9 @@ export type BuiltDungeon = {
 };
 
 /**
- * Mirror GamePanel.buildDungeonContent order:
- * layout → planned W/H → Pass A (non-secret + neighborFaces) →
- * Pass B (secret/super + secretRoomSeams) → placeSecretEntrances → enemies last.
+ * Mirror GamePanel.buildDungeonContent / Java GEN-ORDER-1 (minus keyblocks/deco reground):
+ * layout → planned W/H → Pass A → Pass B → secret content → ladder align →
+ * placeSecretEntrances → final shaft → enemies last.
  */
 export function buildDungeon(runSeed: bigint, floorOrdinal = 1): BuiltDungeon {
   const layoutSeed = floorLayoutSeed(runSeed, floorOrdinal);
@@ -68,7 +70,17 @@ export function buildDungeon(runSeed: bigint, floorOrdinal = 1): BuiltDungeon {
   }
 
   const filled = rooms as GeneratedRoom[];
+
+  // Secret loot / pedestals before ladder align (Java applySecretPostGenerationContent).
+  applySecretPostGenerationContent(layout, filled);
+
+  // LADDER-MOUTH-2 first pass (before seam strike lanes change flank groundY).
+  ladderAlignApplyAll(layout, filled);
+
   const secretSeams = placeSecretEntrances(layout, filled);
+
+  // Re-finalize shafts after seams (mouth rows may be stale).
+  applyFinalShaftPass(layout, filled, secretSeams);
 
   // Enemies after terrain final (Java applyPostGenerationEnemies).
   for (let i = 0; i < n; i++) {
@@ -102,7 +114,7 @@ function generateForNode(
   finish: SecretGenFinishOptions,
 ): GeneratedRoom {
   const conn = connectivityFromNode(node, rw);
-  return generateRoomShell(node.contentSeed, rw, rh, conn, node.kind, finish);
+  return generateRoomShell(node.contentSeed, rw, rh, conn, node.kind, finish, node.gridY);
 }
 
 export function roomKindLabel(kind: RoomKind): string {
@@ -120,8 +132,8 @@ export function roomKindLabel(kind: RoomKind): string {
     case RoomKind.SECRET:
       return "SECRET";
     case RoomKind.SUPER_SECRET:
-      return "SUPER";
+      return "SUPER_SECRET";
     default:
-      return "?";
+      return "UNKNOWN";
   }
 }

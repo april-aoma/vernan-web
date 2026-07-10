@@ -40,7 +40,9 @@ npm run sync-assets -- --from-dist "/path/to/java/vernan/dist/runtime-pack"
 ```
 
 This writes into `public/assets/{sprites,data,tiles,tileset,runtime-manifest.json}`.
-Those paths are gitignored.
+Commit those paths after sync so GitHub Actions can build Pages (see
+[`.github/workflows/deploy-pages.yml`](../.github/workflows/deploy-pages.yml)).
+Every push to `master` rebuilds and deploys https://april-aoma.github.io/vernan-web/.
 
 ## Local smoke test
 
