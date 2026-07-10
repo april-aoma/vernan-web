@@ -3,10 +3,10 @@ import { CAMERA_ZOOM, TILE_SIZE } from "../specs";
 import type { RoomKind } from "../world/DungeonTypes";
 import type { PlacedRoomObject } from "../world/PlacedRoomObject";
 import type { TileMap } from "../world/TileMap";
-import { TILE_BREAKABLE, TILE_SOLID } from "../world/TileMap";
+import { TILE_BREAKABLE, TILE_DOOR, TILE_SOLID } from "../world/TileMap";
 import { packCell } from "../world/BossDoorSealAnim";
 import type { SheetAtlas } from "./SheetAtlas";
-import type { DecoStamp } from "./placeAmbientDeco";
+import { isFloatingGroundOnlyDeco, type DecoStamp } from "./placeAmbientDeco";
 import { decoOverlayFromStamps, type ContextThemeRule } from "./ContextThemeSubstitution";
 import {
   drawQuadrantOverlay,
@@ -23,6 +23,7 @@ import {
 } from "./placeProceduralPlacedProps";
 import { resolveDisplayTileId } from "./resolveDisplayTile";
 import { resolveShellTileId } from "./ShellTileResolve";
+import { inwardSolidSampleCell } from "./hiddenShellBreakable";
 import type { TerrainTileBridge } from "./TerrainTileBridge";
 import type { TilesetProject } from "./TilesetProject";
 import type { TileWorldRenderer } from "./TileWorldRenderer";
@@ -30,6 +31,8 @@ import type { TileWorldRenderer } from "./TileWorldRenderer";
 export type ShellDrawExtras = {
   /** When true for (tx,ty), draw sealed boss door placeholder instead of door art. */
   isSealed?: (tx: number, ty: number) => boolean;
+  /** Secret-seam shell B cells — draw as inward SOLID art (Java drawHiddenShellBreakable). */
+  isHiddenShellBreakable?: (tx: number, ty: number) => boolean;
   /** Floor ordinal for sheet remap (1–2 forest, 3–4 underground, 5+ la). */
   floorOrdinal?: number;
   primarySheetId?: string;
@@ -89,10 +92,14 @@ export function drawShellTiles(
   const propOwned = placedPropOwnedCells(placedExpanded);
 
   // Deco underlay on EMPTY cells (behind terrain) — full opacity (Java ambient deco).
-  // Skip cells owned by placed props so only one visual layer occupies each cell.
+  // Authored sheet only (no floor primarySheetId remap). Skip prop-owned, DOOR,
+  // BREAKABLE, and floating ground-only stamps (Java drawV3DecoTiles).
   if (atlas && extras.decoStamps?.length) {
     for (const stamp of extras.decoStamps) {
       if (propOwned.has(packCell(stamp.tx, stamp.ty))) continue;
+      const cellTerrain = map.tileAt(stamp.tx, stamp.ty);
+      if (cellTerrain === TILE_DOOR || cellTerrain === TILE_BREAKABLE) continue;
+      if (project && isFloatingGroundOnlyDeco(project, map, stamp)) continue;
       const wx = stamp.tx * TILE_SIZE;
       const wy = stamp.ty * TILE_SIZE;
       const dx = camera.worldToDeviceX(wx);
@@ -115,7 +122,7 @@ export function drawShellTiles(
       ) {
         continue;
       }
-      atlas.drawTileId(g, stamp.tileId, dx, dy, dw, dh, sheetOverride);
+      atlas.drawTileId(g, stamp.tileId, dx, dy, dw, dh);
     }
   }
 
@@ -140,14 +147,34 @@ export function drawShellTiles(
         continue;
       }
 
+      let resolveTx = tx;
+      let resolveTy = ty;
+      let resolveTerrain = terrain;
+      if (
+        terrain === TILE_BREAKABLE &&
+        extras.isHiddenShellBreakable?.(tx, ty)
+      ) {
+        const inward = inwardSolidSampleCell(
+          map,
+          tx,
+          ty,
+          (x, y) => extras.isHiddenShellBreakable?.(x, y) ?? false,
+        );
+        if (inward) {
+          resolveTx = inward.tx;
+          resolveTy = inward.ty;
+          resolveTerrain = TILE_SOLID;
+        }
+      }
+
       let tileId: string | null = null;
       if (useCPlus) {
         tileId = resolveDisplayTileId(
           project!,
           bridge!,
           map,
-          tx,
-          ty,
+          resolveTx,
+          resolveTy,
           roomKind!,
           displaySalt,
           floorOrdinal,
@@ -155,7 +182,7 @@ export function drawShellTiles(
         );
       }
       if (!tileId) {
-        tileId = resolveShellTileId(map, tx, ty);
+        tileId = resolveShellTileId(map, resolveTx, resolveTy);
       }
       if (
         tileId &&
@@ -181,7 +208,7 @@ export function drawShellTiles(
           project &&
           bridge &&
           roomKind != null &&
-          (terrain === TILE_SOLID || terrain === TILE_BREAKABLE)
+          (resolveTerrain === TILE_SOLID || resolveTerrain === TILE_BREAKABLE)
         ) {
           drawQuadrantIfNeeded(
             g,
@@ -189,9 +216,9 @@ export function drawShellTiles(
             project,
             bridge,
             map,
-            tx,
-            ty,
-            terrain,
+            resolveTx,
+            resolveTy,
+            resolveTerrain,
             tileId,
             roomKind,
             displaySalt,
@@ -236,7 +263,8 @@ export function drawShellTiles(
       ) {
         continue;
       }
-      atlas.drawTileId(g, tid, dx, dy, dw, dh, sheetOverride);
+      // Authored sheet — Java drawPlacedRoomObjects does not remap to floor primary.
+      atlas.drawTileId(g, tid, dx, dy, dw, dh);
     }
   }
 }

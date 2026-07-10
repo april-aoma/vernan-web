@@ -5,6 +5,7 @@ import {
   terrainNameToCode,
   type AutotileObject,
   type BiomeRow,
+  type DecoClusterFallback,
   type TilesetProject,
   type WeightedDisplayChoice,
 } from "./TilesetProject";
@@ -20,7 +21,7 @@ export type BiomeResolution = {
   decoPool: Array<{ objectId: string; weight: number }>;
   decoClusterCountMin: number;
   decoClusterCountMax: number;
-  decoClusterFallback: { red: string; blue: string };
+  decoClusterFallback: DecoClusterFallback;
   /** Biome or project contextThemeRules (raw). */
   contextThemeRules: BiomeRow["contextThemeRules"];
 };
@@ -48,7 +49,7 @@ export function resolveBiome(
       decoPool: project.decoPoolsByRoomKind.get(kindName) ?? [],
       decoClusterCountMin: tun?.decoClusterCountMin ?? 3,
       decoClusterCountMax: tun?.decoClusterCountMax ?? 6,
-      decoClusterFallback: fb ?? { red: "main_10_0", blue: "main_9_0" },
+      decoClusterFallback: fb ?? defaultDecoClusterFallback(),
       contextThemeRules: project.contextThemeRulesRaw,
     };
   }
@@ -87,6 +88,10 @@ export function resolveBiome(
   };
 }
 
+function defaultDecoClusterFallback(): DecoClusterFallback {
+  return { red: "main_10_0", blue: "main_9_0" };
+}
+
 function passthrough(
   project: TilesetProject,
   sheetId: string,
@@ -106,7 +111,7 @@ function passthrough(
       : (project.decoPoolsByRoomKind.get(kindName) ?? []),
     decoClusterCountMin: row?.decoClusterCountMin ?? tun?.decoClusterCountMin ?? 3,
     decoClusterCountMax: row?.decoClusterCountMax ?? tun?.decoClusterCountMax ?? 6,
-    decoClusterFallback: row?.decoClusterFallback ?? fb ?? { red: "main_10_0", blue: "main_9_0" },
+    decoClusterFallback: row?.decoClusterFallback ?? fb ?? defaultDecoClusterFallback(),
     contextThemeRules: row?.contextThemeRules.length
       ? row.contextThemeRules
       : project.contextThemeRulesRaw,

@@ -31,6 +31,14 @@ export type AutotileObject = {
   roomKinds: string[];
   /** `all` | `red` | `blue` — ambient blob channel filter. */
   decoBlobClusterChannel: "all" | "red" | "blue";
+  /** Java LogicalObjectLayout.canSpawnOnGround — default true. */
+  canSpawnOnGround: boolean;
+  /** Java LogicalObjectLayout.canSpawnInAir — default false. */
+  canSpawnInAir: boolean;
+  /** Java LogicalObjectLayout.canHangFromCeiling — default false. */
+  canHangFromCeiling: boolean;
+  /** Java LogicalObjectLayout.canClingToWall — default false. */
+  canClingToWall: boolean;
   memberGraphLayout: {
     cells: Array<{ tileId: string; x: number; y: number; quadrantComposite?: boolean }>;
   } | null;
@@ -40,12 +48,21 @@ export type AutotileObject = {
   isHorizontalStripAutotile: boolean;
 };
 
-/** Per-tile deco placement rule (Java DecoPlacementRules.Rule subset). */
+/** Per-tile deco placement rule (Java DecoPlacementRules.Rule). */
 export type DecoPlacementRule = {
   spawnWeight: number;
   preferAboveWeight: number;
+  /** Object ids from preferAboveObjects. */
   preferredAboveObjectIds: string[];
+  /** Resolved member tile ids of those objects (Java preferredAboveTileIds). */
+  preferredAboveTileIds: string[];
+  /** Resolved tile ids from preferAdjacentToObjects. */
+  adjacentToTileIds: string[];
+  preferAdjacentOrthogonalWeight: number;
+  preferAdjacentDiagonalWeight: number;
   scatterOnEligibleGround: boolean;
+  despawnWhenUnsupported: boolean;
+  crumbleWhenUnsupported: boolean;
 };
 
 export type BiomePoolEntry = {
@@ -57,6 +74,13 @@ export type BiomePoolEntry = {
   solidsOnly?: boolean;
 };
 
+export type DecoClusterFallback = {
+  red: string;
+  blue: string;
+  itemBlob?: string;
+  shopBlob?: string;
+};
+
 export type BiomeRow = {
   id: string;
   weight: number;
@@ -64,7 +88,7 @@ export type BiomeRow = {
   terrainBridgePool: BiomePoolEntry[];
   decoClusterCountMin: number;
   decoClusterCountMax: number;
-  decoClusterFallback: { red: string; blue: string };
+  decoClusterFallback: DecoClusterFallback;
   /** Biome-local contextThemeRules (empty → use project root). */
   contextThemeRules: Array<{
     baseObjectId?: string;
@@ -143,7 +167,7 @@ export class TilesetProject {
     string,
     { decoClusterCountMin: number; decoClusterCountMax: number }
   >();
-  readonly decoClusterFallbackByRoomKind = new Map<string, { red: string; blue: string }>();
+  readonly decoClusterFallbackByRoomKind = new Map<string, DecoClusterFallback>();
   /** Tile id → breakable-deco roll probability (only tiles with canBreakAsDeco). */
   readonly decoBreakableChanceByTileId = new Map<string, number>();
   /** Tile ids with sceneRoles containing `background` — excluded from ambient blobs. */
@@ -385,6 +409,13 @@ export class TilesetProject {
       const channelRaw = str(raw.decoBlobClusterChannel).toLowerCase();
       const decoBlobClusterChannel: "all" | "red" | "blue" =
         channelRaw === "red" ? "red" : channelRaw === "blue" ? "blue" : "all";
+      const spawnAirOnly = bool(raw.spawnAirOnly, false);
+      const canSpawnOnGround = raw.canSpawnOnGround !== undefined
+        ? bool(raw.canSpawnOnGround, true)
+        : !spawnAirOnly;
+      const canSpawnInAir = raw.canSpawnInAir !== undefined
+        ? bool(raw.canSpawnInAir, false)
+        : spawnAirOnly;
       const obj: AutotileObject = {
         id,
         objectType,
@@ -393,6 +424,10 @@ export class TilesetProject {
         anchorTileId,
         roomKinds: asStringList(raw.roomKinds),
         decoBlobClusterChannel,
+        canSpawnOnGround,
+        canSpawnInAir,
+        canHangFromCeiling: bool(raw.canHangFromCeiling, false),
+        canClingToWall: bool(raw.canClingToWall, false),
         memberGraphLayout: layout,
         islands,
         usesMemberGraph,
@@ -474,11 +509,22 @@ export class TilesetProject {
       Record<string, unknown>
     >;
     for (const [kind, row] of Object.entries(fb)) {
-      this.decoClusterFallbackByRoomKind.set(kind.toUpperCase(), {
-        red: str(row.red) || "main_10_0",
-        blue: str(row.blue) || "main_9_0",
-      });
+      this.decoClusterFallbackByRoomKind.set(kind.toUpperCase(), parseDecoClusterFallback(row));
     }
+  }
+
+  /** Member tile ids referenced by a room-kind deco pool (Java decoPoolMemberTileIds). */
+  decoPoolMemberTileIds(pool: Array<{ objectId: string; weight: number }>): Set<string> {
+    const out = new Set<string>();
+    for (const entry of pool) {
+      const obj = this.objectById.get(entry.objectId);
+      if (obj?.tileIds.length) {
+        for (const tid of obj.tileIds) out.add(tid);
+      } else if (this.cell(entry.objectId)) {
+        out.add(entry.objectId);
+      }
+    }
+    return out;
   }
 
   private loadDecoPlacementRules(raw: Record<string, unknown> | undefined): void {
@@ -487,11 +533,39 @@ export class TilesetProject {
       if (!tileId || !entry || typeof entry !== "object") continue;
       const row = entry as Record<string, unknown>;
       const preferAbove = asStringList(row.preferAboveObjects);
+      const preferredAboveTileIds: string[] = [];
+      for (const oid of preferAbove) {
+        const obj = this.objectById.get(oid);
+        if (obj?.tileIds.length) preferredAboveTileIds.push(...obj.tileIds);
+        else if (this.tileCells.has(oid)) preferredAboveTileIds.push(oid);
+      }
+      const adjacentObjectIds = asStringList(row.preferAdjacentToObjects);
+      const adjacentToTileIds: string[] = [];
+      for (const oid of adjacentObjectIds) {
+        const obj = this.objectById.get(oid);
+        if (obj?.tileIds.length) adjacentToTileIds.push(...obj.tileIds);
+        else if (this.tileCells.has(oid)) adjacentToTileIds.push(oid);
+      }
+      let wOrth = Math.max(0, num(row.preferAdjacentOrthogonalWeight, 1));
+      let wDiag = Math.max(0, num(row.preferAdjacentDiagonalWeight, 0));
+      if (wOrth <= 0 && wDiag <= 0) wOrth = 1;
+      const scatterOnEligibleGround = row.scatterOnEligibleGround === true;
+      const crumbleWhenUnsupported = row.crumbleWhenUnsupported === true;
+      const despawnWhenUnsupported =
+        typeof row.despawnWhenUnsupported === "boolean"
+          ? row.despawnWhenUnsupported
+          : scatterOnEligibleGround && !crumbleWhenUnsupported;
       this.decoPlacementRules.set(tileId, {
         spawnWeight: Math.max(0, num(row.spawnWeight, 1)),
         preferAboveWeight: Math.max(0, Math.min(1, num(row.preferAboveWeight, 1))),
         preferredAboveObjectIds: preferAbove,
-        scatterOnEligibleGround: row.scatterOnEligibleGround === true,
+        preferredAboveTileIds: [...new Set(preferredAboveTileIds)],
+        adjacentToTileIds: [...new Set(adjacentToTileIds)],
+        preferAdjacentOrthogonalWeight: wOrth,
+        preferAdjacentDiagonalWeight: wDiag,
+        scatterOnEligibleGround,
+        despawnWhenUnsupported,
+        crumbleWhenUnsupported,
       });
     }
   }
@@ -688,10 +762,7 @@ function parseBiomeRows(raw: unknown): BiomeRow[] {
         terrainBridgePool: parsePoolEntries(row.terrainBridgePool),
         decoClusterCountMin: num(tun.decoClusterCountMin, 3),
         decoClusterCountMax: num(tun.decoClusterCountMax, 6),
-        decoClusterFallback: {
-          red: str(fb.red) || "main_10_0",
-          blue: str(fb.blue) || "main_9_0",
-        },
+        decoClusterFallback: parseDecoClusterFallback(fb),
         contextThemeRules: parseContextThemeRulesRaw(row.contextThemeRules),
       } satisfies BiomeRow;
     })
@@ -735,8 +806,28 @@ function parseContextThemeRulesRaw(
   return out;
 }
 
+function parseDecoClusterFallback(row: Record<string, unknown>): DecoClusterFallback {
+  return {
+    red: str(row.red) || "main_10_0",
+    blue: str(row.blue) || "main_9_0",
+    itemBlob: str(row.itemBlob) || str(row.itemRoomBlob) || undefined,
+    shopBlob: str(row.shopBlob) || str(row.shopRoomBlob) || undefined,
+  };
+}
+
 function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
+}
+
+function bool(v: unknown, fallback: boolean): boolean {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (s === "true" || s === "1") return true;
+    if (s === "false" || s === "0") return false;
+  }
+  if (typeof v === "number" && Number.isFinite(v)) return v !== 0;
+  return fallback;
 }
 
 function num(v: unknown, fallback: number): number {

@@ -11,6 +11,17 @@ import {
   type PlayableScrollX,
 } from "../camera/playableScroll";
 import { WorldCamera } from "../camera/WorldCamera";
+import { JavaRandom } from "../util/JavaRandom";
+import {
+  crumbleSeed,
+  impactsForGroundRemoval,
+  removeInstances,
+} from "../tileset/DecoSupportLoss";
+import {
+  isFloatingGroundOnlyDeco,
+  refreshGroundHuggingFlags,
+} from "../tileset/placeAmbientDeco";
+import type { TilesetProject } from "../tileset/TilesetProject";
 import { terrainBrickRng, terrainLootKind, decoBrickRng, decoLootKind } from "./BreakableLootRoll";
 import type { DungeonLayout } from "./DungeonLayout";
 import type { GeneratedRoom } from "./RoomGenerator";
@@ -34,6 +45,8 @@ export type BreakableStrikeContext = {
   camera: WorldCamera;
   brickChunks: BrickChunk[];
   worldPickups: WorldPickup[];
+  /** Optional tileset for deco support-loss (despawn/crumble). */
+  project?: TilesetProject | null;
   /** Optional 16×16 tile snapshot for sprite-subimage chunks. */
   snapshotTile?: (tx: number, ty: number) => HTMLCanvasElement | null;
   /** Snapshot a deco overlay tile id for brick VFX. */
@@ -98,6 +111,58 @@ function destroyBreakableTile(tx: number, ty: number, ctx: BreakableStrikeContex
       if (!seam.isDone()) seam.onTileOpened(ctx.rooms, ctx.roomId, tx, ty, ctx.layout);
     }
   }
+  handleDecoSupportLossAt(tx, ty, ctx);
+}
+
+/** Java GamePanel.handleDecoSupportLossAt — despawn/crumble ground-hugging deco above. */
+function handleDecoSupportLossAt(
+  removedTx: number,
+  removedTy: number,
+  ctx: BreakableStrikeContext,
+): void {
+  const project = ctx.project;
+  const room = ctx.rooms[ctx.roomId];
+  const art = room?.art;
+  if (!project || !art?.decoStamps?.length) return;
+
+  const impacts = impactsForGroundRemoval(
+    art.decoStamps,
+    removedTx,
+    removedTy,
+    project,
+  );
+  if (impacts.length) {
+    const removeKeys = new Set<string>();
+    for (const impact of impacts) {
+      if (impact.reaction === "crumble") {
+        for (const d of impact.members) {
+          const bx = d.tx * TILE_SIZE;
+          const by = d.ty * TILE_SIZE;
+          const snap = ctx.snapshotDecoTile?.(d.tileId) ?? null;
+          const rng = new JavaRandom(crumbleSeed(ctx.runSeed, ctx.roomId, d));
+          const rnd = () => rng.nextDouble();
+          // Soft debris (Java applySoftDecoCrumbleChunks velocityScale 0.45).
+          spawnBreakableBrickChunks(bx, by, rnd, ctx.brickChunks, 0.45, "#8a5a3a", snap);
+        }
+      }
+      if (impact.reaction !== "none") removeKeys.add(impact.instanceKey);
+    }
+    if (removeKeys.size) {
+      art.decoStamps = removeInstances(art.decoStamps, removeKeys, project);
+    }
+  }
+  refreshGroundHuggingDeco(ctx);
+}
+
+/** Java GamePanel.refreshGroundHuggingDeco. */
+function refreshGroundHuggingDeco(ctx: BreakableStrikeContext): void {
+  const project = ctx.project;
+  const room = ctx.rooms[ctx.roomId];
+  const art = room?.art;
+  if (!project || !art?.decoStamps?.length) return;
+  let stamps = refreshGroundHuggingFlags(art.decoStamps, ctx.map);
+  stamps = stamps.filter((d) => !isFloatingGroundOnlyDeco(project, ctx.map, d));
+  art.decoStamps = stamps;
 }
 
 /**

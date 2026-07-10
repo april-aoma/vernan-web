@@ -1,5 +1,14 @@
+import {
+  applyAmbientDecoPlacementRules,
+  dropIncompletePackagedFootprints,
+  placeAmbientDecoClusters,
+  placeRoomKindDecoOverlays,
+  refreshGroundHuggingFlags,
+  regroundDecoStampsToFinalTerrain,
+  regroundPackagedDeco,
+  scatterEligibleGroundDeco,
+} from "./placeAmbientDeco";
 import { resolveBiome } from "./NormalRoomBiomes";
-import { placeAmbientDeco, regroundDecoStampsToFinalTerrain } from "./placeAmbientDeco";
 import {
   applyContextThemeFlankBake,
   parseContextThemeRules,
@@ -11,11 +20,13 @@ import {
 import type { TilesetProject } from "./TilesetProject";
 import type { BuiltDungeon } from "../world/buildDungeon";
 import type { GeneratedRoom, RoomArtData } from "../world/RoomGenerator";
-import type { PlacedRoomObject } from "../world/PlacedRoomObject";
 
 /**
  * Attach biome + deco + placed props once tileset is loaded (and after floor ascend).
- * Stamps after final terrain (seams/keyblocks already applied in buildDungeon).
+ * Order mirrors Java: ambient clusters → placed props → DecoPlacementRules.apply
+ * (spawn surface / spawnWeight / preferAdjacent / preferAbove) → ground scatter →
+ * drop incomplete packaged footprints → refresh ground-hugging → flank bake →
+ * evict deco under props.
  * Idempotent: skips re-stamp when art.decoStamps already present (regrounds only);
  * still re-places props when pools are empty / missing so art stays consistent.
  */
@@ -46,7 +57,11 @@ export function enrichRoomArt(
       room.art.decoStamps,
       room.map,
       room.ladderColumnTx,
+      project,
     );
+    stamps = refreshGroundHuggingFlags(stamps, room.map);
+    stamps = regroundPackagedDeco(stamps, project, room.map, room.ladderColumnTx);
+    stamps = dropIncompletePackagedFootprints(stamps, project);
     stamps = applyContextThemeFlankBake(
       stamps,
       room.map,
@@ -59,7 +74,17 @@ export function enrichRoomArt(
     // Place once (empty array = already attempted with empty pools).
     let placed = room.art.placedRoomObjects;
     if (placed == null) {
-      placed = placeAndEvict(room, project, contentSeed, floorOrdinal, stamps);
+      placed = placeProceduralPlacedProps(
+        project,
+        room.map,
+        room.kind,
+        contentSeed,
+        room.ladderColumnTx,
+        floorOrdinal,
+      );
+      if (placed.length) {
+        evictDecoOverlappingPlacedProps(stamps, placed);
+      }
     }
     room.art.decoStamps = stamps;
     room.art.placedRoomObjects = placed;
@@ -70,13 +95,70 @@ export function enrichRoomArt(
     return room.art;
   }
 
-  let decoStamps = placeAmbientDeco(
+  // Java order: clusters → props → apply (spawn/adjacent/prefer-above) → scatter → cleanup.
+  let decoStamps = placeAmbientDecoClusters(
     project,
     room.map,
     contentSeed,
     biome,
     room.ladderColumnTx,
     floorOrdinal,
+    room.kind,
+  );
+  const placedRoomObjects = placeProceduralPlacedProps(
+    project,
+    room.map,
+    room.kind,
+    contentSeed,
+    room.ladderColumnTx,
+    floorOrdinal,
+  );
+  decoStamps = applyAmbientDecoPlacementRules(
+    decoStamps,
+    project,
+    room.map,
+    contentSeed,
+    {
+      placed: placedRoomObjects,
+      bridge: biome.bridge,
+      roomKind: room.kind,
+      floorOrdinal,
+    },
+  );
+  decoStamps = placeRoomKindDecoOverlays(
+    decoStamps,
+    project,
+    room.map,
+    room.kind,
+    contentSeed,
+    room.ladderColumnTx,
+    biome,
+    floorOrdinal,
+  );
+  decoStamps = scatterEligibleGroundDeco(
+    project,
+    room.map,
+    contentSeed,
+    decoStamps,
+    room.ladderColumnTx,
+    floorOrdinal,
+    {
+      placed: placedRoomObjects,
+      bridge: biome.bridge,
+      roomKind: room.kind,
+      floorOrdinal,
+      decoPool: biome.decoPool,
+      exclusiveNormalPools: biome.exclusive,
+    },
+  );
+  decoStamps = dropIncompletePackagedFootprints(decoStamps, project);
+  decoStamps = regroundPackagedDeco(decoStamps, project, room.map, room.ladderColumnTx);
+  decoStamps = refreshGroundHuggingFlags(decoStamps, room.map);
+  decoStamps = regroundDecoStampsToFinalTerrain(
+    decoStamps,
+    room.map,
+    room.ladderColumnTx,
+    project,
   );
   decoStamps = applyContextThemeFlankBake(
     decoStamps,
@@ -87,13 +169,10 @@ export function enrichRoomArt(
     themeRules,
     tileAllowed,
   );
-  const placedRoomObjects = placeAndEvict(
-    room,
-    project,
-    contentSeed,
-    floorOrdinal,
-    decoStamps,
-  );
+  if (placedRoomObjects.length) {
+    evictDecoOverlappingPlacedProps(decoStamps, placedRoomObjects);
+  }
+
   const art: RoomArtData = {
     biomeId: biome.biomeId,
     sheetId: biome.sheetId,
@@ -104,25 +183,4 @@ export function enrichRoomArt(
   };
   room.art = art;
   return art;
-}
-
-function placeAndEvict(
-  room: GeneratedRoom,
-  project: TilesetProject,
-  contentSeed: bigint,
-  floorOrdinal: number,
-  decoStamps: Array<{ tx: number; ty: number }>,
-): PlacedRoomObject[] {
-  const placed = placeProceduralPlacedProps(
-    project,
-    room.map,
-    room.kind,
-    contentSeed,
-    room.ladderColumnTx,
-    floorOrdinal,
-  );
-  if (placed.length) {
-    evictDecoOverlappingPlacedProps(decoStamps, placed);
-  }
-  return placed;
 }

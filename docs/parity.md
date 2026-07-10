@@ -39,7 +39,7 @@ Do **not** start by translating `GamePanel` wholesale. Port in this order:
 2. `TileMap` / collision / camera *(Phase 1 — done)*
 3. Minimal player move / jump / climb *(Phase 1 — done)*
 4. Dungeon layout + room gen (RNG parity) *(Phase 2 — done)*
-5. Combat + enemies *(Phase 3 — done: sword + crawlers)*
+5. Combat + enemies *(Phase 3 — done: sword + crawlers + Mouse + Penisman + Golden Roach)*
 6. Items / costumes / layered body *(Phase 4a — items + pedestals; costumes stubbed)*
 7. Bosses + FX *(Phase 5a — Possessed shell + kill FX + BOSS_CLEAR; full bosses stubbed)*
 8. Art + input feel *(Phase 6a — Vernan/enemy sprites + attack buffer)*
@@ -57,13 +57,13 @@ Roadmap items still open (pick before implementing):
 
 | Option | Scope | Why |
 |--------|--------|-----|
-| **A. Mouse** | NORMAL-room second enemy | Fills Phase 3 stub; combat variety on floors |
+| ~~**A. Mouse**~~ | ~~NORMAL-room second enemy~~ **done** | Fills Phase 3 stub; combat variety on floors |
 | **B. Shop buy** | ~~SHOP room + spend currency~~ **done (Shop A)** | Completes Phase 4a run economy loop |
 | **D. Possessed rig** | Multi-part body + remaining attacks | Deepens boss you already fight |
 | **E. Ladder getup** | ~~Mouth double-tap + getup pose~~ **done (Track A)** | — |
 | **F. Costumes / layered body** | Idle/walk/jump composites + item overlays | Phase 4a/6a art system |
 
-Default recommendation if you don’t have a preference: **A (Mouse)** or **B (shop)**.
+Default recommendation if you don’t have a preference: **D (Possessed rig)** or **F (costumes)**.
 
 ### Phase room-transition notes
 
@@ -100,7 +100,13 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - **Floor filter** on bridge picks (`tileAllowedOnFloor`) so floors 1–2 don’t draw sheet_2/sheet_3 tiles
 - SOLID/BREAKABLE: pick is package tag → `connectAs` MemberGraph remaps draw (contiguous block/cave/flesh)
 - **DOOR**: full-object top/bottom pairs in layout order; `displayTileIdForDoorIfPaired` (not a single weighted pick)
-- Ambient deco: ellipse clusters with **red/blue channel pools** (`decoBlobClusterChannel`); exclude background-scene + ground-scatter tiles; **full-object** footprints; tile+variations expand; **scatterOnEligibleGround** post-pass (grass etc.); drawn at **full opacity**
+- Ambient deco: ellipse clusters with **red/blue channel pools** (`decoBlobClusterChannel`); exclude background-scene + ground-scatter tiles; **full-object** footprints; tile+variations expand; **scatterOnEligibleGround** after placed props (prefer-above / `1 - preferAboveWeight` thin); drawn at **full opacity**
+- **Deco draw**: authored sheet only (no floor `primarySheetId` remap); skip DOOR/BREAKABLE + floating ground-only (`isFloatingGroundOnlyDeco`); placed props also use authored sheets
+- **Deco placement apply**: `applyAmbientDecoPlacementRules` — spawn surface (ground/air/ceiling/wall via `canSpawn*` / `canHangFromCeiling` / `canClingToWall`), drop scatter-rule tiles from ambient, `spawnWeight`, `preferAdjacent*` (orth/diag), `preferAbove` rolls; then scatter → `dropIncompletePackagedFootprints` → `regroundPackagedDeco` → `refreshGroundHuggingFlags`
+- **Full-object grounding**: ambient clusters snap grounded footprints to play floor (`resolveGroundedAnchorTyFromMap`); secret statue gets pedestal companion; ITEM/SHOP rear-wall backdrop + overlay blobs (`placeRoomKindDecoOverlays`)
+- **Background-scene deco pool**: `background tiles blue` / red members allowed when referenced by deco pool (`decoPoolMemberTileIds`); fallback `main_9_0` / `main_10_0` always eligible
+- **Room-kind deco filter**: `proceduralDecoTileEligibleForRoomKind` on clusters, overlays, and scatter — tile `roomScope` + object `roomKinds` + pool membership (blocks NORMAL grass in SECRET; SECRET-only `background tiles secret` in SUPER_SECRET)
+- **Deco support loss**: `despawnWhenUnsupported` / `crumbleWhenUnsupported` when standable floor under ground-hugging deco is destroyed (`DecoSupportLoss`)
 - **Palette clamp**: `GameColorPalette` snaps full backbuffer to `game-palette.png` (nearest chromatic swatch + black/white clamps); preserves exact in-game sprite colors via `data/palette-exact-source-keys.json` (Java `rebuildExactSourceColors`)
 - Room void is **black**; BOSS / SECRET / SUPER_SECRET use Earthbound-style **math backgrounds** (`sprites/background/*.preset.json`, seeded pick)
 - Step-face **breakables** (up to 6) in NORMAL/BOSS via cliff-mesa faces + reachability
@@ -139,21 +145,30 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - Sword windup/active/recover **10 / 4 / 20** frames; AABB from `SWORD_ATTACK_ACTIVE` polygon
 - **Crouch attack** (latched at begin): ground crouch or air-Down (not crouch-jump); windup **−2**, recover early **−4** / late **−2**; damage **×0.8**; `SWORD_CROUCH_ATTACK_ACTIVE` hitbox; knock at 80° ×0.85 mag; art `vernan/sword crouch attack.png`
 - Contact damage **1**, i-frames **1.125 s**, knock `±74 / -98`, HP **6**
-- Crawler-only spawns in NORMAL (budget from `contentSeed ^ 0x5DEECE66D`)
-- Stubbed: Mouse, bosses, subweapons, heavy attacks, sprite art
+- NORMAL/SECRET spawns via `EnemySpawnBudget` + `EnemyChallengeRegistry` (Crawler + Mouse + Penisman + Golden Roach; equal weight normal, Mouse-favored secret); budget from `contentSeed ^ 0x5DEECE66D`
+- **Mouse** (`Mouse.ts`): dormant half-speed ledge patrol → vision wake → full/damaged speed (64/80), falls off ledges when chasing; contact only when activated; HP **2**; art faces left (`mouse.png` / `mouse hurt.png`, 4 frames)
+- **Penisman** (`Penisman.ts`): floor patrol shooter; turns at walls/ledges; shoots arcing bullets when Vernan is ahead within ±192px and on-screen; HP **4**; walk speed **28**; art faces left (`penisman.png`, 4 frames; `penis bullet.png` + die strip)
+- **Golden Roach** (`GoldenRoach.ts`): ambient deco cluster walker / flier; 8-dir skitter on blobs, idle/chase takeoff with swoop pass; contact only while flying; **0.1×** frisbee damage; LOS vision at **0.75×** see radius; HP **1**; spawns on ambient clusters (`golden roach2.png` / `golden roach2 fly.png`, 2 frames each); `AmbientClusterMap` for locomotion + spawn
+- **Peer platforms + separation** (`EnemyPeerPlatforms`, `EnemyPeerSeparation`, `EnemyPeerTick`): enemies stand on each other's hull tops (moving decks), crawlers `ride_deck` on carriers, horizontal bump pushes + patrol flip, vertical stack snap; Possessed + Golden Roach excluded
+- Stubbed: Jack Blue / etc., bosses beyond Possessed, other subweapons, heavy attacks
 
 ### Phase 4a notes
 
 - `ItemCatalog` loads `data/items.json`; ITEM rooms get a pedestal; **touch** to collect
-- Seeded `PedestalItemDecks` (ITEM_ROOM / BOSS_CLEAR / SHOP); inventory stacks; `PlayerStats.applyItemPassives`
+- Seeded `PedestalItemDecks` (ITEM_ROOM / BOSS_CLEAR / SHOP / **SECRET**); inventory stacks; `PlayerStats.applyItemPassives`
+- **SECRET pedestals**: 1/4 secret rooms get a pedestal; draws from `spawnSecret` pool via `drawSecret`
 - **Bottom HUD** (Java `BottomHudLayout` / `drawBottomHud`): black 64px band; hearts 16px + half frames; coin/key + `formatMoneyHud`; combat stats (dmg×2 / squat / windup); passive strip newest-first; weapon+sub frames; minimap; money/key drain/gain anim
 - **Minimap reveal items**: MAP → unvisited ITEM/SHOP/BOSS in color; COMPASS → dark non-secret silhouette; EYE_OF_HORUS → secret/super-secret cells
 - Item sheets: left **16×16** on pedestals / pickup card; right **16×16** in HUD (`ItemSpriteArt`)
 - **Item pickup overlay**: full-frame dim + pickup art + name/flavor/effect; Vernan **item pose** (`vernan item.png`) with held item above head; auto-dismiss **2.75s**; freezes sim while active
 - **Soul / black hearts**: container `Health` (RED/SOUL/BLACK); grants from `soulHeartsOnPickup` / `blackHeartsOnPickup`; HUD uses `soul heart.png` / `black heart.png` (2 frames)
-- **Subweapon HUD**: equip on pickup (`PlayerItemInventory.equippedSubweapon`); pickup icon in sub slot; cooldown tint/band via `SubweaponCooldowns` (tick ready; fire stubbed)
+- **Subweapon HUD**: equip on pickup (`PlayerItemInventory.equippedSubweapon`); pickup icon in sub slot; cooldown tint/band via `SubweaponCooldowns`
+- **Frisbee subweapon**: C to throw (`FrisbeeAimSnapshot` wind-up aim + `FrisbeeProjectile` pierce/bounce/settle); special-attack strips; 6s cooldown; 1.5 dmg
+- **Psychic Spoon subweapon**: C lifts visible brick debris (`float` telekinesis + psychic fire overlay); second C promotes to homing queue (nearest on-screen enemy, 15f inter-chunk delay); 0.5 dmg / `psychic_debris` knockback; 0.5s cooldown
+- **Brick chunks**: tile-break + possessed death debris (`BrickChunk` pivot sprites, rotated hull collision); `roomPersistedBrickChunks` per room; 8s possessed lifetime / blink at 7s
 - **Pause**: Enter/Esc or HUD left-shoulder **II** toggles `paused`; freezes sim; dim overlay + “PAUSE” + item grid menu (`PauseOverlay`); button highlights while paused
-- Stubbed: costumes/layered body, secret pedestals, full `ItemEffects`, subweapon *gameplay*, full touch-control chrome, K_CANDY uses badge
+- **ItemEffects** (Phase 4a+): registry + dispatch — `BOX`, `MYSTERY_GIFT`, `PLUG`, `IRON_LUNG`, `SKIRT`, `LEOTARD`, `SHY_MASK` (gravity + charge/superjump), `KALEIDOSCOPE_EYE` (temp/perm stats + scratch palette + pedestal color-swap + 2× incoming), `AUTISM` (HP bars + damage floaters), `FUZZY_HAT` (body-contact electrocution), `SHIELD_BREAKER` (penetration when enemy shields exist)
+- Stubbed: costumes/layered body, full spatial-distort palette op, enemy shield hulls (Jack Blue / Nephilim), other subweapons (Warp Orb / K_Candy), full touch-control chrome, K_CANDY uses badge
 
 ### Phase shop notes (Shop A)
 
@@ -169,8 +184,9 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - BOSS rooms spawn **Possessed** (32 HP) at mid-room ~40% height; float A→C→B phases; AABB combat
 - `roomCombatCleared` prevents respawn; death waits **4 s** (`DEATH_REWARD_DELAY_SEC`) before clear
 - On clear: kill explosion + **BOSS_CLEAR** pedestal (`PedestalItemDecks.drawBossClear`)
-- HUD: boss HP bar; hit flash on Possessed
-- Stubbed (5b): Nephilim, Modern Chicken; Lil familiar
+- HUD: boss HP bar (Java parity: 52% width, red fill + top highlight, label above; hidden while dying)
+- Stubbed (5b): Modern Chicken; Lil familiar
+- **Nephilim MVP** (Phase 5b): grounded marionette boss via `nephilim.rig.json` — dormant→awaken→notice→active intro, standoff stalk AI, part springs, marionette death debris; stubbed: grab/lift/player hooks, chain strings, arm guard, drink overlay, chain IK, head-landing room-clear gate (uses 4s `DEATH_REWARD_DELAY_SEC` like Possessed)
 
 ### Phase 6a notes
 
@@ -189,7 +205,8 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - On clear: unseal + BOSS_CLEAR pedestal + full-height **ascend ladder** (opposite pedestal)
 - Climb ascend shaft to ceiling → fade → blackout climb/`leveltransition` strip → rebuild dungeon at `floorOrdinal + 1` (same run seed; decks keep acquired)
 - HUD shows `floor N`
-- Stubbed: seal tile art, Nephilim/Chicken
+- Stubbed: seal tile art, Modern Chicken
+  - **Nephilim** boss spawn (seeded `pickBossForFloor`); grounded arena (no floating platforms — those remain Possessed-only)
   - Special Possessed drops (Lil / Head) live — see Phase 5b-possessed
   - (Normal door/ladder room fades are in Phase room-transition)
 
@@ -199,15 +216,17 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - Vision radius = `min(viewW, viewH)`; Phase B orbit standoff + aggression scaling
 - **Live combat (Java parity):** aimed / volley / fan (±45°) / 8-way nova / dash-through; kite at ≤1/3 HP; dodge+counter when threat closing; contact damage only during juke/dash windows
 - Pattern unlock at ≤50% HP (`PATTERN_HP_FRAC`); dash chance in mid range at any HP
-- Multi-part draw from `possessed.rig.json` (head/body/hands) via `partRenders()` + EarthBound **scanline warp** (`warpPossessedPartFrame`); charge / nova ring telegraphs
+- Multi-part draw from `possessed.rig.json` (head/body/hands) via `partRenders()` + EarthBound **scanline warp** (`warpPossessedPartFrame`); **charge orb** (bullet sprite toward aim) + **nova ring** (8 inward streaks + 2 contracting rings, palette `0x5B315B→white`, absorb flash on body) — no placeholder yellow circles
 - **Boss arena platforms** live in RoomGenerator (`possessedBossArena` floating `-` platforms)
 - **Shiny variant** (`EnemyVariantRegistry`): 33% via `contentSeed ^ 0x51E0E5055`, HP 24, shiny strip; AI deltas (×1.2 move, kite ≤50%, dodge+counter from full HP, no dash / range-keyed attacks, upward dodge, down counter aim, start Phase A)
 - **Special boss drops** (`possessedBossReward`): Lil / Head until both owned (50/50 seed `^ 0x10557055ED`), else BOSS_CLEAR; `commitAssigned` on place
 - **Bullet die FX**: despawn queue + 2-frame die strip draw
 - **Full PartSim** (Java parity): world-space springs (`SETTLED_K=220` / `LOOSE_K=40`), knock-loose + `moveLooseWithBounce` (`WALL_REST=0.7` / `FLOOR_REST=0.6`), `ANCHOR_TRAIL_FRAC=1.0`; hurt/collision hulls from rig
+- **Hurt knock + hitstun** (Java parity): `freezeFrames` full freeze (no move/parts/bullets) with shake (±4 from amp 8) + solid red; limb knock impulses latch on hit and integrate after freeze; `hurtTint` 0.35s fade; `HURT_POSE` 0.2s; contact damage off for `KNOCKBACK_CONTACT_DISABLE` 0.5s; shooting frozen for whole reeling window
+- **Boss HP bar** (Java `drawBossHealthBarDevice`): top-centered `0.52×` internal width × 8px; dark inset + red fill (`196,40,52`) + 2px highlight (`232,96,104`) + beige border; `"POSSESSED"` label above; hidden while dead/dying (no wind-up yellow/purple)
 - **Possessed Head** melee: horizontal bullet on attackPhase 2 rising edge (`PossessedHead.ts`)
-- **Death debris**: BrickChunks from part sim centers on death start (boss `partRenders` empty while dying)
-- Stubbed: **LilPossessed familiar** (Head works; familiar deferred — see `LilPossessed.ts`); full pivot-hull death debris (colored BrickChunks stand in)
+- **Death debris**: pivot-anchored `BrickChunk` limbs with part sprites + collision hulls (`processPossessedDeathChunks`); 8s lifetime / blink-out at 7s; parting kill-explosion pops every 0.11s for 0.55s (no generic cull explosion)
+- Stubbed: **LilPossessed familiar** (Head works; familiar deferred — see `LilPossessed.ts`)
 
 ### Phase 1b notes (movement parity)
 
@@ -247,7 +266,10 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 
 - **Keyblocks**: `KeyblockEntrancePlacer` (floor ≥2 ITEM/SHOP parent seals), strip secrets, seam reconcile; runtime tick/spend/restore + freeze; ladder path gates; `KeyblockBypass` on ITEM/SHOP enter
 - **Dual-seam**: `SecretDualSeamNav` + `bridgeDualSeamHeights` in `finishSecretRoomMap` (SEC-DUAL-1)
-- **Deco**: enrich stamps once on final terrain; thin `regroundDecoStampsToFinalTerrain` for ground-hugging support loss; idempotent skip re-stamp
+- **Deco**: enrich stamps once on final terrain; `applyAmbientDecoPlacementRules` (spawnWeight / preferAdjacent / preferAbove / spawn surface); `regroundDecoStampsToFinalTerrain` + `refreshGroundHuggingFlags` + `dropIncompletePackagedFootprints`; idempotent skip re-stamp
+- **Hidden-shell seams**: draw + breakable debris snapshot resolve inward SOLID neighbor art (`hiddenShellBreakable` / Java `drawHiddenShellBreakable`) so shell B stays discreet
+- **Ground scatter**: `preferAboveWeight` thins with keepProb `1 - weight` (Java `passesPreferAboveRoll`); enrich order clusters → props → apply → scatter; prefer-above matches deco below, placed props, **and terrain-bridge display tiles** (logs/stumps live in `terrainBridgePool` — Java `placedPropsByRoomKind` is empty in SoT)
+- **Deco rules import**: full `DecoPlacementRule` parse (`preferAbove` tile resolve, `preferAdjacent*`, despawn/crumble flags) from `decoTilePlacementRules`; spawn flags from objects (`canSpawnOnGround` / `canSpawnInAir` / `canHangFromCeiling` / `canClingToWall`); runtime `DecoSupportLoss` on breakable destroy
 - **Safety / connectivity**: `LadderSafetyPlatforms` + `TerrainSolidConnectivity` in generate + `applyPostDungeonPasses` / final shaft `enforceOnMap`
 - Still stubbed: keyblock sprite strips, placed props, `start.json`
 
@@ -273,9 +295,10 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 ### Phase placed-props notes
 
 - **Types**: `PlacedRoomObject` + `RoomArtData.placedRoomObjects`; pool parse widens optional `z` / `solidsOnly`
-- **Place**: `placeProceduralPlacedProps` after ambient deco + context flank bake in `enrichRoomArt` (not `buildDungeon`); skip START; weighted slots; ladder±1 / door columns avoided; ground-top + SOLID/PLATFORM stamp; `evictDecoOverlappingPlacedProps`
-- **Draw**: expand object refs → members, ground-support filter, zOrder sort; blit after terrain in `drawShellTiles`; deco skip on prop-owned cells
-- Shipped `tileset.json` pools are empty — scaffolding ready when pools are filled
+- **Place**: `placeProceduralPlacedProps` after ambient clusters, **before** ground scatter in `enrichRoomArt` (Java order; prefer-above needs props); skip START; weighted slots; ladder±1 / door columns avoided; ground-top + SOLID/PLATFORM stamp; `evictDecoOverlappingPlacedProps` after scatter + flank bake
+- **Draw**: expand object refs → members, ground-support filter, zOrder sort; blit after terrain in `drawShellTiles` with **authored sheet** (no floor remap); deco skip on prop-owned cells, DOOR/BREAKABLE, and floating ground-only
+- Shipped `tileset.json` `placedPropsByRoomKind` pools are **empty** (matches Java SoT) — logs/stumps are terrain-bridge art; scaffolding ready when pools are filled
+  (grass prefer-above uses bridge display tiles + props when present)
 - Still stubbed: `start.json` merge, biome-row placedProps merge, HVST strip widening, keyblock sprites
 
 ## Adapters
@@ -286,7 +309,7 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 | `java.util.Random` | `JavaRandom` |
 | Swing / dual EDT+sim thread | Single `requestAnimationFrame` loop |
 | `Graphics2D` / `getRGB` FX | Canvas `ImageData` first; shaders later |
-| `HitboxValues.java` | Hand-port or generate; still authored via desktop HitboxEditor |
+| `HitboxValues.java` | Ported to `src/config/HitboxValues.ts`; still authored via desktop HitboxEditor |
 
 ## PoC note
 
