@@ -48,7 +48,14 @@ export type DecoPlacementRule = {
   scatterOnEligibleGround: boolean;
 };
 
-export type BiomePoolEntry = { objectId: string; weight: number };
+export type BiomePoolEntry = {
+  objectId: string;
+  weight: number;
+  /** Draw / sort z (placedPropsByRoomKind). */
+  z?: number;
+  /** Legacy: require at least one SOLID mapTerrain member. */
+  solidsOnly?: boolean;
+};
 
 export type BiomeRow = {
   id: string;
@@ -311,6 +318,8 @@ export class TilesetProject {
         variations: tile.variations,
         sprite: tile.sprite,
         autotile: (tile as { autotile?: unknown }).autotile,
+        hitbox: (tile as { hitbox?: unknown }).hitbox,
+        mapTerrain: tile.mapTerrain,
       });
       const w = typeof tile.terrainBridgeWeight === "number" ? tile.terrainBridgeWeight : 1;
       this.tileBridgeWeight.set(tile.id, Math.max(1, Math.floor(w)));
@@ -654,7 +663,11 @@ function parsePoolEntries(raw: unknown): BiomePoolEntry[] {
     if (row.weight != null) weight = num(row.weight, 0);
     else if (row.count != null) weight = num(row.count, 0);
     weight = Math.max(0, weight);
-    if (objectId && weight > 0) out.push({ objectId, weight });
+    if (!objectId || weight <= 0) continue;
+    const entry: BiomePoolEntry = { objectId, weight };
+    if (row.z != null) entry.z = Math.floor(num(row.z, 0));
+    if (row.solidsOnly === true) entry.solidsOnly = true;
+    out.push(entry);
   }
   return out;
 }

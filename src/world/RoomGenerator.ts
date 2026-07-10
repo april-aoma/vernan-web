@@ -38,6 +38,7 @@ import { TILE_SOLID, TileMap } from "./TileMap";
 import type { TerrainTileBridge } from "../tileset/TerrainTileBridge";
 import type { ContextThemeRule } from "../tileset/ContextThemeSubstitution";
 import { resolvedLadderRunwayRowAt } from "./VerticalSeamGeometry";
+import type { PlacedRoomObject } from "./PlacedRoomObject";
 import { WorldPickup } from "./WorldPickup";
 
 export const PLAYER_STAND_SPAWN_H = 18;
@@ -69,6 +70,8 @@ export type RoomArtData = {
     breakableDeco?: boolean;
     groundHugging?: boolean;
   }>;
+  /** Pixel-placed props from placedPropsByRoomKind (Java placedRoomObjects). */
+  placedRoomObjects: PlacedRoomObject[];
   /** Cached biome terrain bridge for draw (Phase C+). */
   bridge: TerrainTileBridge;
   /** Parsed context theme rules for this room's biome. */
