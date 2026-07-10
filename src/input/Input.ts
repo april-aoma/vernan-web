@@ -26,6 +26,8 @@ export class Input {
 
   constructor() {
     this.onKeyDown = (e) => {
+      // Let submit/name fields (and other text controls) receive WASD/C/etc.
+      if (isEditableKeyTarget(e.target)) return;
       const code = e.code;
       // Always swallow gameplay keys — even OS key-repeat — so Arrow/Space don't scroll the page.
       if (shouldPrevent(code)) e.preventDefault();
@@ -36,6 +38,7 @@ export class Input {
       this.keysDown.add(code);
     };
     this.onKeyUp = (e) => {
+      if (isEditableKeyTarget(e.target)) return;
       const code = e.code;
       this.keysDown.delete(code);
       // Do NOT remove from pressedThisFrame: a tap can release before the next sim tick.
@@ -274,6 +277,13 @@ export class Input {
   get submitRunPressed(): boolean {
     return this.wasPressed("KeyQ");
   }
+}
+
+function isEditableKeyTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
 function shouldPrevent(code: string): boolean {
