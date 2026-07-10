@@ -1,4 +1,5 @@
 import type { RunSummary, ScoreEntry } from "./types";
+import { webClientId } from "./clientVersion";
 
 const STORAGE_KEY = "vernan-web-scores";
 const NAME_KEY = "vernan-web-player-name";
@@ -80,11 +81,20 @@ function normalizeItemIds(v: unknown): string[] {
   return v.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, 64);
 }
 
+/** Accept `web_0.1.N` / `desktop_0.1.N` (or legacy empty). */
+export function sanitizeClientId(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const s = raw.trim().slice(0, 32);
+  if (/^(web|desktop)_0\.\d+\.\d+$/.test(s)) return s;
+  return "";
+}
+
 function parseScoreList(data: unknown): ScoreEntry[] {
   if (!Array.isArray(data)) return [];
   return data.filter(isScoreEntry).map((e) => ({
     ...e,
     itemIds: normalizeItemIds((e as ScoreEntry).itemIds),
+    client: sanitizeClientId((e as ScoreEntry).client),
     createdAt: formatUtcTimestamp(e.createdAt),
   }));
 }
@@ -216,6 +226,7 @@ export async function submitScore(
     enemiesKilled: Math.floor(summary.enemiesKilled),
     durationSec: summary.durationSec,
     itemIds: normalizeItemIds(summary.itemIds),
+    client: webClientId(),
     createdAt: utcTimestampNow(),
   };
 
@@ -232,6 +243,7 @@ export async function submitScore(
         enemiesKilled: entry.enemiesKilled,
         durationSec: entry.durationSec,
         itemIds: entry.itemIds,
+        client: entry.client,
       }),
     });
     if (!res.ok) {
@@ -241,6 +253,9 @@ export async function submitScore(
     if (typeof remote.id === "string") entry.id = remote.id;
     if (typeof remote.createdAt === "string") {
       entry.createdAt = formatUtcTimestamp(remote.createdAt);
+    }
+    if (typeof remote.client === "string") {
+      entry.client = sanitizeClientId(remote.client) || entry.client;
     }
   }
 

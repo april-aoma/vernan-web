@@ -15,6 +15,8 @@ type ScoreEntry = {
   enemiesKilled: number;
   durationSec: number;
   itemIds: string[];
+  /** e.g. web_0.1.19 / desktop_0.1.53; empty for legacy rows. */
+  client: string;
   createdAt: string;
 };
 
@@ -72,6 +74,13 @@ function normalizeItemIds(v: unknown): string[] {
   return v.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, 64);
 }
 
+function sanitizeClient(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const s = raw.trim().slice(0, 32);
+  if (/^(web|desktop)_0\.\d+\.\d+$/.test(s)) return s;
+  return "";
+}
+
 function formatUtcTimestamp(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -108,6 +117,7 @@ async function readScores(env: Env): Promise<ScoreEntry[]> {
       .map((e) => ({
         ...e,
         itemIds: normalizeItemIds(e.itemIds),
+        client: sanitizeClient((e as ScoreEntry).client),
         createdAt: formatUtcTimestamp(e.createdAt),
       }))
       .sort(compareScores);
@@ -147,6 +157,7 @@ function validateBody(body: Record<string, unknown>): Omit<ScoreEntry, "id" | "c
     enemiesKilled: Math.floor(enemiesKilled),
     durationSec,
     itemIds,
+    client: sanitizeClient(body.client),
   };
 }
 

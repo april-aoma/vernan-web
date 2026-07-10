@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,24 @@ import { defineConfig, type Plugin } from "vite";
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const SCORES_PATH = resolve(rootDir, "data/scores.json");
 const DEV_SCORES_ROUTE = "/__repo/scores.json";
+
+function gitCommitCount(): number {
+  try {
+    const out = execSync("git rev-list --count HEAD", {
+      cwd: rootDir,
+      encoding: "utf8",
+    }).trim();
+    const n = Number(out);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+const vernanVersion =
+  (typeof process.env.VITE_VERNAN_VERSION === "string" &&
+    process.env.VITE_VERNAN_VERSION.trim()) ||
+  `0.1.${gitCommitCount()}`;
 
 /** Dev-only: serve repo `data/scores.json` without putting it in the Pages artifact. */
 function repoScoresDevPlugin(): Plugin {
@@ -38,6 +57,9 @@ export default defineConfig({
   root: ".",
   publicDir: "public",
   plugins: [repoScoresDevPlugin()],
+  define: {
+    "import.meta.env.VITE_VERNAN_VERSION": JSON.stringify(vernanVersion),
+  },
   resolve: {
     alias: {
       "@": resolve(rootDir, "src"),

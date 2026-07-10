@@ -65,6 +65,7 @@ function renderLadderSkeleton(rows: ScoreEntry[]): string {
             <span class="stat">Fl <strong>${r.floorReached}</strong></span>
             <span class="stat">$ <strong>${r.coins}</strong></span>
             <span class="stat">Kills <strong>${r.enemiesKilled}</strong></span>
+            <span class="stat client" title="Client">${escapeHtml(r.client || "—")}</span>
             <span class="stat seed">Seed <a href="${playUrlForSeed(r.seed)}" title="Replay this seed">${r.seed}</a></span>
           </div>
           <span class="time">${escapeHtml(formatUtcTimestamp(r.createdAt))}</span>

@@ -13,6 +13,11 @@ export type RunSummary = {
 export type ScoreEntry = RunSummary & {
   id: string;
   playerName: string;
+  /**
+   * Submitting client id, e.g. `web_0.1.19` or `desktop_0.1.53`
+   * (`0.1.x` where x = git commit count). Empty for legacy rows.
+   */
+  client: string;
   /** UTC ISO-8601 to the second, e.g. `2026-07-10T17:32:05Z`. */
   createdAt: string;
 };

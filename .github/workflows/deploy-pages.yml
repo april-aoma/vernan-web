@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -36,7 +38,11 @@ jobs:
       - name: Build
         env:
           VITE_SCORES_API: https://vernan-scores.henrysbasu.workers.dev
-        run: npm run build
+        run: |
+          COUNT=$(git rev-list --count HEAD)
+          export VITE_VERNAN_VERSION="0.1.${COUNT}"
+          echo "VITE_VERNAN_VERSION=${VITE_VERNAN_VERSION}"
+          npm run build
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
