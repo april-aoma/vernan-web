@@ -85,7 +85,7 @@ export function openSubmitDialog(summary: RunSummary): Promise<SubmitDialogResul
     input.maxLength = 20;
     input.value = loadSavedPlayerName() === "Anonymous" ? "" : loadSavedPlayerName();
     input.placeholder = "Anonymous";
-    input.autocomplete = "nickname";
+    input.autocomplete = "username";
     Object.assign(input.style, {
       width: "100%",
       boxSizing: "border-box",
