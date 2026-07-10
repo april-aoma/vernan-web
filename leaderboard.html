@@ -35,7 +35,7 @@
         min-height: 100%;
         min-height: 100dvh;
         display: grid;
-        grid-template-rows: auto auto auto minmax(0, 1fr);
+        grid-template-rows: auto auto minmax(0, 1fr);
         justify-items: center;
         align-content: start;
         padding: 24px 16px 16px;
@@ -109,18 +109,9 @@
         outline-offset: 3px;
       }
 
-      .meta {
-        margin: 0;
-        max-width: 36rem;
-        font-size: 0.75rem;
-        line-height: 1.45;
-        color: var(--muted);
-        text-align: center;
-      }
-
       /* Climbing shaft: rails + sparse rungs; scores sit in the gaps. */
       .ladder {
-        width: min(52rem, 100%);
+        width: min(56rem, 100%);
         margin-top: 8px;
         list-style: none;
         padding: 0;
@@ -128,7 +119,7 @@
         flex-direction: column;
         min-height: 0;
         max-height: 100%;
-        overflow-x: auto;
+        overflow-x: hidden;
         overflow-y: auto;
         overscroll-behavior: contain;
         scrollbar-gutter: stable;
@@ -176,9 +167,10 @@
 
       .ladder-bay {
         display: grid;
-        grid-template-columns: 40px 1fr 40px;
+        grid-template-columns: 40px minmax(0, 1fr) 52px 40px;
         min-height: 0;
         background: var(--rung-gap);
+        align-items: center;
       }
 
       .rail {
@@ -200,23 +192,53 @@
 
       .score.score-cols {
         --cols:
-          2.4rem
-          minmax(10rem, 1.7fr)
+          2rem
+          minmax(0, 1.15fr)
           3.6rem
-          2.4rem
-          2.8rem
-          4.4rem
-          minmax(5rem, 0.85fr)
-          4.2rem
-          7.5rem
-          52px;
+          2rem
+          2.2rem
+          3.4rem
+          minmax(0, 0.95fr)
+          3.4rem
+          minmax(0, 0.7fr);
         grid-template-columns: var(--cols);
         grid-template-areas: none;
-        column-gap: 0.55rem;
+        column-gap: 0.35rem;
         row-gap: 0;
         align-items: center;
-        min-width: 48rem;
-        padding: 0.45rem 0.75rem;
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
+        padding: 0.4rem 0.35rem 0.4rem 0.45rem;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+
+      .score.score-cols > * {
+        min-width: 0;
+      }
+
+      .bay-costume {
+        display: grid;
+        place-items: center;
+        width: 52px;
+        height: 100%;
+        min-height: 40px;
+        background: var(--rung-gap);
+      }
+
+      button.bay-costume-head {
+        width: 52px;
+        height: 100%;
+        min-height: 1.6rem;
+        justify-content: center;
+        padding: 0.2rem 0;
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+
+      button.bay-costume-head .col-label {
+        overflow: visible;
       }
 
       .score-header {
@@ -305,7 +327,8 @@
 
       .col-name,
       .col-client,
-      .col-time {
+      .col-time,
+      .col-seed {
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -324,11 +347,14 @@
       }
 
       .col-costume {
-        display: grid;
-        place-items: center;
-        width: 52px;
+        display: none;
+      }
+
+      .bay-costume .costume-icon {
+        width: 40px;
         height: 40px;
-        justify-self: end;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
       }
 
       .total-score {
@@ -435,9 +461,13 @@
 
       .ladder-bay.top-ten .costume,
       .ladder-bay.top-ten .costume-icon,
-      .ladder-bay.top-ten .col-costume {
-        width: 52px;
-        height: 52px;
+      .ladder-bay.top-ten .bay-costume .costume-icon {
+        width: 48px;
+        height: 48px;
+      }
+
+      .ladder-bay.top-ten .bay-costume {
+        min-height: 52px;
       }
 
       .player {
@@ -476,7 +506,7 @@
       .ladder-rung {
         height: 8px;
         display: grid;
-        grid-template-columns: 40px 1fr 40px;
+        grid-template-columns: 40px minmax(0, 1fr) 52px 40px;
         background: var(--rung-gap);
       }
 
@@ -484,7 +514,12 @@
         background: var(--ladder-shaft) center / 40px 40px repeat-y;
       }
 
+      .ladder-rung .rail:last-child {
+        grid-column: 4;
+      }
+
       .ladder-rung .bar {
+        grid-column: 2 / 4;
         background: var(--ladder-rung) center / auto 100% repeat-x;
         image-rendering: pixelated;
       }
@@ -496,7 +531,8 @@
         color: var(--muted);
         font-size: 0.8rem;
         line-height: 1.5;
-        grid-column: 1 / -1;
+        grid-column: 2 / 4;
+        min-width: 0;
       }
 
       .error {
@@ -599,7 +635,11 @@
 
         .ladder-bay,
         .ladder-rung {
-          grid-template-columns: 28px 1fr 28px;
+          grid-template-columns: 28px minmax(0, 1fr) 40px 28px;
+        }
+
+        .bay-costume {
+          width: 40px;
         }
 
         .rail,
@@ -634,7 +674,6 @@
     <nav class="nav-row" aria-label="Site">
       <a class="nav-btn" href="./index.html">Play</a>
     </nav>
-    <p class="meta" id="board-meta">Loading rankings…</p>
 
     <div class="ladder" id="leaderboard-ladder" role="list" aria-label="Rankings">
       <div class="empty">Loading…</div>

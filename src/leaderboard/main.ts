@@ -3,6 +3,7 @@ import { loadCostumeLayers } from "../ranking/costumeResolve";
 import {
   defaultSortDir,
   formatKills,
+  itemCount,
   sortScores,
   TOTAL_SCORE_FORMULA,
   totalScore,
@@ -13,8 +14,6 @@ import {
   formatUtcTimestamp,
   LeaderboardConnectionError,
   listScores,
-  usingRemoteScores,
-  usingRepoMirror,
 } from "../ranking/scoresStore";
 import type { ScoreEntry } from "../ranking/types";
 
@@ -116,8 +115,8 @@ function renderHeader(active: SortKey, dir: SortDir): string {
         ${headerButton("client", "Client", active, dir, "col-client")}
         ${headerButton("seed", "Seed", active, dir, "col-seed")}
         ${headerButton("time", "Time", active, dir, "col-time")}
-        <span class="col-costume" aria-hidden="true"></span>
       </div>
+      ${headerButton("items", "◆", active, dir, "bay-costume bay-costume-head", "Items obtained")}
       <span class="rail" aria-hidden="true"></span>
     </div>
   `;
@@ -128,6 +127,8 @@ function renderRow(r: ScoreEntry, rank: number, delay: number): string {
   const client = r.client || "—";
   const time = formatUtcTimestamp(r.createdAt);
   const seed = String(r.seed);
+  const items = itemCount(r);
+  const icon = rank <= 10 ? 48 : 40;
   return `
     <div class="ladder-bay ${placeClass(rank)}" role="listitem" data-score-id="${escapeHtml(r.id)}">
       <span class="rail" aria-hidden="true"></span>
@@ -143,9 +144,9 @@ function renderRow(r: ScoreEntry, rank: number, delay: number): string {
         ${cell("col-client stat client", escapeHtml(client), client)}
         <span class="col-seed stat seed cell-copyable" title="${escapeHtml(seed)}" data-full="${escapeHtml(seed)}"><a href="${playUrlForSeed(r.seed)}">${escapeHtml(seed)}</a></span>
         ${cell("col-time time", escapeHtml(time), time)}
-        <div class="col-costume costume" title="Costume">
-          <img class="costume-icon" data-costume-for="${escapeHtml(r.id)}" alt="" width="${rank <= 10 ? 52 : 40}" height="${rank <= 10 ? 52 : 40}" />
-        </div>
+      </div>
+      <div class="bay-costume costume" title="${items} item${items === 1 ? "" : "s"}">
+        <img class="costume-icon" data-costume-for="${escapeHtml(r.id)}" alt="" width="${icon}" height="${icon}" />
       </div>
       <span class="rail" aria-hidden="true"></span>
     </div>
@@ -210,27 +211,14 @@ function isSortKey(v: string): v is SortKey {
     v === "kills" ||
     v === "client" ||
     v === "seed" ||
-    v === "time"
+    v === "time" ||
+    v === "items"
   );
 }
 
 async function main(): Promise<void> {
   const ladder = document.getElementById("leaderboard-ladder");
-  const meta = document.getElementById("board-meta");
   if (!(ladder instanceof HTMLElement)) return;
-
-  if (meta) {
-    if (usingRemoteScores()) {
-      meta.textContent =
-        "Click a column to sort. Score = (Floor×10) + (KillDiff×2) + Coins. Showing the shared remote board.";
-    } else if (usingRepoMirror()) {
-      meta.textContent =
-        "Click a column to sort. Score = (Floor×10) + (KillDiff×2) + Coins. Shared scores load from the GitHub repo; this browser may also show unpublished local submits.";
-    } else {
-      meta.textContent =
-        "Click a column to sort. Score = (Floor×10) + (KillDiff×2) + Coins. Scores are stored in this browser.";
-    }
-  }
 
   let allRows: ScoreEntry[] = [];
   let sortKey: SortKey = "total";
@@ -267,9 +255,6 @@ async function main(): Promise<void> {
       : err instanceof Error
         ? err.message
         : "Failed to load scores";
-    if (meta) {
-      meta.textContent = offline ? "Unable to reach the scores server." : "Something went wrong.";
-    }
     ladder.classList.add("ladder-error");
     ladder.innerHTML = offline
       ? renderConnectionError(message)

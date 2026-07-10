@@ -2,14 +2,19 @@
 
 import type { ScoreEntry } from "./types";
 
-/** Temporary formula — (Floor×10) + (KillDiff×2) + Coins. */
-export function totalScore(
-  e: Pick<ScoreEntry, "floorReached" | "enemiesKillDifficulty" | "coins">,
-): number {
-  return e.floorReached * 10 + e.enemiesKillDifficulty * 2 + e.coins;
+/** Number of items obtained on the run (from submitted itemIds / costume data). */
+export function itemCount(e: Pick<ScoreEntry, "itemIds"> | null | undefined): number {
+  return e?.itemIds?.length ?? 0;
 }
 
-export const TOTAL_SCORE_FORMULA = "(Floor×10) + (KillDiff×2) + Coins";
+/** Temporary formula — (Floor×10) + (KillDiff×2) + Coins − Items. */
+export function totalScore(
+  e: Pick<ScoreEntry, "floorReached" | "enemiesKillDifficulty" | "coins" | "itemIds">,
+): number {
+  return e.floorReached * 10 + e.enemiesKillDifficulty * 2 + e.coins - itemCount(e);
+}
+
+export const TOTAL_SCORE_FORMULA = "(Floor×10) + (KillDiff×2) + Coins − Items";
 
 /** Display kills as `count/difficulty`. */
 export function formatKills(
@@ -27,7 +32,8 @@ export type SortKey =
   | "kills"
   | "client"
   | "seed"
-  | "time";
+  | "time"
+  | "items";
 
 export type SortDir = "asc" | "desc";
 
@@ -77,6 +83,9 @@ export function compareBy(
     case "time":
       cmp = a.createdAt.localeCompare(b.createdAt);
       break;
+    case "items":
+      cmp = itemCount(a) - itemCount(b);
+      break;
   }
   if (cmp !== 0) return cmp * sign;
   // Stable-ish tie-breakers
@@ -88,6 +97,8 @@ export function compareBy(
   if (b.enemiesKillDifficulty !== a.enemiesKillDifficulty) {
     return b.enemiesKillDifficulty - a.enemiesKillDifficulty;
   }
+  const items = itemCount(b) - itemCount(a);
+  if (items !== 0) return items;
   return a.createdAt.localeCompare(b.createdAt);
 }
 
