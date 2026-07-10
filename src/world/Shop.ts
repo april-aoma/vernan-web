@@ -34,8 +34,8 @@ export type ShopKeeperFrames = {
 /** Java GamePanel.SHOP_PEDESTAL_PRICE. */
 export const SHOP_PEDESTAL_PRICE = 15;
 
-/** Temporary run-start coins until combat coin drops exist. */
-export const RUN_START_MONEY = 30;
+/** Run-start coins (Java PlayerStats.money defaults to 0). */
+export const RUN_START_MONEY = 0;
 
 /** World-px size of the shopkeep composite frame (Java shopKeeperFramePx @ scale 1). */
 export const SHOPKEEP_FRAME_PX = 32;
