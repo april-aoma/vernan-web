@@ -38,6 +38,7 @@ export function drawPauseMenu(
   itemBitmaps: Map<string, ImageBitmap>,
   swordPickup: ImageBitmap | null,
   runSummary?: RunSummary,
+  submitLocked = false,
 ): PauseMenuHitRects {
   const boxH = PAUSE_MENU_PADDING * 2 + (runSummary ? 72 : 36);
   g.fillStyle = "rgba(10,12,16,0.863)";
@@ -70,13 +71,18 @@ export function drawPauseMenu(
     const btnY = y;
     const btnW = PAUSE_MENU_W - PAUSE_MENU_PADDING * 2;
     const btnH = 16;
-    g.fillStyle = "rgba(30, 90, 130, 0.85)";
-    g.fillRect(btnX, btnY, btnW, btnH);
-    g.strokeStyle = "rgba(110, 200, 255, 0.55)";
-    g.strokeRect(btnX + 0.5, btnY + 0.5, btnW - 1, btnH - 1);
-    g.fillStyle = "#d7eefc";
-    g.fillText("Q — Submit & quit", btnX + 6, btnY + 12);
-    submit = { x: btnX, y: btnY, w: btnW, h: btnH };
+    if (submitLocked) {
+      g.fillStyle = "#a07878";
+      g.fillText("Submit locked (respawned)", btnX, btnY + 12);
+    } else {
+      g.fillStyle = "rgba(30, 90, 130, 0.85)";
+      g.fillRect(btnX, btnY, btnW, btnH);
+      g.strokeStyle = "rgba(110, 200, 255, 0.55)";
+      g.strokeRect(btnX + 0.5, btnY + 0.5, btnW - 1, btnH - 1);
+      g.fillStyle = "#d7eefc";
+      g.fillText("Q — Submit & quit", btnX + 6, btnY + 12);
+      submit = { x: btnX, y: btnY, w: btnW, h: btnH };
+    }
   }
 
   drawPauseMenuItemGrid(g, PAUSE_MENU_Y + boxH, player, catalog, itemBitmaps, swordPickup);

@@ -12,6 +12,7 @@ export type DeathOverlayHitRects = {
 export function drawDeathOverlay(
   g: CanvasRenderingContext2D,
   summary: RunSummary,
+  submitLocked = false,
 ): DeathOverlayHitRects {
   g.fillStyle = "rgba(0,0,0,0.55)";
   g.fillRect(0, 0, INTERNAL_WIDTH, WORLD_VIEWPORT_H);
@@ -52,6 +53,13 @@ export function drawDeathOverlay(
   const btnH = 16;
   const btnX = boxX + 12;
   const btnY = y;
+  if (submitLocked) {
+    g.fillStyle = "#a07878";
+    g.font = "10px monospace";
+    const locked = "Submit locked (respawned)";
+    g.fillText(locked, boxX + (boxW - g.measureText(locked).width) / 2, btnY + 12);
+    return { submit: { x: 0, y: 0, w: 0, h: 0 } };
+  }
   g.fillStyle = "rgba(30, 90, 130, 0.85)";
   g.fillRect(btnX, btnY, btnW, btnH);
   g.strokeStyle = "rgba(110, 200, 255, 0.55)";

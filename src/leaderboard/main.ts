@@ -129,7 +129,7 @@ function renderRow(r: ScoreEntry, rank: number, delay: number): string {
   const time = formatUtcTimestamp(r.createdAt);
   const seed = String(r.seed);
   const items = itemCount(r);
-  const icon = rank <= 10 ? 48 : 40;
+  const icon = rank <= 10 ? 48 : 32;
   return `
     <div class="ladder-bay ${placeClass(rank)}" role="listitem" data-score-id="${escapeHtml(r.id)}">
       <span class="rail" aria-hidden="true"></span>
@@ -183,7 +183,7 @@ async function fillCostumeIcons(rows: ScoreEntry[]): Promise<void> {
   if (titleIcon) {
     const top = sortScores(rows, "total", "desc")[0];
     if (top) {
-      titleIcon.src = await renderCostumeIdleIcon(top.itemIds ?? [], layers, 48);
+      titleIcon.src = await renderCostumeIdleIcon(top.itemIds ?? [], layers, 32);
       titleIcon.alt = `${top.playerName} costume`;
     }
   }
@@ -195,7 +195,7 @@ async function fillCostumeIcons(rows: ScoreEntry[]): Promise<void> {
       );
       if (!img) return;
       const bay = img.closest(".ladder-bay");
-      const size = bay?.classList.contains("top-ten") ? 52 : 40;
+      const size = bay?.classList.contains("top-ten") ? 48 : 32;
       img.src = await renderCostumeIdleIcon(r.itemIds ?? [], layers, size);
       img.alt = r.itemIds?.length ? "Run costume" : "Default Vernan";
     }),

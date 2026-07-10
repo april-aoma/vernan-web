@@ -406,6 +406,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   let enemiesKilledThisRun = 0;
   /** Mirrors Java GamePanel.enemiesKillDifficultyThisRun. */
   let enemiesKillDifficultyThisRun = 0;
+  /** True once the player has died this run. */
+  let runReachedDeath = false;
+  /** True if the player became alive again after dying this run (Z/X room retry). */
+  let runDiedAndRespawned = false;
   let submitDialogOpen = false;
   let pauseSubmitPending = false;
   let pauseMenuHits: PauseMenuHitRects = { submit: { x: 0, y: 0, w: 0, h: 0 } };
@@ -632,6 +636,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   async function beginSubmitAndQuit(): Promise<void> {
     if (submitDialogOpen) return;
+    if (runDiedAndRespawned) {
+      window.alert("Scores cannot be submitted after dying and respawning this run.");
+      return;
+    }
     submitDialogOpen = true;
     paused = true;
     input.clearHardwareState();
@@ -1411,14 +1419,18 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
       if (player.health.isDead) {
         paused = false;
+      } else if (runReachedDeath) {
+        runDiedAndRespawned = true;
       }
 
       const map = currentMap(session);
 
       if (player.health.isDead) {
+        runReachedDeath = true;
         if (!submitDialogOpen && (input.jumpPressed || input.attackPressed)) {
           player.health.max = player.stats.maxHealth;
           player.health.refill();
+          runDiedAndRespawned = true;
           applyRoomAndSpawn(session, session.roomId, SpawnKind.INITIAL, player);
           worldPickups.length = 0;
           frisbeeProjectiles.length = 0;
@@ -2100,6 +2112,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           itemBitmaps,
           hudSprites.swordPickup,
           currentRunSummary(),
+          runDiedAndRespawned,
         );
       } else {
         pauseMenuHits = { submit: { x: 0, y: 0, w: 0, h: 0 } };
@@ -2134,7 +2147,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
 
       if (player.health.isDead) {
-        deathMenuHits = drawDeathOverlay(g, currentRunSummary());
+        deathMenuHits = drawDeathOverlay(g, currentRunSummary(), runDiedAndRespawned);
       } else {
         deathMenuHits = { submit: { x: 0, y: 0, w: 0, h: 0 } };
       }
