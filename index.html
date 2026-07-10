@@ -52,6 +52,36 @@
         color: #7d8a98;
         text-align: center;
       }
+      .nav-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        margin: 0;
+      }
+      .nav-btn {
+        display: inline-block;
+        padding: 0.5rem 0.85rem;
+        border: 1px solid rgba(110, 200, 255, 0.45);
+        background: rgba(110, 200, 255, 0.12);
+        color: #6ec8ff;
+        font-family: inherit;
+        font-size: 0.8rem;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-decoration: none;
+        text-transform: uppercase;
+      }
+      .nav-btn:hover {
+        background: rgba(110, 200, 255, 0.22);
+        border-color: #6ec8ff;
+      }
+      .nav-btn[aria-current="page"] {
+        background: rgba(110, 200, 255, 0.22);
+        border-color: #6ec8ff;
+        color: #d7eefc;
+      }
       code {
         color: #b7c4d2;
       }
@@ -59,9 +89,9 @@
   </head>
   <body>
     <h1>Vernan</h1>
-    <p class="hint" style="margin: 0">
-      <a href="./leaderboard.html" style="color: #6ec8ff">Leaderboard</a>
-    </p>
+    <nav class="nav-row" aria-label="Site">
+      <a class="nav-btn" href="./leaderboard.html">Leaderboard</a>
+    </nav>
     <div id="vernan-root" tabindex="0" aria-label="Vernan game"></div>
     <p class="hint">
       Click the canvas for keyboard focus. Move with arrows/WASD, jump Z/Space,

@@ -33,32 +33,53 @@ function placeClass(rank: number): string {
   return "";
 }
 
-function renderRows(rows: ScoreEntry[]): string {
+function rungHtml(): string {
+  return `<div class="ladder-rung" aria-hidden="true"><span class="rail"></span><span class="bar"></span><span class="rail"></span></div>`;
+}
+
+function renderLadder(rows: ScoreEntry[]): string {
   if (rows.length === 0) {
-    return `<tr><td colspan="7" class="empty">No scores yet.<br />Pause in-game (or die) and choose Submit &amp; quit.</td></tr>`;
+    return `${rungHtml()}
+      <div class="ladder-bay" role="listitem">
+        <span class="rail" aria-hidden="true"></span>
+        <p class="empty">No scores yet.<br />Pause or die in-game, then Submit &amp; quit.</p>
+        <span class="rail" aria-hidden="true"></span>
+      </div>
+      ${rungHtml()}`;
   }
-  return rows
-    .map((r, i) => {
-      const rank = i + 1;
-      const delay = Math.min(i, 12) * 0.04;
-      return `
-    <tr class="row-enter ${placeClass(rank)}" style="animation-delay: ${delay}s">
-      <td class="rank">${rank}</td>
-      <td class="player">${escapeHtml(r.playerName)}</td>
-      <td class="num">${r.floorReached}</td>
-      <td class="num">${r.coins}</td>
-      <td class="num">${r.enemiesKilled}</td>
-      <td class="seed"><a href="${playUrlForSeed(r.seed)}" title="Replay this seed">${r.seed}</a></td>
-      <td class="time">${escapeHtml(formatUtcTimestamp(r.createdAt))}</td>
-    </tr>`;
-    })
-    .join("");
+
+  const parts: string[] = [rungHtml()];
+
+  rows.forEach((r, i) => {
+    const rank = i + 1;
+    const delay = Math.min(i, 12) * 0.05;
+    parts.push(`
+      <div class="ladder-bay ${placeClass(rank)}" role="listitem">
+        <span class="rail" aria-hidden="true"></span>
+        <div class="score" style="animation-delay: ${delay}s">
+          <span class="rank">#${rank}</span>
+          <div class="score-main">
+            <span class="player">${escapeHtml(r.playerName)}</span>
+            <span class="stat">Fl <strong>${r.floorReached}</strong></span>
+            <span class="stat">$ <strong>${r.coins}</strong></span>
+            <span class="stat">Kills <strong>${r.enemiesKilled}</strong></span>
+            <span class="stat seed">Seed <a href="${playUrlForSeed(r.seed)}" title="Replay this seed">${r.seed}</a></span>
+          </div>
+          <span class="time">${escapeHtml(formatUtcTimestamp(r.createdAt))}</span>
+        </div>
+        <span class="rail" aria-hidden="true"></span>
+      </div>
+      ${rungHtml()}
+    `);
+  });
+
+  return parts.join("");
 }
 
 async function main(): Promise<void> {
-  const tbody = document.getElementById("leaderboard-body");
+  const ladder = document.getElementById("leaderboard-ladder");
   const meta = document.getElementById("board-meta");
-  if (!(tbody instanceof HTMLElement)) return;
+  if (!(ladder instanceof HTMLElement)) return;
 
   if (meta) {
     if (usingRemoteScores()) {
@@ -75,10 +96,16 @@ async function main(): Promise<void> {
 
   try {
     const rows = await listScores(50);
-    tbody.innerHTML = renderRows(rows);
+    ladder.innerHTML = renderLadder(rows);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed to load scores";
-    tbody.innerHTML = `<tr><td colspan="7" class="error">${escapeHtml(msg)}</td></tr>`;
+    ladder.innerHTML = `${rungHtml()}
+      <div class="ladder-bay">
+        <span class="rail" aria-hidden="true"></span>
+        <p class="error">${escapeHtml(msg)}</p>
+        <span class="rail" aria-hidden="true"></span>
+      </div>
+      ${rungHtml()}`;
   }
 }
 
