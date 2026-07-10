@@ -335,6 +335,51 @@
         color: #f0a0a0;
       }
 
+      .ladder.ladder-error {
+        overflow: hidden;
+        box-shadow: none;
+      }
+
+      .connection-error {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        min-height: 12rem;
+        padding: 2rem 1.25rem;
+        text-align: center;
+        background: var(--rung-gap);
+        border: 1px solid rgba(110, 200, 255, 0.18);
+      }
+
+      .connection-title {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #f0a0a0;
+      }
+
+      .connection-body {
+        margin: 0;
+        max-width: 22rem;
+        font-size: 0.85rem;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .connection-return {
+        margin-top: 0.5rem;
+      }
+
+      .connection-error-actions {
+        display: flex;
+        justify-content: center;
+        padding: 1rem 0 0.5rem;
+      }
+
       @keyframes climb-in {
         from {
           opacity: 0;

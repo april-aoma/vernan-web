@@ -180,11 +180,29 @@ function mergeById(...lists: ScoreEntry[][]): ScoreEntry[] {
 /** Load the committed repo mirror from GitHub raw (or local dev middleware). */
 export async function fetchRepoMirror(): Promise<ScoreEntry[]> {
   try {
-    const res = await fetch(scoresMirrorUrl(), { cache: "no-cache" });
+    const res = await fetchWithTimeout(scoresMirrorUrl(), { cache: "no-cache" });
     if (!res.ok) return [];
     return parseScoreList(await res.json());
   } catch {
     return [];
+  }
+}
+
+const SCORES_FETCH_MS = 10_000;
+
+function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SCORES_FETCH_MS);
+  return fetch(url, { ...init, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
+/** Thrown when the live scores API / mirror cannot be reached in time. */
+export class LeaderboardConnectionError extends Error {
+  constructor(
+    message = "No connection — leaderboard cannot be accessed.",
+  ) {
+    super(message);
+    this.name = "LeaderboardConnectionError";
   }
 }
 
@@ -274,18 +292,21 @@ export async function submitScore(
 
 /**
  * Load ranked scores: optional API, else GitHub raw mirror + this browser's localStorage.
+ * When the live scores API is configured, throws {@link LeaderboardConnectionError} on timeout / network failure.
  */
 export async function listScores(limit = 50): Promise<ScoreEntry[]> {
   const api = scoresApiBase();
   if (api) {
     try {
-      const res = await fetch(`${api}/api/scores?limit=${limit}`);
+      const res = await fetchWithTimeout(`${api}/api/scores?limit=${limit}`);
       if (res.ok) {
         const rows = parseScoreList(await res.json()).sort(compareScores);
         return rows.slice(0, limit);
       }
-    } catch {
-      /* fall through */
+      throw new LeaderboardConnectionError();
+    } catch (err) {
+      if (err instanceof LeaderboardConnectionError) throw err;
+      throw new LeaderboardConnectionError();
     }
   }
 

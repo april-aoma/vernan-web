@@ -2,6 +2,7 @@ import { renderCostumeIdleIcon } from "./costumeIdleIcon";
 import { loadCostumeLayers } from "../ranking/costumeResolve";
 import {
   formatUtcTimestamp,
+  LeaderboardConnectionError,
   listScores,
   usingRemoteScores,
   usingRepoMirror,
@@ -16,15 +17,20 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function playUrlForSeed(seed: number): string {
+function playUrl(): string {
   const url = new URL("index.html", window.location.href);
-  url.searchParams.set("seed", String(seed));
   try {
     const api = new URLSearchParams(window.location.search).get("scoresApi");
     if (api) url.searchParams.set("scoresApi", api);
   } catch {
     /* ignore */
   }
+  return url.href;
+}
+
+function playUrlForSeed(seed: number): string {
+  const url = new URL(playUrl());
+  url.searchParams.set("seed", String(seed));
   return url.href;
 }
 
@@ -39,6 +45,16 @@ function placeClass(rank: number): string {
 
 function rungHtml(): string {
   return `<div class="ladder-rung" aria-hidden="true"><span class="rail"></span><span class="bar"></span><span class="rail"></span></div>`;
+}
+
+function renderConnectionError(message: string): string {
+  return `
+    <div class="connection-error" role="alert">
+      <p class="connection-title">No connection</p>
+      <p class="connection-body">${escapeHtml(message)}</p>
+      <a class="nav-btn connection-return" href="${escapeHtml(playUrl())}">Return to game</a>
+    </div>
+  `;
 }
 
 function renderLadderSkeleton(rows: ScoreEntry[]): string {
@@ -130,14 +146,30 @@ async function main(): Promise<void> {
     ladder.innerHTML = renderLadderSkeleton(rows);
     await fillCostumeIcons(rows);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Failed to load scores";
-    ladder.innerHTML = `${rungHtml()}
+    const offline =
+      err instanceof LeaderboardConnectionError ||
+      (err instanceof Error && /abort|network|failed to fetch/i.test(err.message));
+    const message = offline
+      ? "No connection — leaderboard cannot be accessed."
+      : err instanceof Error
+        ? err.message
+        : "Failed to load scores";
+    if (meta) {
+      meta.textContent = offline ? "Unable to reach the scores server." : "Something went wrong.";
+    }
+    ladder.classList.add("ladder-error");
+    ladder.innerHTML = offline
+      ? renderConnectionError(message)
+      : `${rungHtml()}
       <div class="ladder-bay">
         <span class="rail" aria-hidden="true"></span>
-        <p class="error">${escapeHtml(msg)}</p>
+        <p class="error">${escapeHtml(message)}</p>
         <span class="rail" aria-hidden="true"></span>
       </div>
-      ${rungHtml()}`;
+      ${rungHtml()}
+      <div class="connection-error-actions">
+        <a class="nav-btn connection-return" href="${escapeHtml(playUrl())}">Return to game</a>
+      </div>`;
   }
 }
 
