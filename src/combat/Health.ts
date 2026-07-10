@@ -93,6 +93,13 @@ export class Health {
     return true;
   }
 
+  /** Damage without i-frame gate (Nephilim drink sip). */
+  tryDamageIgnoringInvuln(amount: number): boolean {
+    if (amount <= 0 || this.isDead) return false;
+    this.applyContainerDamage(amount);
+    return true;
+  }
+
   consumeBlackHeartsEmptied(): number {
     const n = this.blackHeartsEmptiedPending;
     this.blackHeartsEmptiedPending = 0;

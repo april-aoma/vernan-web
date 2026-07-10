@@ -40,6 +40,7 @@ function spawnDeathChunk(
     req.hullLocal,
   );
   chunk.setLifetime(NEPHILIM_DEBRIS_LIFETIME_SEC, NEPHILIM_DEBRIS_BLINK_START_SEC);
+  if (req.head) chunk.bossDeathHead = true;
   return chunk;
 }
 

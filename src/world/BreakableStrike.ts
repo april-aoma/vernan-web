@@ -25,8 +25,7 @@ import type { TilesetProject } from "../tileset/TilesetProject";
 import { terrainBrickRng, terrainLootKind, decoBrickRng, decoLootKind } from "./BreakableLootRoll";
 import type { DungeonLayout } from "./DungeonLayout";
 import type { GeneratedRoom } from "./RoomGenerator";
-import type { SecretSeam } from "./SecretEntrancePlacer";
-import { SeamKind } from "./SecretEntrancePlacer";
+import { SeamKind, type SecretSeam } from "./SecretEntrancePlacer";
 import { SecretSeamOpenAnim } from "./SecretSeamOpenAnim";
 import { TILE_BREAKABLE, TILE_EMPTY, type TileMap } from "./TileMap";
 import { WorldPickup } from "./WorldPickup";
@@ -95,23 +94,44 @@ function destroyBreakableTile(tx: number, ty: number, ctx: BreakableStrikeContex
   const by = ty * TILE_SIZE;
   const brickRnd = terrainBrickRng(ctx.runSeed, ctx.roomId, tx, ty);
   const tileSnap = ctx.snapshotTile?.(tx, ty) ?? null;
+  const shellBreakable = isSecretSeamShellBreakable(ctx.seams, ctx.roomId, tx, ty);
 
   if (ctx.seams != null && tryBeginSeamOpenAnim(tx, ty, bx, by, brickRnd, tileSnap, ctx)) {
     return;
   }
 
-  ctx.map.setTile(tx, ty, TILE_EMPTY);
-  spawnBreakableBrickChunks(bx, by, brickRnd, ctx.brickChunks, 1, "#8a5a3a", tileSnap);
-  const loot = terrainLootKind(ctx.runSeed, ctx.roomId, tx, ty);
-  if (loot != null) {
-    ctx.worldPickups.push(WorldPickup.createFromBreakable(loot, bx + 8, by + 8, brickRnd));
-  }
-  if (ctx.seams != null) {
-    for (const seam of ctx.seams) {
-      if (!seam.isDone()) seam.onTileOpened(ctx.rooms, ctx.roomId, tx, ty, ctx.layout);
+  if (!shellBreakable) {
+    ctx.map.setTile(tx, ty, TILE_EMPTY);
+    spawnBreakableBrickChunks(bx, by, brickRnd, ctx.brickChunks, 1, "#8a5a3a", tileSnap);
+    const loot = terrainLootKind(ctx.runSeed, ctx.roomId, tx, ty);
+    if (loot != null) {
+      ctx.worldPickups.push(WorldPickup.createFromBreakable(loot, bx + 8, by + 8, brickRnd));
     }
+    if (ctx.seams != null) {
+      for (const seam of ctx.seams) {
+        if (!seam.isDone()) seam.onTileOpened(ctx.rooms, ctx.roomId, tx, ty, ctx.layout);
+      }
+    }
+    handleDecoSupportLossAt(tx, ty, ctx);
+    return;
   }
-  handleDecoSupportLossAt(tx, ty, ctx);
+
+  // Java shellBreakable: debris only, no loot or map clear until seam anim advances.
+  spawnBreakableBrickChunks(bx, by, brickRnd, ctx.brickChunks, 1, "#8a5a3a", tileSnap);
+}
+
+/** Java GamePanel.isHiddenShellBreakable / shellBreakable destroy path. */
+function isSecretSeamShellBreakable(
+  seams: SecretSeam[] | null | undefined,
+  roomId: number,
+  tx: number,
+  ty: number,
+): boolean {
+  if (!seams) return false;
+  for (const seam of seams) {
+    if (seam.isHiddenBreakable(roomId, tx, ty)) return true;
+  }
+  return false;
 }
 
 /** Java GamePanel.handleDecoSupportLossAt — despawn/crumble ground-hugging deco above. */

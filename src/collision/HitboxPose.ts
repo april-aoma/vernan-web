@@ -1,5 +1,5 @@
 import type { Aabb } from "../combat/CombatMath";
-import { polygonBounds, polygonIntersectsAabb, worldPolygon } from "./polygonIntersect";
+import { polygonBounds, polygonIntersectsAabb, polygonIntersectsPolygon, worldPolygon } from "./polygonIntersect";
 
 /**
  * Transformed hitbox query (Java game.collision.HitboxPose) — polygon parts only for web v1.
@@ -51,6 +51,10 @@ export class HitboxPose {
 
   intersectsRect(r: Aabb): boolean {
     return polygonIntersectsAabb(this.worldVertices(), r);
+  }
+
+  intersects(other: HitboxPose): boolean {
+    return polygonIntersectsPolygon(this.worldVertices(), other.worldVertices());
   }
 
   /** World-space polygon already in world coords (debris / psychic spoon). */

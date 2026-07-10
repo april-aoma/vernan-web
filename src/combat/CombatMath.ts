@@ -18,6 +18,7 @@ export type KnockbackKind =
   | "headband_side_attack_setup"
   | "flint_fire_pull"
   | "lemon_shot"
+  | "contact_only"
   | "hurt"
   | "frisbee"
   | "psychic_debris";
@@ -64,6 +65,8 @@ export function knockbackFor(kind: KnockbackKind, facingAwaySign: number): { vx:
       return { vx: 0, vy: 0 };
     case "lemon_shot":
       return polar(0.45, 10);
+    case "contact_only":
+      return { vx: 0, vy: 0 };
     case "frisbee":
       return knockbackForFrisbee(sign);
     default:

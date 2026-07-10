@@ -15,7 +15,7 @@ let outlineCtx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | n
 let outlineCapW = 0;
 let outlineCapH = 0;
 
-function ensureOutlineScratch(w: number, h: number): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D {
+function ensureOutlineScratch(w: number, h: number): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null {
   if (!outlineScratch || outlineCapW < w || outlineCapH < h) {
     outlineCapW = Math.max(outlineCapW, w);
     outlineCapH = Math.max(outlineCapH, h);
@@ -27,11 +27,12 @@ function ensureOutlineScratch(w: number, h: number): CanvasRenderingContext2D | 
       c.height = outlineCapH;
       outlineScratch = c;
     }
-    outlineCtx = outlineScratch.getContext("2d") as
+    outlineCtx = outlineScratch.getContext("2d", { willReadFrequently: true }) as
       | OffscreenCanvasRenderingContext2D
-      | CanvasRenderingContext2D;
+      | CanvasRenderingContext2D
+      | null;
   }
-  return outlineCtx!;
+  return outlineCtx;
 }
 
 /**
@@ -46,35 +47,41 @@ export function pedestalItemOutlineForDraw(
   sh: number,
 ): CanvasImageSource | null {
   if (sw <= 0 || sh <= 0) return null;
-  const ctx = ensureOutlineScratch(sw, sh);
-  ctx.clearRect(0, 0, sw, sh);
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, sw, sh);
-  const img = ctx.getImageData(0, 0, sw, sh);
-  const srcPx = img.data;
-  const out = ctx.createImageData(sw, sh);
-  const outPx = out.data;
-  const threshold = PEDESTAL_ITEM_OUTLINE_ALPHA_THRESHOLD;
-  const outlineA = PEDESTAL_ITEM_OUTLINE_ALPHA;
-  for (let py = 0; py < sh; py++) {
-    for (let px = 0; px < sw; px++) {
-      const idx = (py * sw + px) * 4;
-      if (srcPx[idx + 3]! >= threshold) continue;
-      let border = false;
-      if (px > 0 && srcPx[idx - 4 + 3]! >= threshold) border = true;
-      else if (px + 1 < sw && srcPx[idx + 4 + 3]! >= threshold) border = true;
-      else if (py > 0 && srcPx[idx - sw * 4 + 3]! >= threshold) border = true;
-      else if (py + 1 < sh && srcPx[idx + sw * 4 + 3]! >= threshold) border = true;
-      if (border) {
-        outPx[idx] = 255;
-        outPx[idx + 1] = 255;
-        outPx[idx + 2] = 255;
-        outPx[idx + 3] = outlineA;
+  try {
+    const ctx = ensureOutlineScratch(sw, sh);
+    if (!ctx) return null;
+    ctx.clearRect(0, 0, sw, sh);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, sw, sh);
+    const img = ctx.getImageData(0, 0, sw, sh);
+    const srcPx = img.data;
+    const out = ctx.createImageData(sw, sh);
+    const outPx = out.data;
+    const threshold = PEDESTAL_ITEM_OUTLINE_ALPHA_THRESHOLD;
+    const outlineA = PEDESTAL_ITEM_OUTLINE_ALPHA;
+    for (let py = 0; py < sh; py++) {
+      for (let px = 0; px < sw; px++) {
+        const idx = (py * sw + px) * 4;
+        if (srcPx[idx + 3]! >= threshold) continue;
+        let border = false;
+        if (px > 0 && srcPx[idx - 4 + 3]! >= threshold) border = true;
+        else if (px + 1 < sw && srcPx[idx + 4 + 3]! >= threshold) border = true;
+        else if (py > 0 && srcPx[idx - sw * 4 + 3]! >= threshold) border = true;
+        else if (py + 1 < sh && srcPx[idx + sw * 4 + 3]! >= threshold) border = true;
+        if (border) {
+          outPx[idx] = 255;
+          outPx[idx + 1] = 255;
+          outPx[idx + 2] = 255;
+          outPx[idx + 3] = outlineA;
+        }
       }
     }
+    ctx.putImageData(out, 0, 0);
+    return outlineScratch;
+  } catch {
+    // getImageData can fail on tainted / unreadable sources — skip outline, keep sprite.
+    return null;
   }
-  ctx.putImageData(out, 0, 0);
-  return outlineScratch;
 }
 
 export function pedestalItemBobOffset(bobPhase: number): number {
@@ -89,6 +96,19 @@ export function pedestalItemSquashScales(bobPhase: number): { scaleX: number; sc
   };
 }
 
+function pedestalItemWorldRect(
+  p: ItemPedestal,
+  bobPhase: number,
+  sw: number,
+  sh: number,
+): { cx: number; cy: number; ix: number; iy: number } {
+  const pedestalTop = p.groundTop - PEDESTAL_DRAW_H;
+  const bob = pedestalItemBobOffset(bobPhase);
+  const iy = pedestalTop - sh + 4.0 + bob;
+  const ix = p.anchorX - sw * 0.5;
+  return { cx: p.anchorX, cy: iy + sh * 0.5, ix, iy };
+}
+
 /** Bobbing item sprite with squash/stretch + white outline (Java drawSinglePedestal item branch). */
 export function drawPedestalFloatingItem(
   g: CanvasRenderingContext2D,
@@ -101,25 +121,41 @@ export function drawPedestalFloatingItem(
   sw: number,
   sh: number,
 ): void {
-  const pedestalTop = p.groundTop - PEDESTAL_DRAW_H;
-  const bob = pedestalItemBobOffset(bobPhase);
+  const { cx, cy, ix, iy } = pedestalItemWorldRect(p, bobPhase, sw, sh);
   const { scaleX, scaleY } = pedestalItemSquashScales(bobPhase);
-  const iy = pedestalTop - sh + 4.0 + bob;
-  const cx = p.anchorX;
-  const cy = iy + sh * 0.5;
-  const dcx = camera.worldToDeviceX(cx);
-  const dcy = camera.worldToDeviceY(cy);
   const baseDw = CAMERA_ZOOM * sw;
   const baseDh = CAMERA_ZOOM * sh;
   const dw = Math.max(1, Math.round(baseDw * scaleX));
   const dh = Math.max(1, Math.round(baseDh * scaleY));
+  const dcx = camera.worldToDeviceX(cx);
+  const dcy = camera.worldToDeviceY(cy);
   const dx = Math.floor(dcx - dw * 0.5);
   const dy = Math.floor(dcy - dh * 0.5);
 
   g.imageSmoothingEnabled = false;
-  const outline = pedestalItemOutlineForDraw(source, sx, sy, sw, sh);
-  if (outline) {
-    g.drawImage(outline, 0, 0, sw, sh, dx, dy, dw, dh);
+  try {
+    g.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
+    const outline = pedestalItemOutlineForDraw(source, sx, sy, sw, sh);
+    if (outline) {
+      g.save();
+      g.globalCompositeOperation = "destination-over";
+      g.drawImage(outline, 0, 0, sw, sh, dx, dy, dw, dh);
+      g.restore();
+    }
+  } catch {
+    // Last-resort: flat blit at bob position (pre-port behavior).
+    const flatDx = camera.worldToDeviceX(ix);
+    const flatDy = camera.worldToDeviceY(iy);
+    g.drawImage(
+      source,
+      sx,
+      sy,
+      sw,
+      sh,
+      flatDx,
+      flatDy,
+      Math.floor(baseDw),
+      Math.floor(baseDh),
+    );
   }
-  g.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
 }

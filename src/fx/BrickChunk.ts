@@ -115,6 +115,8 @@ export class BrickChunk {
   private lifetimeSec = -1;
   private blinkStartSec = 0;
   private lifeAgeSec = 0;
+  /** Nephilim marionette head — room clear waits on this chunk resting. */
+  bossDeathHead = false;
 
   constructor(
     x: number,
@@ -228,6 +230,20 @@ export class BrickChunk {
 
   isSettled(): boolean {
     return this.onGround && Math.hypot(this.vx, this.vy) < 4 && Math.abs(this.omega) < 0.25;
+  }
+
+  /**
+   * Lenient resting probe for boss-defeat head debris (Java BrickChunk.isBossDeathHeadResting).
+   */
+  isBossDeathHeadResting(map: TileMap | null): boolean {
+    if (this.isTelekinesisActive()) return false;
+    if (this.isSettled() || this.isOnGround()) return true;
+    if (!map) return false;
+    const speed = Math.hypot(this.vx, this.vy);
+    const spin = Math.abs(this.omega);
+    if (speed > 12 || spin > 3) return false;
+    if (this.standableUnderBottomCenter(map)) return true;
+    return overlapsAnySolidTile(map, this.poseAt(this.x, this.y)) && speed < 6 && spin < 1.5;
   }
 
   setLifetime(lifetimeSec: number, blinkStartSec: number): void {

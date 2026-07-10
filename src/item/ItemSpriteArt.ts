@@ -63,6 +63,32 @@ export function drawItemPickupCell(
   g.drawImage(sheet, r.sx, r.sy, r.sw, r.sh, dx, dy, dw, dh);
 }
 
+/**
+ * Pickup cell scaled to fit inside a rect, centered (Java weaponSlotPickupIcon +
+ * drawHudIconContainedInRect).
+ */
+export function drawItemPickupCellContainedInRect(
+  g: CanvasRenderingContext2D,
+  sheet: ImageBitmap,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): void {
+  const r = itemPickupRect(sheet.width, sheet.height);
+  const iw = r.sw;
+  const ih = r.sh;
+  if (iw <= 0 || ih <= 0 || w <= 0 || h <= 0) return;
+  let scale = Math.min(w / iw, h / ih);
+  if (scale >= 1) scale = Math.max(1, Math.floor(scale + 1e-9));
+  const dw = Math.max(1, Math.round(iw * scale));
+  const dh = Math.max(1, Math.round(ih * scale));
+  const dx = x + Math.floor((w - dw) / 2);
+  const dy = y + Math.floor((h - dh) / 2);
+  g.imageSmoothingEnabled = false;
+  g.drawImage(sheet, r.sx, r.sy, r.sw, r.sh, dx, dy, dw, dh);
+}
+
 /** Draw the HUD icon into a device-space box; falls back to pickup cell. */
 export function drawItemHudIcon(
   g: CanvasRenderingContext2D,

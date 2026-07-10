@@ -13,6 +13,7 @@ export const HIT_VFX_FADE_ROTATION_RAD = Math.PI * 0.5;
 export enum HitVfxKind {
   SLASH = "slash",
   ELECTRIC = "electric",
+  SHIELD = "shield",
   SHIELD_BREAK = "shield_break",
   FALLBACK = "fallback",
 }
@@ -23,6 +24,8 @@ export function hitVfxSpriteFile(kind: HitVfxKind): string {
       return "hit slash.png";
     case HitVfxKind.ELECTRIC:
       return "hit electric.png";
+    case HitVfxKind.SHIELD:
+      return "hit shield.png";
     case HitVfxKind.SHIELD_BREAK:
       return "hit shield break.png";
     case HitVfxKind.FALLBACK:

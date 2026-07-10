@@ -88,7 +88,8 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **SEAM-ANIM**: stagger + **15-step** H camera pan; brick chunks on break
 - **Camera (secret seams)**: playable-scroll X (sealed buffers off-camera; half-tile when opened); soft dead-zone chase (`WorldCamera` / Java `SideScrollCamera`); H SEAM-ANIM uses opened-face playable override + pan to tuck anchors; **tier-1** fixed framing (CAM-W16 / CAM-XOR-1) while H seams sealed; ladder shaft lookahead + enemy-below nudge; enemy-focus horizontal clamp
 - **Breakable loot**: `BreakableLootRoll` + thin `WorldPickup` (heart/key/coins); shell seams skip loot
-- **Sprite chunks**: 8×8 subimages from tileset snapshot when atlas available
+- **Sprite chunks**: 8×8 subimages from tileset snapshot (`snapshotTerrainCell` — authored sheet + composite tiles; no brown fallback)
+- **Secret seams**: shell breakables spawn debris only — no coin/heart/key loot rolls (Java `shellBreakable` path)
 - **Step faces**: cliff-mesa placement (NORMAL/BOSS, max 6) with reachability after break
 - **Pillar/step caps**: `capInteriorSolidPillarsOnMap` + `enforceInteriorPlayFloorSteps` in `finishSecretRoomMap`
 - Stubbed: softlock nav audit (`ProceduralBreakableNav`), dual-seam height bridge, room-persisted chunks
@@ -168,7 +169,7 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **Brick chunks**: tile-break + possessed death debris (`BrickChunk` pivot sprites, rotated hull collision); `roomPersistedBrickChunks` per room; 8s possessed lifetime / blink at 7s
 - **Pause**: Enter/Esc or HUD left-shoulder **II** toggles `paused`; freezes sim; dim overlay + “PAUSE” + item grid menu (`PauseOverlay`); button highlights while paused
 - **ItemEffects** (Phase 4a+): registry + dispatch — `BOX`, `MYSTERY_GIFT`, `PLUG`, `IRON_LUNG`, `SKIRT`, `LEOTARD`, `SHY_MASK` (gravity + charge/superjump), `KALEIDOSCOPE_EYE` (temp/perm stats + scratch palette + pedestal color-swap + 2× incoming), `AUTISM` (HP bars + damage floaters), `FUZZY_HAT` (body-contact electrocution), `SHIELD_BREAKER` (penetration when enemy shields exist)
-- Stubbed: costumes/layered body, full spatial-distort palette op, enemy shield hulls (Jack Blue / Nephilim), other subweapons (Warp Orb / K_Candy), full touch-control chrome, K_CANDY uses badge
+- Stubbed: costumes/layered body, full spatial-distort palette op, Jack Blue shield hulls, other subweapons (Warp Orb / K_Candy), full touch-control chrome, K_CANDY uses badge
 
 ### Phase shop notes (Shop A)
 
@@ -186,7 +187,7 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - On clear: kill explosion + **BOSS_CLEAR** pedestal (`PedestalItemDecks.drawBossClear`)
 - HUD: boss HP bar (Java parity: 52% width, red fill + top highlight, label above; hidden while dying)
 - Stubbed (5b): Modern Chicken; Lil familiar
-- **Nephilim MVP** (Phase 5b): grounded marionette boss via `nephilim.rig.json` — dormant→awaken→notice→active intro, standoff stalk AI, part springs, marionette death debris; stubbed: grab/lift/player hooks, chain strings, arm guard, drink overlay, chain IK, head-landing room-clear gate (uses 4s `DEATH_REWARD_DELAY_SEC` like Possessed)
+- **Nephilim** (Phase 5b): grounded marionette boss via `nephilim.rig.json` — dormant→awaken→notice→active intro, standoff stalk AI, part springs, **grab + lift attacks**, **arm guard shield**, **planted-foot leg IK**, chain strings + two-bone IK, drink heal overlay (optional `sprites/FX enemy heal.png`), offensive hitlag, lift-drop contact damage only, marionette death with **head-chunk room-clear gate** (`BrickChunk.isBossDeathHeadResting`). Full parity except LilPossessed / Modern Chicken spawn paths.
 
 ### Phase 6a notes
 
@@ -194,11 +195,11 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
   - Climb uses layered `sprites/vernan/climb {base,arm,hair}.png` composite (legacy flat strip fallback)
 - Crawler strip + Possessed body frame (full rig later)
 - **Attack buffer** (~0.14 s): X during recover / landing lock / hitlag chains into next swing
-- **Unique primary weapons** (`SwordProfile` / `SwordVisual`): **FLINT** (0.5× swing timing, spark proc → `FlintFire` patches; hybrid overlay with GEM); **GEM_SWORD** (2× hitstun, 5% hit / 33% kill coin procs with tiered values); **STICK** (centered overlay + stick hitboxes); **HEADBAND** / `fists` (`HeadbandCombat` crouch-kick / up / side spin; layered `crouchattack1` / `upattack0` / `sideattack0` draw); **LEMON** (horizontal buster shot + lemon body pose sheets)
+- **Unique primary weapons** (`SwordProfile` / `SwordVisual`): **FLINT** (0.5× swing timing, spark proc → `FlintFire` patches; hybrid overlay with GEM); **GEM_SWORD** (2× hitstun, 5% hit / 33% kill coin procs with tiered values); **STICK** (centered overlay + stick hitboxes; stick reflect reverses arcing bullets, 2× reflected damage); **HEADBAND** / `fists` (`HeadbandCombat` crouch-kick / up / side spin; layered `crouchattack1` / `upattack0` / `sideattack0` draw); **LEMON** (horizontal buster shot + lemon body pose sheets); **SHIELD** (passive `shield player.png` overlay + stand/crouch block hulls; attack windup `shield attack.png` deflects bullets; `hit shield.png` block VFX)
 - **BACKPACK**: Shift+X cycles owned primaries (+ vanilla sword); Shift+C cycles owned subweapons; queues until not attacking / subweapon anim / lemon pose; clears psychic telekinesis on subweapon swap; HUD weapon slot shows active weapon pickup icon
 - Jump buffer already existed; presses also latch during hitlag
 - **Browser input machine** (Java `Input` parity): press edges survive key-up; lag-stash when sim skips a frame; `primeLagInputBuffers` during timestop; window capture listeners
-- Stubbed: layered body/costumes (climb+hurt use base/hair composites), turn/hurt/airdodge full costume routes, **WHIP**, stick arcing-bullet reflect, heavy attacks, backpack HUD preview ghosts
+- Stubbed: layered body/costumes (climb+hurt use base/hair composites), turn/hurt/airdodge full costume routes, **WHIP**, heavy attacks, backpack HUD preview ghosts
   - Room terrain art: Phase C++ (object-based bridge + MemberGraph + full-object deco + step breakables)
 
 ### Phase 5b-thin notes

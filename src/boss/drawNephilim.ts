@@ -7,7 +7,60 @@ import { CAMERA_ZOOM } from "../specs";
 
 export type NephilimDrawAssets = {
   strip: SpriteStrip | null;
+  healOverlay?: CanvasImageSource | null;
 };
+
+export function drawNephilimChainStrings(
+  g: CanvasRenderingContext2D,
+  boss: Nephilim,
+  camera: WorldCamera,
+): void {
+  for (const seg of boss.chainStringSegments(1)) {
+    const ax = camera.worldToDeviceX(seg.ax);
+    const ay = camera.worldToDeviceY(seg.ay);
+    const bx = camera.worldToDeviceX(seg.bx);
+    const by = camera.worldToDeviceY(seg.by);
+    g.strokeStyle = `rgba(255,255,255,${seg.loose ? 160 / 255 : 230 / 255})`;
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(ax, ay);
+    g.lineTo(bx, by);
+    g.stroke();
+  }
+  g.setLineDash([3, 3]);
+  for (const seg of boss.handGrabStringSegments(1)) {
+    const ax = camera.worldToDeviceX(seg.ax);
+    const ay = camera.worldToDeviceY(seg.ay);
+    const bx = camera.worldToDeviceX(seg.bx);
+    const by = camera.worldToDeviceY(seg.by);
+    g.strokeStyle = "rgba(255,255,220,1)";
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(ax, ay);
+    g.lineTo(bx, by);
+    g.stroke();
+  }
+  g.setLineDash([]);
+}
+
+export function drawNephilimLiftString(
+  g: CanvasRenderingContext2D,
+  boss: Nephilim,
+  camera: WorldCamera,
+): void {
+  const lift = boss.liftPuppetString(1);
+  if (!lift) return;
+  const hx = camera.worldToDeviceX(lift.handWorldX);
+  const hy = camera.worldToDeviceY(lift.handWorldY);
+  const ax = camera.worldToDeviceX(lift.anchorWorldX);
+  const ay = camera.worldToDeviceY(lift.anchorWorldY);
+  g.strokeStyle = "rgba(255,255,255,0.95)";
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(hx, hy);
+  g.lineTo(ax, ay);
+  g.stroke();
+}
 
 function drawPartRender(
   g: CanvasRenderingContext2D,
@@ -24,6 +77,9 @@ function drawPartRender(
   },
   camera: WorldCamera,
   juice?: JuiceDrawOpts,
+  healOverlay?: CanvasImageSource | null,
+  healAlpha = 0,
+  healScrollY = 0,
 ): void {
   const facing = pr.mirror ? -1 : 1;
   const fi = ((pr.frame % strip.frameCount) + strip.frameCount) % strip.frameCount;
@@ -32,7 +88,7 @@ function drawPartRender(
   const sh = strip.frameH;
 
   const pivotDevX = camera.worldToDeviceX(pr.cx);
-  const pivotDevY = camera.worldToDeviceY(pr.cy);
+  const pivotDevY = camera.worldToDeviceY(pr.cy - healScrollY);
   const dw = Math.floor(CAMERA_ZOOM * sw);
   const dh = Math.floor(CAMERA_ZOOM * sh);
   const pivotDevOffX = Math.floor(CAMERA_ZOOM * pr.pivotX);
@@ -72,7 +128,21 @@ function drawPartRender(
     g.drawImage(strip.image, sx, 0, sw, sh, dx, dy, dw, dh);
   }
 
-  // Arm guard glow stub (MVP: alpha always 0).
+  if (healAlpha > 0) {
+    g.save();
+    if (healOverlay) {
+      g.globalAlpha = healAlpha;
+      g.globalCompositeOperation = "source-atop";
+      g.drawImage(healOverlay, dx, dy, dw, dh);
+      g.globalCompositeOperation = "source-over";
+    } else {
+      g.globalAlpha = healAlpha * 0.55;
+      g.fillStyle = "#5fe8b0";
+      g.fillRect(dx, dy, dw, dh);
+    }
+    g.restore();
+  }
+
   if (pr.armGuardGlowAlpha > 0) {
     g.globalAlpha = pr.armGuardGlowAlpha / 255;
     g.fillStyle = "#a8e0ff";
@@ -102,8 +172,14 @@ export function drawNephilimBoss(
   }
 
   const juice = juiceForBoss(boss);
+  const healActive = boss.drinkHealOverlayActive();
+  const healAlpha = healActive ? boss.drinkHealOverlayAlpha() : 0;
+  const healScroll = healActive ? boss.drinkHealOverlayScrollWorldPx() : 0;
+
+  drawNephilimChainStrings(g, boss, camera);
+  drawNephilimLiftString(g, boss, camera);
   for (const pr of boss.partRenders()) {
-    drawPartRender(g, strip, pr, camera, juice);
+    drawPartRender(g, strip, pr, camera, juice, assets.healOverlay, healAlpha, healScroll);
   }
 }
 

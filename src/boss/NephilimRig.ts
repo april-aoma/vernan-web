@@ -4,6 +4,14 @@
  */
 
 import {
+  effectiveConnectorEndpoints,
+  isConnector,
+  lookupPin,
+  normalizeAttachMap,
+  normalizePinRole,
+  PARENT,
+} from "../entity/ChainPinModel";
+import {
   flatPolygon,
   hullPolygonAabb,
   type FlatPolygon,
@@ -23,7 +31,9 @@ export type NephilimPartDef = {
   hurtAabb: HullAabb | null;
   hurt: FlatPolygon;
   hit: FlatPolygon;
+  grab: FlatPolygon;
   collision: FlatPolygon;
+  chainAttach: Record<string, [number, number]>;
 };
 
 /** Compatible with PossessedRigData minus bullet fields. */
@@ -54,20 +64,33 @@ function num(v: unknown, def: number): number {
 function parsePartHulls(pm: Record<string, unknown>): {
   hurt: FlatPolygon;
   hit: FlatPolygon;
+  grab: FlatPolygon;
   collision: FlatPolygon;
   hurtAabb: HullAabb | null;
 } {
   let hurt: FlatPolygon = [];
   let hit: FlatPolygon = [];
+  let grab: FlatPolygon = [];
   let collision: FlatPolygon = [];
   if (pm.hulls && typeof pm.hulls === "object") {
     const hulls = pm.hulls as Record<string, unknown>;
     hurt = flatPolygon(hulls.hurt);
     hit = flatPolygon(hulls.hit);
+    grab = flatPolygon(hulls.grab);
     collision = flatPolygon(hulls.collision);
   }
   const hurtAabb = hullPolygonAabb(hurt) ?? hullPolygonAabb(collision);
-  return { hurt, hit, collision, hurtAabb };
+  return { hurt, hit, grab, collision, hurtAabb };
+}
+
+function parseChainAttach(partName: string, raw: unknown): Record<string, [number, number]> {
+  const out: Record<string, [number, number]> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(v) || v.length < 2) continue;
+    out[k] = [num(v[0], 0), num(v[1], 0)];
+  }
+  return normalizeAttachMap(partName, out);
 }
 
 function fallbackRig(): NephilimRigData {
@@ -91,7 +114,9 @@ function fallbackRig(): NephilimRigData {
         hurtAabb: full,
         hurt: box16.slice(),
         hit: box16.slice(),
+        grab: [],
         collision: box16.slice(),
+        chainAttach: {},
       },
       {
         name: "body",
@@ -103,7 +128,9 @@ function fallbackRig(): NephilimRigData {
         hurtAabb: full,
         hurt: box16.slice(),
         hit: box16.slice(),
+        grab: [],
         collision: box16.slice(),
+        chainAttach: {},
       },
     ],
     drawOrder: ["body", "head"],
@@ -156,7 +183,7 @@ function parseRig(raw: Record<string, unknown>): NephilimRigData {
         pivotX = num(pm.pivot[0], pivotX);
         pivotY = num(pm.pivot[1], pivotY);
       }
-      const { hurt, hit, collision, hurtAabb } = parsePartHulls(pm);
+      const { hurt, hit, grab, collision, hurtAabb } = parsePartHulls(pm);
       parts.push({
         name,
         frame: Math.floor(num(pm.frame, 0)),
@@ -167,7 +194,9 @@ function parseRig(raw: Record<string, unknown>): NephilimRigData {
         hurtAabb,
         hurt,
         hit,
+        grab,
         collision,
+        chainAttach: parseChainAttach(name, pm.chainAttach),
       });
     }
   }
@@ -234,6 +263,34 @@ function parseRig(raw: Record<string, unknown>): NephilimRigData {
     anchorCollision:
       anchorCollision.length >= 6 ? anchorCollision : [-10, -5, 15, -5, 15, 22, -10, 22],
   };
+}
+
+/** Pivot-local chain socket for part/pin (legacy alias support via ChainPinModel). */
+export function chainAttach(
+  rig: NephilimRigData,
+  partName: string,
+  pin: string,
+  frameW: number,
+  frameH: number,
+): [number, number] {
+  const def = rig.parts.find((p) => p.name === partName);
+  if (def) {
+    if (isConnector(def.name)) {
+      const ends = effectiveConnectorEndpoints(
+        def.name,
+        def.chainAttach,
+        def.hurt,
+        def.pivotX,
+        def.pivotY,
+      );
+      const norm = normalizePinRole(def.name, pin);
+      return norm === PARENT ? ends[0] : ends[1];
+    }
+    return lookupPin(def.chainAttach, partName, pin);
+  }
+  const d = lookupPin(null, partName, pin);
+  if (d[0] !== 0 || d[1] !== 0) return d;
+  return [frameW / 2, frameH / 2];
 }
 
 export function poseOffset(rig: NephilimRigData, poseName: string, partName: string): PoseEntry {

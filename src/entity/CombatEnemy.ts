@@ -28,4 +28,22 @@ export interface CombatEnemy {
   applyShieldBlockStrike(strike: WeaponStrike): void;
   /** Flint fire loop tick (bosses / regular enemies). */
   applyFlintFireLoopDamage?(amount: number, fireCx: number, fireCy: number): boolean;
+  /** Grab reach latch (Nephilim). */
+  tryGrabLatch?(playerHurt: HitboxPose): boolean;
+  isGrabHoldingPlayer?(): boolean;
+  grabHoldBoxPose?(): HitboxPose | null;
+  flipGrabHoldFacing?(): void;
+  grabPlayerDrawBeforePart?(): string | null;
+  consumeGrabReleasePunish?(): boolean;
+  applyGrabDrinkStealIfDue?(player: {
+    applyGrabDrinkSteal(halfHearts: number, freezeFrames: number): boolean;
+  }): void;
+  grabReleaseDamageToPlayer?(): number;
+  /** Boss dying but room not cleared yet (Nephilim head landing, Possessed delay). */
+  isDying?(): boolean;
+  /** Offensive hitlag — boss freezes between attack beats (Nephilim drink sip, lift land). */
+  applyOffensiveHitlag?(freezeFrames: number): void;
+  /** Forearm shield blocks projectiles without HP loss. */
+  projectileBlockedByShield?(projectile: HitboxPose): boolean;
+  applyProjectileShieldBlock?(strike: ProjectileStrike): void;
 }

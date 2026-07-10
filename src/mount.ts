@@ -10,9 +10,11 @@ import {
   drawFeetPinnedImage,
   drawFeetPinnedStrip,
   drawFeetRowAnchoredStripDevice,
+  drawStripFrame,
   stripFromImage,
   type SpriteStrip,
 } from "./render/SpriteDraw";
+import type { JuiceDrawOpts } from "./render/JuiceDraw";
 import {
   CLIMB_BODY_PARTS,
   LEVEL_TRANSITION_BODY_PARTS,
@@ -20,18 +22,22 @@ import {
 } from "./render/VernanBodyComposite";
 import { gemKillSource, setGemKillSource } from "./combat/GemKillTracking";
 import { resolveSwordProfile } from "./combat/SwordProfile";
+import { HitboxPose } from "./collision/HitboxPose";
+import { ARCING_ENEMY_BULLET_PLAYER_DAMAGE } from "./config/Physics";
+import { stickReflectedVelocity } from "./combat/StickReflect";
 import type { SwordVisual } from "./combat/SwordVisual";
 import { BackpackWeaponSwitch } from "./entity/BackpackWeaponSwitch";
 import { FlintFire } from "./entity/FlintFire";
 import { LemonProjectile } from "./entity/LemonProjectile";
 import { Player } from "./entity/Player";
-import { Possessed } from "./entity/Possessed";
+import { Possessed, possessedBulletDamagePose, type PossessedBullet } from "./entity/Possessed";
 import { Nephilim } from "./entity/Nephilim";
 import { Crawler } from "./entity/Crawler";
 import { Mouse } from "./entity/Mouse";
 import { GoldenRoach } from "./entity/GoldenRoach";
 import { drawGoldenRoach } from "./entity/drawGoldenRoach";
 import { Penisman } from "./entity/Penisman";
+import type { PenismanBullet } from "./entity/PenismanBullet";
 import { drawPenisBulletDieFx, drawPenismanBullets } from "./entity/drawPenisman";
 import { tickEnemyPeerPhysics } from "./entity/EnemyPeerTick";
 import type { CombatEnemy } from "./entity/CombatEnemy";
@@ -70,6 +76,7 @@ import { JavaRandom, toJavaLong } from "./util/JavaRandom";
 import {
   createMiniMapState,
   drawBottomHud,
+  hudWeaponItemIdsToPreload,
   innerBoxFrom0000feBorder,
   pauseButtonRect,
   revealMiniMapForRoom,
@@ -132,7 +139,6 @@ import {
 } from "./world/Shop";
 import { RoomKind } from "./world/DungeonTypes";
 import type { Aabb } from "./combat/CombatMath";
-import { CONTACT_DAMAGE_IFRAMES } from "./config/CombatStats";
 import {
   CAMERA_ENEMY_FOCUS_RADIUS_TILES,
   CAMERA_LADDER_ENEMY_BELOW_EXTRA_FRAC,
@@ -248,6 +254,7 @@ import {
 } from "./world/roomMathBackgrounds";
 import { destKindByDoorCell } from "./world/DoorDestinationResolver";
 import { enrichDungeonArt } from "./tileset/enrichDungeonArt";
+import { snapshotTerrainCell } from "./tileset/snapshotTerrainCell";
 import {
   applySwordBreakables,
   finishSeamOpenAnimInstant,
@@ -312,6 +319,11 @@ type PlayerSprites = {
   lemonWalk: SpriteStrip | null;
   lemonJump: SpriteStrip | null;
   lemonClimb: SpriteStrip | null;
+  /** Passive shield overlay (`shield player.png`, 4 frames). */
+  shieldPlayer: SpriteStrip | null;
+  /** Attack windup shield overlays. */
+  shieldAttack: SpriteStrip | null;
+  crouchShieldAttack: SpriteStrip | null;
 };
 
 type EnemySprites = {
@@ -324,6 +336,7 @@ type EnemySprites = {
   possessed: SpriteStrip | null;
   shinyPossessed: SpriteStrip | null;
   nephilim: SpriteStrip | null;
+  nephilimHealFx: CanvasImageSource | null;
 };
 
 function resolveRoot(root: string | HTMLElement): HTMLElement {
@@ -682,6 +695,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     lemonWalk: null,
     lemonJump: null,
     lemonClimb: null,
+    shieldPlayer: null,
+    shieldAttack: null,
+    crouchShieldAttack: null,
   };
   let renderFacing = 1;
   let turnAnimFramesLeft = 0;
@@ -695,6 +711,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     possessed: null,
     shinyPossessed: null,
     nephilim: null,
+    nephilimHealFx: null,
   };
   let possessedBulletBmp: ImageBitmap | null = null;
   let possessedBulletDieBmp: ImageBitmap | null = null;
@@ -825,6 +842,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       for (const kind of [
         HitVfxKind.SLASH,
         HitVfxKind.ELECTRIC,
+        HitVfxKind.SHIELD,
         HitVfxKind.SHIELD_BREAK,
         HitVfxKind.FALLBACK,
       ]) {
@@ -899,6 +917,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       playerSprites.crouchStickSword = await loadStrip(
         assets,
         "sprites/stick crouch attack.png",
+        SWORD_ATTACK_FRAMES,
+      );
+      playerSprites.shieldPlayer = await loadStrip(assets, "sprites/shield player.png", 4);
+      playerSprites.shieldAttack = await loadStrip(assets, "sprites/shield attack.png", SWORD_ATTACK_FRAMES);
+      playerSprites.crouchShieldAttack = await loadStrip(
+        assets,
+        "sprites/shield crouch attack.png",
         SWORD_ATTACK_FRAMES,
       );
       playerSprites.specialAttack = await loadStrip(
@@ -1011,6 +1036,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         possessedFrames,
       );
       enemySprites.nephilim = await loadStrip(assets, "sprites/bosses/nephilim.png", 7);
+      enemySprites.nephilimHealFx = await loadImageSafe(assets, "sprites/FX enemy heal.png");
       possessedBulletBmp = await loadImageSafe(assets, "sprites/bosses/possessed bullet.png");
       possessedBulletDieBmp = await loadImageSafe(
         assets,
@@ -1298,6 +1324,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     player.applySwordProfile(
       resolveSwordProfile(player.inventory, session.catalog),
       player.inventory.stacksOf("GEM_SWORD"),
+      player.inventory.stacksOf("SHIELD"),
     );
   }
 
@@ -1315,7 +1342,17 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         const bx = tx * TILE_SIZE;
         const by = ty * TILE_SIZE;
         map.setTile(tx, ty, TILE_EMPTY);
-        spawnBreakableBrickChunks(bx, by, Math.random, brickChunks, 1, "#8a5a3a", null);
+        const snap = snapshotBreakableTile(
+          map,
+          tx,
+          ty,
+          session,
+          sheetAtlas,
+          tilesetProject,
+          floorOrdinal,
+          tileWorldRenderer,
+        );
+        spawnBreakableBrickChunks(bx, by, Math.random, brickChunks, 1, "#8a5a3a", snap);
         any = true;
       }
     }
@@ -1541,9 +1578,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       };
 
       // Fade / door-pose / ascend blackout freezes gameplay (Java transitionPhase != NONE).
+      // Camera holds until swap; resetCameraForRoomSpawn runs in refreshRoomArtAndCamera.
       if (tickSessionRoomTransition(session, player, input, camera, onRoomSwapped, ascendHooks)) {
         tickBrickChunkSim();
-        followCamera(session, false);
         return;
       }
 
@@ -1558,13 +1595,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       // Ladder before door (Java order); may start fade (incl. boss ascend cinematic).
       if (tryLadderTransition(session, player, input, camera)) {
         tickBrickChunkSim();
-        followCamera(session, false);
         return;
       }
 
       if (tryDoorTransition(session, player, input)) {
         tickBrickChunkSim();
-        followCamera(session, false);
         return;
       }
 
@@ -1580,7 +1615,48 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       const pedestalPlatforms = pedestalBmp
         ? pedestalPlatformRects(collectRoomPedestals(session))
         : null;
-      player.update(FIXED_DT, input, map, subweaponHost, pedestalPlatforms);
+      followCamera(session, true);
+      const camViewPre = camera.viewRect();
+      const seeRPre = seeRadiusForRun(false, camViewPre);
+      const playerSnapPre = {
+        cx: player.x + player.w * 0.5,
+        cy: player.y + player.h * 0.5,
+        vx: player.vx,
+        vy: player.vy,
+        hurtbox: player.hurtbox(),
+      };
+      const grabStruggleMash =
+        player.isGrabHeld() &&
+        (input.jump ||
+          input.attack ||
+          input.subweapon ||
+          input.up ||
+          input.wasPressed("ArrowLeft") ||
+          input.wasPressed("KeyA") ||
+          input.wasPressed("ArrowRight") ||
+          input.wasPressed("KeyD") ||
+          input.wasPressed("ArrowDown") ||
+          input.wasPressed("KeyS"));
+      for (const e of session.enemies) {
+        if (e instanceof Possessed) {
+          e.setCameraView(camViewPre);
+          e.applyVision(playerSnapPre, seeRPre);
+        } else if (e instanceof Nephilim) {
+          e.setCameraView(camViewPre);
+          e.applyVision(playerSnapPre, seeRPre);
+          e.setGrabStruggleMashing(grabStruggleMash);
+        } else if (e instanceof Penisman) {
+          e.setCameraView(camViewPre);
+        } else if (e instanceof GoldenRoach) {
+          e.setCameraView(camViewPre);
+          e.prepareVisionTick(map);
+          e.applyVision(playerSnapPre.cx, playerSnapPre.cy, seeRPre);
+        } else if (e instanceof Mouse) {
+          e.applyVision(playerSnapPre, seeRPre);
+        }
+      }
+      tickEnemyPeerPhysics(session.enemies, map, player.x + player.w * 0.5, FIXED_DT);
+      player.update(FIXED_DT, input, map, subweaponHost, pedestalPlatforms, session.enemies);
       tickFlintFiresAndLemonShots(map);
       if (player.consumeLandedThisTick() && session) {
         ItemEffects.onPlayerLanded(
@@ -1615,6 +1691,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           if (bought.itemId === "KALEIDOSCOPE_EYE") ensureKaleidoscopePalette();
           pickupOverlay.begin(bought.itemId, pickupOverlayBonusLine);
           pickupOverlayBonusLine = "";
+          applySwordProfileIfPresent();
           void ensureItemArt(session.catalog.def(bought.itemId).spriteFileName);
         }
       } else {
@@ -1623,8 +1700,16 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           if (collected === "KALEIDOSCOPE_EYE") ensureKaleidoscopePalette();
           pickupOverlay.begin(collected, pickupOverlayBonusLine);
           pickupOverlayBonusLine = "";
+          applySwordProfileIfPresent();
           void ensureItemArt(session.catalog.def(collected).spriteFileName);
         }
+      }
+
+      for (const id of player.inventory.ownedIds()) {
+        void ensureItemArt(session.catalog.def(id).spriteFileName);
+      }
+      for (const id of hudWeaponItemIdsToPreload(player, session.catalog)) {
+        void ensureItemArt(session.catalog.def(id).spriteFileName);
       }
 
       if (pickupOverlay.isActive()) {
@@ -1643,45 +1728,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           void ensureItemArt(def.spriteFileName);
         }
       }
-      for (const id of player.inventory.ownedIds()) {
-        void ensureItemArt(session.catalog.def(id).spriteFileName);
-      }
 
-      // Camera first so Possessed clamps to the same view Vernan sees.
+      // Enemies already simulated before player.update; refresh camera for combat FX.
       followCamera(session, true);
-      const camView = camera.viewRect();
-      const seeR = seeRadiusForRun(false, camView);
-      const playerSnap = {
-        cx: player.x + player.w * 0.5,
-        cy: player.y + player.h * 0.5,
-        vx: player.vx,
-        vy: player.vy,
-        hurtbox: player.hurtbox(),
-      };
-
-      for (const e of session.enemies) {
-        if (e instanceof Possessed) {
-          e.setCameraView(camView);
-          e.applyVision(playerSnap, seeR);
-        } else if (e instanceof Nephilim) {
-          e.setCameraView(camView);
-          e.applyVision(playerSnap, seeR);
-        } else if (e instanceof Penisman) {
-          e.setCameraView(camView);
-        } else if (e instanceof GoldenRoach) {
-          e.setCameraView(camView);
-          e.prepareVisionTick(map);
-          e.applyVision(playerSnap.cx, playerSnap.cy, seeR);
-        } else if (e instanceof Mouse) {
-          e.applyVision(playerSnap, seeR);
-        }
-      }
-      tickEnemyPeerPhysics(
-        session.enemies,
-        map,
-        player.x + player.w * 0.5,
-        FIXED_DT,
-      );
       for (const e of session.enemies) {
         if (e instanceof Possessed) {
           processPossessedDeathChunks(e, enemySprites.possessed, enemySprites.shinyPossessed, brickChunks);
@@ -1689,7 +1738,15 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
             explosions.push(new KillExplosion(ex, ey));
           }
         } else if (e instanceof Nephilim) {
+          const chunkBase = brickChunks.length;
           processNephilimDeathChunks(e, enemySprites.nephilim, brickChunks);
+          for (let ci = chunkBase; ci < brickChunks.length; ci++) {
+            const chunk = brickChunks[ci]!;
+            if (chunk.bossDeathHead) e.registerDeathHeadChunk(chunk);
+          }
+          if (!e.isDead()) {
+            e.tickDeathHeadLanding(FIXED_DT, map);
+          }
         }
         maybeSpawnDeathFx(e);
       }
@@ -1707,7 +1764,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         const kind =
           vfx === "shield_break"
             ? HitVfxKind.SHIELD_BREAK
-            : HitVfxKind.SLASH;
+            : vfx === "shield_block"
+              ? HitVfxKind.SHIELD
+              : HitVfxKind.SLASH;
         HitVfx.spawn(
           hitVfxList,
           kind,
@@ -1739,6 +1798,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
             sheetAtlas,
             tilesetProject,
             floorOrdinal,
+            tileWorldRenderer,
           ),
         snapshotDecoTile: (tileId) => {
           // Authored sheet only — deco must not remap to floor primarySheetId.
@@ -1762,8 +1822,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           player.x + player.w * 0.5,
         );
       });
-      applyPossessedBulletHits(session, player);
       applyPenismanBulletHits(session, player);
+      applyPossessedBulletHits(session, player);
+      applyStickReflectedArcingBulletHits(session, player);
       for (const e of session.enemies) maybeSpawnDeathFx(e);
       session.enemies = session.enemies.filter((e) => {
         if (!e.isDead()) return true;
@@ -1853,6 +1914,16 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         keyblockStrip,
         keyblockConnectorStrip,
       );
+      const preloadPedestalItem = (ped: ItemPedestal | null) => {
+        if (ped?.itemId && !ped.collected && session) {
+          void ensureItemArt(session.catalog.def(ped.itemId).spriteFileName);
+        }
+      };
+      preloadPedestalItem(activePedestal(session));
+      if (node.kind === RoomKind.SHOP) {
+        ensureShopResolved(session);
+        for (const sp of activeShopPedestals(session)) preloadPedestalItem(sp);
+      }
       drawPedestal(
         g,
         activePedestal(session),
@@ -1990,10 +2061,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         const liveCx = Math.round(CAMERA_ZOOM * (player.x + player.w * 0.5) + camera.tx);
         drawLevelAscendPlayerOverlay(g, t.levelAscend, playerSprites, liveFeet, liveCx);
       }
-      const sword = player.attackHitbox();
-      if (sword && debug) drawAabb(g, sword, "#f0d060", camera);
       if (debug) {
         drawPlayerHitbox(g, player, camera);
+        for (const p of worldPickups) {
+          drawHitboxPolygon(g, p.hitboxPose(), "#60e880", camera);
+          drawHitboxPolygon(g, p.physicsHitboxPose(), "#60c8e8", camera);
+        }
         for (const e of session.enemies) {
           drawAabb(g, e.damageReceivePose(), "#ff6688", camera);
         }
@@ -2025,6 +2098,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         );
       } else {
         pauseMenuHits = { submit: { x: 0, y: 0, w: 0, h: 0 } };
+      }
+
+      for (const id of hudWeaponItemIdsToPreload(player, session.catalog)) {
+        void ensureItemArt(session.catalog.def(id).spriteFileName);
       }
 
       drawBottomHud(
@@ -2146,39 +2223,138 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     }
   }
 
-  function applyPossessedBulletHits(sess: RoomSession, pl: Player): void {
-    if (pl.health.isDead || pl.health.isInvulnerable || pl.isHurtLocked() || pl.isInDefensiveHitstun())
-      return;
-    const hurt = pl.hurtbox();
-    for (const e of sess.enemies) {
-      if (!(e instanceof Possessed)) continue;
-      e.applyBulletHits(hurt, (dmg, bulletCx) => {
-        const scaled = dmg * KaleidoscopeEyeCombat.playerDamageMultiplier();
-        if (!pl.health.tryDamage(scaled, CONTACT_DAMAGE_IFRAMES)) return;
-        KaleidoscopeEyeCombat.notifyPlayerDamageApplied();
-        LeotardCombat.notifyPlayerDamageApplied(scaled);
-        const away = pl.x + pl.w * 0.5 >= bulletCx ? 1 : -1;
-        // Soften freeze slightly for bullets; knock fires after stun ends.
-        pl.beginDefensiveHitstun(Math.max(1, Math.ceil(freezeFrames(scaled) * 0.85)), away);
-      });
-    }
+  function reflectPenismanBulletForStick(b: PenismanBullet, pl: Player): void {
+    const v = stickReflectedVelocity(
+      b.centerX(),
+      b.centerY(),
+      b.vx,
+      b.vy,
+      pl.x + pl.w * 0.5,
+      pl.y + pl.h * 0.5,
+      pl.facing,
+    );
+    b.vx = v.vx;
+    b.vy = v.vy;
+    b.markStickReflected(ARCING_ENEMY_BULLET_PLAYER_DAMAGE);
+  }
+
+  function reflectPossessedBulletForStick(b: PossessedBullet, pl: Player): void {
+    const v = stickReflectedVelocity(
+      b.x,
+      b.y,
+      b.vx,
+      b.vy,
+      pl.x + pl.w * 0.5,
+      pl.y + pl.h * 0.5,
+      pl.facing,
+    );
+    b.vx = v.vx;
+    b.vy = v.vy;
+    b.stickReflected = true;
+    b.stickReflectBaseDamage = ARCING_ENEMY_BULLET_PLAYER_DAMAGE;
+    b.playerOverlapHandled = true;
   }
 
   function applyPenismanBulletHits(sess: RoomSession, pl: Player): void {
-    if (pl.health.isDead || pl.health.isInvulnerable || pl.isHurtLocked() || pl.isInDefensiveHitstun())
-      return;
-    const hurt = pl.hurtbox();
     for (const e of sess.enemies) {
       if (!(e instanceof Penisman) || e.isDead()) continue;
-      e.applyBulletHits(hurt, (dmg, bulletCx) => {
-        const scaled = dmg * KaleidoscopeEyeCombat.playerDamageMultiplier();
-        if (!pl.health.tryDamage(scaled, CONTACT_DAMAGE_IFRAMES)) return;
-        KaleidoscopeEyeCombat.notifyPlayerDamageApplied();
-        LeotardCombat.notifyPlayerDamageApplied(scaled);
-        const away = pl.x + pl.w * 0.5 >= bulletCx ? 1 : -1;
-        pl.beginDefensiveHitstun(Math.max(1, Math.ceil(freezeFrames(scaled) * 0.85)), away);
-      });
+      for (const b of e.bulletsCopy()) {
+        if (!b.alive || b.isStickReflected() || b.playerOverlapHandled()) continue;
+        const res = pl.hitArcingEnemyBullet(b.damagePose(), b.centerX());
+        if (res === "miss") continue;
+        if (res === "stick_reflect") {
+          reflectPenismanBulletForStick(b, pl);
+          continue;
+        }
+        if (res === "shield_destroy") {
+          b.kill();
+          e.addBulletDieFx(b.centerX(), b.centerY());
+          continue;
+        }
+        b.beginHitlagThenRemove(Math.max(0.12, 4 / 60));
+        e.addBulletDieFx(b.centerX(), b.centerY());
+      }
     }
+  }
+
+  function applyPossessedBulletHits(sess: RoomSession, pl: Player): void {
+    for (const e of sess.enemies) {
+      if (!(e instanceof Possessed) || e.isDead()) continue;
+      for (const b of e.bulletsCopy()) {
+        if (b.dead || b.stickReflected || b.playerOverlapHandled) continue;
+        const res = pl.hitArcingEnemyBullet(possessedBulletDamagePose(b), b.x);
+        if (res === "miss") continue;
+        if (res === "stick_reflect") {
+          reflectPossessedBulletForStick(b, pl);
+          continue;
+        }
+        if (res === "shield_destroy") {
+          b.dead = true;
+          e.addBulletDieFx(b.x, b.y);
+          continue;
+        }
+        b.playerOverlapHandled = true;
+        b.hitlagRemoveRemaining = Math.max(0.12, 4 / 60);
+        e.addBulletDieFx(b.x, b.y);
+      }
+    }
+  }
+
+  function applyStickReflectedArcingBulletHits(sess: RoomSession, _pl: Player): void {
+    for (const owner of sess.enemies) {
+      if (owner instanceof Possessed) {
+        for (const b of owner.bulletsCopy()) {
+          if (b.dead || !b.stickReflected) continue;
+          const damage =
+            (b.stickReflectBaseDamage ?? ARCING_ENEMY_BULLET_PLAYER_DAMAGE) *
+            STICK_REFLECT_DAMAGE_MULT;
+          const pose = possessedBulletDamagePose(b);
+          if (
+            applyStickReflectedProjectileHit(sess, pose, damage, b.vx, b.vy, () => {
+              b.dead = true;
+            })
+          ) {
+            owner.addBulletDieFx(b.x, b.y);
+          }
+        }
+      } else if (owner instanceof Penisman) {
+        for (const b of owner.bulletsCopy()) {
+          if (!b.alive || !b.isStickReflected()) continue;
+          const damage = b.stickReflectEnemyDamage();
+          const pose = b.damagePose();
+          if (
+            applyStickReflectedProjectileHit(sess, pose, damage, b.vx, b.vy, () => b.kill())
+          ) {
+            owner.addBulletDieFx(b.centerX(), b.centerY());
+          }
+        }
+      }
+    }
+  }
+
+  function applyStickReflectedProjectileHit(
+    sess: RoomSession,
+    pose: import("./collision/HitboxPose").HitboxPose,
+    damage: number,
+    vx: number,
+    vy: number,
+    killBullet: () => void,
+  ): boolean {
+    for (const e of sess.enemies) {
+      if (e.isDead()) continue;
+      if (!e.intersectsProjectile(pose)) continue;
+      const strike: import("./combat/CombatMath").ProjectileStrike = {
+        damage,
+        freezeFrames: freezeFrames(damage, 0.35),
+        projectileVelX: vx,
+        projectileVelY: vy,
+        knockKind: "contact_only",
+      };
+      e.applyProjectileStrike(strike);
+      killBullet();
+      return true;
+    }
+    return false;
   }
 
   loop.start();
@@ -2612,6 +2788,11 @@ function drawPlayer(
         : sprites.attack;
     const visual = playerSwordVisual(player);
     const sword = pickSwordOverlayStrip(sprites, visual, crouchSwing);
+    const shieldOverlay = player.hasShieldEquipped()
+      ? crouchSwing
+        ? sprites.crouchShieldAttack
+        : sprites.shieldAttack
+      : null;
     drawAttackComposite(
       g,
       body,
@@ -2624,6 +2805,7 @@ function drawPlayer(
       camera,
       juice,
       visual === "stick",
+      shieldOverlay,
     );
     return;
   }
@@ -2649,6 +2831,7 @@ function drawPlayer(
 
   if (player.climbing && bodySprites.climb) {
     drawFeetPinnedStrip(g, bodySprites.climb, player.climbFrame(), cx, feet, facing, camera, juice);
+    drawPassiveShieldOverlay(g, player, sprites, cx, feet, facing, camera, juice, player.climbFrame());
     return;
   }
 
@@ -2660,11 +2843,13 @@ function drawPlayer(
       player.isLandingLocked());
   if (useCrouch && bodySprites.crouch) {
     drawFeetPinnedImage(g, bodySprites.crouch, cx, feet, facing, camera, juice);
+    drawPassiveShieldOverlay(g, player, sprites, cx, feet, facing, camera, juice);
     return;
   }
 
   if (!player.onGround && !player.isWalkOffLedgeActive() && bodySprites.jump) {
     drawFeetPinnedStrip(g, bodySprites.jump, player.jumpFrame(), cx, feet, facing, camera, juice);
+    drawPassiveShieldOverlay(g, player, sprites, cx, feet, facing, camera, juice);
     return;
   }
 
@@ -2674,6 +2859,7 @@ function drawPlayer(
     (turnWindowOpen || player.isTurningPose());
   if (turning && bodySprites.turn) {
     drawFeetPinnedImage(g, bodySprites.turn, cx, feet, facing, camera, juice);
+    drawPassiveShieldOverlay(g, player, sprites, cx, feet, facing, camera, juice);
     return;
   }
 
@@ -2683,11 +2869,13 @@ function drawPlayer(
     bodySprites.walk
   ) {
     drawFeetPinnedStrip(g, bodySprites.walk, player.walkFrame(), cx, feet, facing, camera, juice);
+    drawPassiveShieldOverlay(g, player, sprites, cx, feet, facing, camera, juice);
     return;
   }
 
   if (bodySprites.idle) {
     drawFeetPinnedImage(g, bodySprites.idle, cx, feet, facing, camera, juice);
+    drawPassiveShieldOverlay(g, player, sprites, cx, feet, facing, camera, juice);
     return;
   }
 
@@ -2716,7 +2904,7 @@ function drawEnemy(
   }
 
   if (e instanceof Nephilim) {
-    drawNephilimBoss(g, e, camera, { strip: sprites.nephilim });
+    drawNephilimBoss(g, e, camera, { strip: sprites.nephilim, healOverlay: sprites.nephilimHealFx });
     return;
   }
 
@@ -2867,6 +3055,31 @@ function retainWeaponPhysicsForPlayerParity(): void {
   void STICK_REFLECT_DAMAGE_MULT;
   void FLINT_SPARK_BASE_CHANCE;
   void FLINT_SPARK_LUCK_MULT;
+}
+
+function drawPassiveShieldOverlay(
+  g: CanvasRenderingContext2D,
+  player: Player,
+  sprites: PlayerSprites,
+  cx: number,
+  feet: number,
+  facing: number,
+  camera: WorldCamera,
+  juice: JuiceDrawOpts,
+  climbAnimMod2 = 0,
+): void {
+  if (!sprites.shieldPlayer || !player.hasShieldEquipped()) return;
+  const idx = player.shieldOverlayFrameIndex(climbAnimMod2);
+  if (idx < 0) return;
+  const fw = sprites.shieldPlayer.frameW;
+  const fh = sprites.shieldPlayer.frameH;
+  const left = cx - fw * 0.5;
+  const top = feet - fh;
+  drawStripFrame(g, sprites.shieldPlayer, idx, left, top, facing, camera, {
+    ...juice,
+    solidRed: false,
+    hurtTintAlpha: 0,
+  });
 }
 
 function playerSwordVisual(player: Player): SwordVisual | null {
@@ -3048,18 +3261,10 @@ function collectWorldPickups(
   economy: HudEconomyDisplay,
   collectFx: PickupCollectFx[],
 ): void {
-  const hurt = player.hurtbox();
+  const hurtPose = player.hurtboxPose();
   for (let i = pickups.length - 1; i >= 0; i--) {
     const p = pickups[i]!;
-    const hb = p.hitbox();
-    if (
-      hurt.x + hurt.w <= hb.x ||
-      hb.x + hb.w <= hurt.x ||
-      hurt.y + hurt.h <= hb.y ||
-      hb.y + hb.h <= hurt.y
-    ) {
-      continue;
-    }
+    if (!p.intersectsPlayerHurt(hurtPose)) continue;
     if (p.kind === PickupKind.HEART) {
       if (player.health.isAtFullHealth) continue;
       player.health.heal(2);
@@ -3084,12 +3289,15 @@ function snapshotBreakableTile(
   atlas: SheetAtlas | null,
   project: TilesetProject | null,
   floor: number,
+  tileWorld: TileWorldRenderer | null,
 ): HTMLCanvasElement | null {
   if (!atlas) return null;
   const room = session.dungeon.rooms[session.roomId]!;
   const node = session.dungeon.layout.room(session.roomId);
   const art = room.art;
-  const primarySheetId = art?.sheetId ?? project?.primarySheetIdForFloor(floor);
+  const simTick = Math.floor(session.timeSec * 60);
+  const wx = tx * TILE_SIZE;
+  const wy = ty * TILE_SIZE;
 
   const isHiddenShell = (x: number, y: number): boolean => {
     const seams = session.dungeon.secretSeams;
@@ -3129,7 +3337,7 @@ function snapshotBreakableTile(
   }
   if (!tileId) tileId = resolveShellTileId(map, resolveTx, resolveTy);
   if (!tileId) return null;
-  return atlas.snapshotTileId(tileId, primarySheetId);
+  return snapshotTerrainCell(atlas, project, tileWorld, tileId, simTick, wx, wy);
 }
 
 function drawAabb(
@@ -3147,41 +3355,39 @@ function drawAabb(
   g.strokeRect(dx + 0.5, dy + 0.5, Math.max(1, dw - 1), Math.max(1, dh - 1));
 }
 
-function drawPlayerHitbox(g: CanvasRenderingContext2D, player: Player, camera: WorldCamera): void {
-  const pose = player.hitboxPose();
+function drawHitboxPolygon(
+  g: CanvasRenderingContext2D,
+  pose: HitboxPose,
+  color: string,
+  camera: WorldCamera,
+): void {
   const verts = pose.worldVertices();
   if (verts.length < 6) {
-    drawAabb(g, pose.bounds(), "#6ec8ff", camera);
-  } else {
-    g.strokeStyle = "#6ec8ff";
-    g.lineWidth = 1;
-    g.beginPath();
-    for (let i = 0; i < verts.length; i += 2) {
-      const dx = camera.worldToDeviceX(verts[i]!);
-      const dy = camera.worldToDeviceY(verts[i + 1]!);
-      if (i === 0) g.moveTo(dx + 0.5, dy + 0.5);
-      else g.lineTo(dx + 0.5, dy + 0.5);
-    }
-    g.closePath();
-    g.stroke();
+    drawAabb(g, pose.bounds(), color, camera);
+    return;
   }
-  const hurt = player.hurtboxPose();
-  const hv = hurt.worldVertices();
-  if (hv.length >= 6) {
-    g.strokeStyle = "#ff6688";
-    g.lineWidth = 1;
-    g.beginPath();
-    for (let i = 0; i < hv.length; i += 2) {
-      const dx = camera.worldToDeviceX(hv[i]!);
-      const dy = camera.worldToDeviceY(hv[i + 1]!);
-      if (i === 0) g.moveTo(dx + 0.5, dy + 0.5);
-      else g.lineTo(dx + 0.5, dy + 0.5);
-    }
-    g.closePath();
-    g.stroke();
-  } else {
-    drawAabb(g, hurt.bounds(), "#ff6688", camera);
+  g.strokeStyle = color;
+  g.lineWidth = 1;
+  g.beginPath();
+  for (let i = 0; i < verts.length; i += 2) {
+    const dx = camera.worldToDeviceX(verts[i]!);
+    const dy = camera.worldToDeviceY(verts[i + 1]!);
+    if (i === 0) g.moveTo(dx + 0.5, dy + 0.5);
+    else g.lineTo(dx + 0.5, dy + 0.5);
   }
+  g.closePath();
+  g.stroke();
+}
+
+function drawPlayerHitbox(g: CanvasRenderingContext2D, player: Player, camera: WorldCamera): void {
+  drawHitboxPolygon(g, player.hitboxPose(), "#6ec8ff", camera);
+  drawHitboxPolygon(g, player.hurtboxPose(), "#ff6688", camera);
+  const sword = player.attackHitboxPose();
+  if (sword) drawHitboxPolygon(g, sword, "#f0d060", camera);
+  const shieldWindup = player.attackShieldWindupHitboxPose();
+  if (shieldWindup) drawHitboxPolygon(g, shieldWindup, "#a8c8ff", camera);
+  const shieldBlock = player.shieldBlockHitboxPose();
+  if (shieldBlock) drawHitboxPolygon(g, shieldBlock, "#88a8e8", camera);
 }
 
 export {

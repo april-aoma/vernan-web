@@ -95,6 +95,8 @@ export const GEM_SWORD_HITSTUN_MULT = 2.0;
 /** STICK reflect (Java Physics). */
 export const STICK_REFLECT_SPEED_MULT = 1.05;
 export const STICK_REFLECT_DAMAGE_MULT = 2.0;
+/** Base damage for arcing enemy bullets vs Vernan (Java Physics.ARCING_ENEMY_BULLET_PLAYER_DAMAGE). */
+export const ARCING_ENEMY_BULLET_PLAYER_DAMAGE = 1.0;
 
 /** Flint spark proc (Java Player). */
 export const FLINT_SPARK_BASE_CHANCE = 0.1;

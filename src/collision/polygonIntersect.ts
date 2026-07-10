@@ -90,3 +90,67 @@ export function polygonIntersectsAabb(worldXy: ReadonlyArray<number>, box: Aabb)
   }
   return true;
 }
+
+/** Convex polygon ∩ convex polygon via SAT. */
+export function polygonIntersectsPolygon(a: ReadonlyArray<number>, b: ReadonlyArray<number>): boolean {
+  const na = a.length / 2;
+  const nb = b.length / 2;
+  if (na < 3 || nb < 3) return false;
+  const axes = [...edgeAxes(a), ...edgeAxes(b)];
+  for (const axis of axes) {
+    let aMin = Infinity;
+    let aMax = -Infinity;
+    for (let i = 0; i < na; i++) {
+      const d = a[i * 2]! * axis.x + a[i * 2 + 1]! * axis.y;
+      aMin = Math.min(aMin, d);
+      aMax = Math.max(aMax, d);
+    }
+    let bMin = Infinity;
+    let bMax = -Infinity;
+    for (let i = 0; i < nb; i++) {
+      const d = b[i * 2]! * axis.x + b[i * 2 + 1]! * axis.y;
+      bMin = Math.min(bMin, d);
+      bMax = Math.max(bMax, d);
+    }
+    if (aMax < bMin - 1e-9 || bMax < aMin - 1e-9) return false;
+  }
+  return true;
+}
+
+function edgeAxes(flat: ReadonlyArray<number>): Array<{ x: number; y: number }> {
+  const n = flat.length / 2;
+  const axes: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < n; i++) {
+    const x0 = flat[i * 2]!;
+    const y0 = flat[i * 2 + 1]!;
+    const x1 = flat[((i + 1) % n) * 2]!;
+    const y1 = flat[((i + 1) % n) * 2 + 1]!;
+    const ex = x1 - x0;
+    const ey = y1 - y0;
+    const len = Math.hypot(ex, ey);
+    if (len < 1e-12) continue;
+    axes.push({ x: -ey / len, y: ex / len });
+  }
+  return axes;
+}
+
+/** Rotate flat world polygon about (cx, cy). */
+export function rotateWorldPolygon(
+  flat: ReadonlyArray<number>,
+  cx: number,
+  cy: number,
+  angleRad: number,
+): number[] {
+  const cos = Math.cos(angleRad);
+  const sin = Math.sin(angleRad);
+  const out: number[] = new Array(flat.length);
+  for (let i = 0; i < flat.length; i += 2) {
+    const wx = flat[i]!;
+    const wy = flat[i + 1]!;
+    const lx = wx - cx;
+    const ly = wy - cy;
+    out[i] = cx + lx * cos - ly * sin;
+    out[i + 1] = cy + lx * sin + ly * cos;
+  }
+  return out;
+}

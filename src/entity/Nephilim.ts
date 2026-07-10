@@ -1,6 +1,19 @@
 import type { HitboxPose } from "../collision/HitboxPose";
+import { HitboxPose as HitboxPoseClass } from "../collision/HitboxPose";
+import { polygonIntersectsPolygon } from "../collision/polygonIntersect";
+import {
+  CHILD,
+  isConnector as chainIsConnector,
+  NEPHILIM_LEG_CHAINS,
+  NEPHILIM_LIMBS,
+  NEPHILIM_LINKS,
+  PARENT,
+  type LimbChain,
+} from "./ChainPinModel";
+import { solveTwoBoneIk } from "./TwoBoneIk";
 import {
   aabbOverlap,
+  freezeFrames,
   type Aabb,
   type ProjectileStrike,
   type WeaponStrike,
@@ -12,6 +25,7 @@ import {
   sampleShake,
 } from "../combat/HitlagState";
 import {
+  chainAttach,
   feetBelowAnchorFromRig,
   getNephilimRig,
   poseOffset,
@@ -38,6 +52,7 @@ export type NephilimDeathChunkSpawn = {
   pivotY: number;
   mirror: boolean;
   hullLocal: number[] | null;
+  head: boolean;
 };
 
 const SPAWN_FLOOR_EPS_PX = 0.5;
@@ -52,7 +67,6 @@ const KNOCK_UP = 58;
 const KNOCK_SPIN_DEG = 620;
 const LOOSE_MIN_SEC = 0.32;
 const LOOSE_K = 54;
-const LOOSE_C = 2 * Math.sqrt(LOOSE_K);
 const ANCHOR_TRAIL_FRAC = 0.28;
 const BAND_URGED_HP_FRAC = 0.66;
 const BAND_DESPERATE_HP_FRAC = 0.33;
@@ -80,11 +94,101 @@ const DEATH_PART_DROP_INTERVAL = 0.16;
 const DEATH_HEAD_FALL_DELAY_SEC = 2.6;
 const DEATH_CHUNK_SCATTER_HORZ = 28;
 const DEATH_CHUNK_SCATTER_UP = 16;
-const DEATH_REWARD_DELAY_SEC = 4.0;
 const ROOM_MARGIN = 14;
 const WALL_REST = 0.7;
 const FLOOR_REST = 0.6;
-const KNOCKBACK_CONTACT_DISABLE = 0.5;
+const CHAIN_SLACK = 1.14;
+const CHAIN_GRAVITY = GRAVITY * 0.42;
+const LOOSE_LINEAR_DAMP = 2.8;
+const LOOSE_LINEAR_DAMP_EXT = 2.2;
+const LOOSE_ANGLE_DAMP = 3.4;
+const LOOSE_ANGLE_DAMP_HEAD = 2.6;
+const LOOSE_ANGLE_DAMP_HAND = 3.0;
+
+const GRAB_WINDUP_SEC = 0.62;
+const GRAB_WINDUP_AGG_SEC = 0.46;
+const GRAB_REACH_SEC = 0.38;
+const ARM_IK_REACH_SCALE_BASE = 1.0;
+const ARM_IK_REACH_SCALE_AGG = 2.0;
+const GRAB_POSE_REACH = "grab_reach";
+const GRAB_POSE_HOLD_0 = "grab_0";
+const GRAB_POSE_HOLD_1 = "grab_1";
+const GRAB_HOLD_SEC = 0.34;
+const GRAB_HOLD_LATCHED_THROW_SEC = 2.0;
+const GRAB_HOLD_MASH_TIMER_MULT = 2.0;
+const GRAB_HOLD_LATCHED_DRINK_SEC = GRAB_HOLD_SEC * 2.0;
+const GRAB_RELEASE_BEAT_SEC = 0.38;
+const GRAB_DRINK_SIP_SEC = 0.72;
+const GRAB_DRINK_STEAL_HALF_HEARTS = 1.0;
+const GRAB_DRINK_HEAL_HP = 4;
+const GRAB_DRINK_HITSTUN_MULT = 5.0;
+const GRAB_RECOVER_SEC = 0.48;
+const GRAB_RECOVER_AGG_SEC = 0.3;
+const GRAB_COOLDOWN_BASE_SEC = 2.75;
+const GRAB_COOLDOWN_AGG_SEC = 0.85;
+const GRAB_STANDOFF_HOLD_BASE_SEC = 0.9;
+const GRAB_STANDOFF_HOLD_AGG_SEC = 0.15;
+const GRAB_REACH_IK = 1.0;
+const GRAB_LUNGE_SPEED_BASE = 52;
+const GRAB_LUNGE_SPEED_AGG = 78;
+
+const LIFT_HEIGHT_WORLD_PX = 96;
+const LIFT_HAND_ABOVE_ANCHOR_PX = 28;
+const LIFT_RISE_SEC = 0.85;
+const LIFT_DRAG_SEC = 1.35;
+const LIFT_DRAG_SPEED_BASE = 118;
+const LIFT_DRAG_SPEED_AGG = 168;
+const LIFT_RECOVER_SEC = 1.25;
+const LIFT_LAND_SEC = 2.4;
+const LIFT_LAND_LOOSE_SEC = 2.35;
+const LIFT_LAND_IMPACT_HITLAG = 11;
+const LIFT_REBUILD_RECALL_K = 168;
+const LIFT_REBUILD_ANGLE_K = 230;
+const LIFT_COOLDOWN_BASE_SEC = 11.0;
+const LIFT_COOLDOWN_AGG_SEC = 7.0;
+const LIFT_STUCK_MIN_SEC = 0.85;
+const LIFT_STUCK_ATTEMPT_BASE_SEC = 3.8;
+const LIFT_STUCK_ATTEMPT_AGG_SEC = 2.2;
+const LIFT_STUCK_MOVE_EPS = 1.2;
+const LIFT_UNREACHABLE_VERT_PX = 24;
+const LIFT_UNREACHABLE_MIN_SEC = 0.5;
+const LIFT_UNREACHABLE_ATTEMPT_BASE_SEC = 2.0;
+const LIFT_UNREACHABLE_ATTEMPT_AGG_SEC = 1.1;
+const LIFT_DROP_CONTACT_DAMAGE = 1;
+const LIFT_DROP_IK_WOBBLE_HZ = 9.5;
+
+const ARM_GUARD_HITS = 3;
+const ARM_GUARD_COMBO_SEC = 1.8;
+const ARM_GUARD_DURATION_SEC = 2.4;
+const ARM_GUARD_COOLDOWN_SEC = 3.75;
+const ARM_GUARD_POSE = "arm_guard";
+const ARM_GUARD_GLOW_PEAK_ALPHA = 175;
+const ARM_GUARD_GLOW_FADE_SEC = 1.25;
+const SHIELD_PROJECTILE_INFLATE_PX = 3.5;
+
+export const DRINK_HEAL_OVERLAY_DURATION_SEC = 0.82;
+export const DRINK_HEAL_OVERLAY_BASE_ALPHA = 0.9;
+export const DRINK_HEAL_OVERLAY_RISE_WORLD_PX = 56;
+
+const DEATH_HEAD_LAND_MAX_SEC = 4.0;
+
+type GrabReleaseKind = "THROW" | "DRINK";
+type LiftPhase = "RISE" | "DRAG" | "DROP" | "LAND" | "RECOVER";
+
+export type LiftPuppetString = {
+  handWorldX: number;
+  handWorldY: number;
+  anchorWorldX: number;
+  anchorWorldY: number;
+};
+
+export type ChainStringSegment = {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  loose: boolean;
+};
 
 type LifePhase = "DORMANT" | "AWAKENING" | "NOTICE" | "ACTIVE";
 
@@ -92,13 +196,18 @@ export type NephilimPartSim = {
   name: string;
   cx: number;
   cy: number;
+  prevCx: number;
+  prevCy: number;
+  prevAngle: number;
   vx: number;
   vy: number;
   angleDeg: number;
   angleVel: number;
   loose: boolean;
   looseTimer: number;
+  looseAge: number;
   bobPhase: number;
+  chainLen: number;
 };
 
 export type NephilimPartRender = {
@@ -114,8 +223,7 @@ export type NephilimPartRender = {
 };
 
 /**
- * Phase 5b Nephilim — grounded marionette boss (intro, stalk, combat, marionette death).
- * MVP: no grab/lift/strings/chain IK; simplified death clear (4s delay).
+ * Phase 5b Nephilim — grounded marionette boss (intro, stalk, combat, grab, lift, arm guard, chain IK, marionette death).
  */
 export class Nephilim implements CombatEnemy {
   /** Body-center anchor in world space. */
@@ -139,6 +247,7 @@ export class Nephilim implements CombatEnemy {
   private facingRight = false;
   private seesPlayer = false;
   private playerCx = NaN;
+  private playerCy = NaN;
   private dir = -1;
   private onGround = true;
   private wasOnGround = true;
@@ -150,7 +259,6 @@ export class Nephilim implements CombatEnemy {
   private hurtPoseTimer = 0;
   private hurtTintRemaining = 0;
   private knockbackContactTimer = 0;
-  private contactActiveTimer = 0;
   private readonly partSims: NephilimPartSim[] = [];
   private readonly simNames: string[] = [];
   private partScattered: boolean[] | null = null;
@@ -165,9 +273,56 @@ export class Nephilim implements CombatEnemy {
   private readonly pendingDeathChunks: NephilimDeathChunkSpawn[] = [];
   private readonly lastStruckParts: number[] = [];
 
+  private grabSeqIdx = -1;
+  private attackPhaseTimer = 0;
+  private attackCooldown = 0;
+  private standoffHoldTimer = 0;
+  private grabLatched = false;
+  private grabReleaseKind: GrabReleaseKind = "THROW";
+  private grabDrinkActive = false;
+  private grabDrinkStealPending = false;
+  private grabStruggleMashing = false;
+  private grabReleasePending = false;
+  private grabHoldWallTurned = false;
+
+  private liftPhase: LiftPhase | null = null;
+  private liftPhaseTimer = 0;
+  private liftCooldown = 0;
+  private anchorStuckTimer = 0;
+  private liftStuckAttemptTimer = 0;
+  private liftUnreachableTimer = 0;
+  private liftHandWorldX = 0;
+  private liftHandWorldY = 0;
+  private liftTargetAnchorY = 0;
+  private cameraViewWorld: WorldRect | null = null;
+  private renderPrevX = 0;
+  private renderPrevY = 0;
+
+  private armGuardTimer = 0;
+  private armGuardCooldown = 0;
+  private armGuardGlow = 0;
+  private comboHitCount = 0;
+  private comboHitWindow = 0;
+
+  private plantedFootL = false;
+  private plantedFootLWorldX = 0;
+  private plantedFootLWorldY = 0;
+  private plantedFootR = false;
+  private plantedFootRWorldX = 0;
+  private plantedFootRWorldY = 0;
+
+  private offensiveHitlagFrames = 0;
+  private drinkHealOverlayAge = -1;
+
+  private deathFightOver = false;
+  private deathHeadFallTimer = 0;
+  private deathHeadChunk: import("../fx/BrickChunk").BrickChunk | null = null;
+
   constructor(anchorX: number, anchorY: number, maxHp: number) {
     this.x = anchorX;
     this.y = anchorY;
+    this.renderPrevX = anchorX;
+    this.renderPrevY = anchorY;
     this.maxHp = maxHp;
     this.hp = maxHp;
     const rig = getNephilimRig();
@@ -197,13 +352,18 @@ export class Nephilim implements CombatEnemy {
     this.onGround = true;
   }
 
-  setCameraView(_view: WorldRect): void {
-    // Reserved for future camera clamp (Java setCameraViewWorld).
+  setCameraView(view: WorldRect): void {
+    this.cameraViewWorld = view;
   }
 
   applyVision(player: PlayerCombatSnapshot, seeRadius: number): void {
     this.playerCx = player.cx;
+    this.playerCy = player.cy;
     this.seesPlayer = seesPlayerAt(this.x, this.y, player.cx, player.cy, seeRadius);
+  }
+
+  setGrabStruggleMashing(mashing: boolean): void {
+    this.grabStruggleMashing = mashing;
   }
 
   isCombatActive(): boolean {
@@ -243,7 +403,7 @@ export class Nephilim implements CombatEnemy {
         mirror,
         pivotX: def.pivotX,
         pivotY: def.pivotY,
-        armGuardGlowAlpha: 0,
+        armGuardGlowAlpha: this.forearmShieldGlowAlpha(def.name),
       });
     }
     return out;
@@ -257,6 +417,17 @@ export class Nephilim implements CombatEnemy {
     this.hurtTintRemaining = Math.max(0, this.hurtTintRemaining - dt);
     this.hurtPoseTimer = Math.max(0, this.hurtPoseTimer - dt);
     this.knockbackContactTimer = Math.max(0, this.knockbackContactTimer - dt);
+    this.tickArmGuard(dt);
+    if (this.drinkHealOverlayAge >= 0) {
+      this.drinkHealOverlayAge += dt;
+      if (this.drinkHealOverlayAge >= DRINK_HEAL_OVERLAY_DURATION_SEC) {
+        this.drinkHealOverlayAge = -1;
+      }
+    }
+
+    if (this.offensiveHitlagFrames > 0) {
+      this.offensiveHitlagFrames--;
+    }
 
     if (this.hitstun > 0) {
       this.hitstun = Math.max(0, this.hitstun - dt);
@@ -280,9 +451,21 @@ export class Nephilim implements CombatEnemy {
 
     this.tickLifePhase(dt, rig);
 
-    if (this.lifePhase === "ACTIVE" && this.hitstun <= 0) {
-      this.tickGroundMovement(dt, map, rig);
-    } else if (this.lifePhase !== "ACTIVE") {
+    if (this.lifePhase === "ACTIVE") {
+      if (this.isLiftActive()) {
+        this.liftPhaseTimer = Math.max(0, this.liftPhaseTimer - dt);
+      }
+      if (this.offensiveHitlagFrames <= 0) {
+        this.tickAttack(dt, map, rig);
+      } else if (!this.isLiftActive()) {
+        this.vx = 0;
+      }
+      if (this.isLiftActive()) {
+        this.tickLiftMovement(dt, map, rig);
+      } else if (this.offensiveHitlagFrames <= 0) {
+        this.tickGroundMovement(dt, map, rig);
+      }
+    } else {
       this.vx = 0;
       this.vy = 0;
       this.onGround = this.isGrounded(map, rig);
@@ -291,6 +474,8 @@ export class Nephilim implements CombatEnemy {
     this.bobTime += dt;
     if (
       this.lifePhase === "ACTIVE" &&
+      !this.isGrabActive() &&
+      !this.isLiftActive() &&
       this.hurtPoseTimer <= 0 &&
       !this.isHorzWalking()
     ) {
@@ -308,6 +493,15 @@ export class Nephilim implements CombatEnemy {
     const pose = this.currentPoseName(rig);
     if (this.hitstun <= 0) {
       this.integrateParts(dt, map, rig, pose);
+    }
+    this.finalizeGroundedStance(rig, map);
+
+    this.renderPrevX = this.x;
+    this.renderPrevY = this.y;
+    for (const p of this.partSims) {
+      p.prevCx = p.cx;
+      p.prevCy = p.cy;
+      p.prevAngle = p.angleDeg;
     }
   }
 
@@ -365,13 +559,31 @@ export class Nephilim implements CombatEnemy {
     this.lastHorzStepPx = Math.abs(intentVx) > 1 ? this.x - xBefore : 0;
     this.onGround = this.isGrounded(map, rig);
     if (this.onGround && !this.wasOnGround) {
-      // planted feet reset
+      this.plantedFootL = false;
+      this.plantedFootR = false;
     }
     this.wasOnGround = this.onGround;
     this.clampToRoom(map, rig);
   }
 
   private tickEngageHorzVelocity(dt: number, map: TileMap, rig: NephilimRigData): void {
+    if (this.isLiftActive()) {
+      this.vx = 0;
+      return;
+    }
+    if (this.isGrabActive()) {
+      if (this.isGrabReachIk(rig) && Number.isFinite(this.playerCx)) {
+        const toward = Math.sign(this.playerCx - this.x);
+        if (toward !== 0) {
+          const lungeVx = toward * this.lerpAgg(GRAB_LUNGE_SPEED_BASE, GRAB_LUNGE_SPEED_AGG);
+          this.vx = this.canMoveHorizontally(map, rig, lungeVx) ? lungeVx : 0;
+          return;
+        }
+      }
+      this.vx *= Math.max(0, 1 - dt * 14);
+      if (Math.abs(this.vx) < 2) this.vx = 0;
+      return;
+    }
     if (!this.seesPlayer || !this.onGround || !Number.isFinite(this.playerCx)) {
       this.vx *= Math.max(0, 1 - dt * 6);
       return;
@@ -490,6 +702,16 @@ export class Nephilim implements CombatEnemy {
   }
 
   private currentPoseName(rig: NephilimRigData): string {
+    if (this.lifePhase === "ACTIVE" && this.isLiftAttackPose()) {
+      return this.liftPoseName(rig);
+    }
+    if (this.lifePhase === "ACTIVE" && this.isGrabActive()) {
+      return this.grabPoseName(rig);
+    }
+    if (this.armGuardActive()) {
+      if (this.isHorzWalking()) return this.walkPoseFromPhase(rig, this.walkPhase);
+      return ARM_GUARD_POSE;
+    }
     if (this.hurtPoseTimer > 0) return "hurt";
     switch (this.lifePhase) {
       case "DORMANT":
@@ -523,11 +745,12 @@ export class Nephilim implements CombatEnemy {
     const m = this.facingMul();
     const stride = Math.sin(this.walkPhase);
     const uncannyIdle =
-      this.lifePhase === "ACTIVE" &&
-      this.hurtPoseTimer <= 0 &&
-      !this.isHorzWalking() &&
-      this.onGround &&
-      !poseName.startsWith("walk");
+      (this.lifePhase === "ACTIVE" &&
+        this.hurtPoseTimer <= 0 &&
+        !this.isHorzWalking() &&
+        this.onGround &&
+        !poseName.startsWith("walk")) ||
+      (this.lifePhase === "ACTIVE" && this.isLiftSuspended() && this.hurtPoseTimer <= 0);
     const notice = this.lifePhase === "NOTICE";
     const standoffTrack = this.isStandoffTrackingPlayer();
     let headTurnExtra = 0;
@@ -545,12 +768,18 @@ export class Nephilim implements CombatEnemy {
           : this.lifePhase === "NOTICE"
             ? 0.55
             : 1.0;
+    const grabReachU = this.grabReachBlend(rig);
+    const targetX = new Array<number>(this.partSims.length);
+    const targetY = new Array<number>(this.partSims.length);
+    const targetAng = new Array<number>(this.partSims.length);
+    const grabPose = this.isGrabActive() ? this.grabPoseName(rig) : "";
 
     for (let i = 0; i < this.partSims.length; i++) {
       const def = rig.parts[i]!;
       const p = this.partSims[i]!;
-      const pe = poseOffset(rig, poseName, def.name);
+      const pe = this.partPoseEntry(rig, poseName, def.name);
       let follow = this.partFollowScale(def.name, uncannyIdle);
+      if (grabPose === "grab_windup" && def.name.includes("Hand")) follow = 1.25;
       const bobAmp = rig.bobAmpPx * def.bobScale * bobScale;
       let bx = 0;
       let by = 0;
@@ -572,47 +801,70 @@ export class Nephilim implements CombatEnemy {
         if (legStride) {
           dy += side * m * stride * 2;
           ang += side * m * stride * 10;
-        } else if (this.isConnector(def.name) && !(this.usePlantedStance() && def.name.startsWith("connFoot"))) {
+        } else if (chainIsConnector(def.name) && !(this.usePlantedStance() && def.name.startsWith("connFoot"))) {
           ang += side * m * stride * 6;
         } else if (def.name === "head") {
           ang += m * stride * 4;
           dy += Math.abs(stride) * 0.5;
         }
       }
-      const targetX = this.x + m * dx + bx;
-      const targetY = this.y + dy + by;
-      const targetAng = ang;
+      targetX[i] = this.x + m * dx + bx;
+      targetY[i] = this.y + dy + by;
+      targetAng[i] = ang;
+      if (this.liftPhase === "LAND" && def.name === "body") {
+        const slumpU = 1 - Math.max(0, this.liftPhaseTimer / LIFT_LAND_SEC);
+        targetY[i]! += 5 + slumpU * 12;
+        targetAng[i]! += slumpU * 18 * (this.facingRight ? 1 : -1);
+      }
+      if (grabReachU > 0 && def.name === "head") {
+        this.applyGrabReachHeadTarget(targetX, targetY, targetAng, i, grabReachU);
+      }
 
       if (p.loose) {
+        p.looseAge += dt;
         if (p.looseTimer > 0) p.looseTimer -= dt;
-        const lk = LOOSE_K;
-        const lc = LOOSE_C;
-        p.vx += ((targetX - p.cx) * lk - p.vx * lc) * dt;
-        p.vy += ((targetY - p.cy) * lk - p.vy * lc) * dt;
-        p.angleVel += (this.angleDelta(targetAng, p.angleDeg) * ANGLE_K * 0.5 - p.angleVel * ANGLE_C) * dt;
-        p.angleDeg += p.angleVel * dt;
-        this.moveLooseWithBounce(rig, i, p, dt, map);
-        const dist = Math.hypot(targetX - p.cx, targetY - p.cy);
-        const sp = Math.hypot(p.vx, p.vy);
-        if (p.looseTimer <= 0 && dist < 9 && sp < 42) {
-          p.loose = false;
-          p.vx *= 0.2;
-          p.vy *= 0.2;
-          p.angleVel *= 0.2;
+        this.integrateLoosePart(rig, i, p, def.name, dt, map);
+        if (this.liftPhase === "RECOVER") {
+          this.applyLiftRebuildRecall(p, def.name, targetX[i]!, targetY[i]!, targetAng[i]!, dt);
+        } else if (p.looseTimer <= 0) {
+          this.applyLooseRecall(p, def.name, targetX[i]!, targetY[i]!, targetAng[i]!, dt);
         }
         continue;
       }
 
-      const partK = PART_K * follow;
-      const partC = PART_C * Math.sqrt(follow);
+      let partK = PART_K * follow;
+      let partC = PART_C * Math.sqrt(follow);
+      if (this.liftPhase === "LAND" && (def.name === "body" || def.name === "neck")) {
+        const slumpU = 1 - Math.max(0, this.liftPhaseTimer / LIFT_LAND_SEC);
+        partK *= 0.34 - slumpU * 0.16;
+        partC *= 0.55;
+      }
       const angleK = ANGLE_K * follow;
       const angleC = ANGLE_C * Math.sqrt(follow);
-      p.vx += ((targetX - p.cx) * partK - p.vx * partC) * dt;
-      p.vy += ((targetY - p.cy) * partK - p.vy * partC) * dt;
-      p.angleVel += (this.angleDelta(targetAng, p.angleDeg) * angleK - p.angleVel * angleC) * dt;
+      p.vx += ((targetX[i]! - p.cx) * partK - p.vx * partC) * dt;
+      p.vy += ((targetY[i]! - p.cy) * partK - p.vy * partC) * dt;
+      p.angleVel += (this.angleDelta(targetAng[i]!, p.angleDeg) * angleK - p.angleVel * angleC) * dt;
       p.angleDeg += p.angleVel * dt;
       p.cx += p.vx * dt;
       p.cy += p.vy * dt;
+    }
+
+    if (grabReachU > 0) this.applyGrabReachArmIk(rig, grabReachU);
+    this.applyChainConstraints(rig);
+    if (this.isLiftDropIkActive()) {
+      this.applyLiftDropIk(rig);
+    }
+    if (!this.usePlantedStance()) {
+      this.applyAttachedLegChains(rig);
+    }
+    this.applyPlantedLegConstraints(rig);
+    this.settleLooseConnectors();
+    for (let i = 0; i < this.partSims.length; i++) {
+      const p = this.partSims[i]!;
+      if (!p.loose) continue;
+      if (this.trySettleLoosePart(p, this.simNames[i]!, targetX[i]!, targetY[i]!)) {
+        p.looseAge = 0;
+      }
     }
   }
 
@@ -626,12 +878,8 @@ export class Nephilim implements CombatEnemy {
     if (!uncannyIdle) return 1;
     if (partName === "head") return 1.45;
     if (partName === "body") return 0.68;
-    if (this.isConnector(partName)) return 0.82;
+    if (chainIsConnector(partName)) return 0.82;
     return 0.92;
-  }
-
-  private isConnector(name: string): boolean {
-    return name.startsWith("conn") || name === "neck" || name === "armL" || name === "armR";
   }
 
   private limbSideSign(partName: string): number {
@@ -857,6 +1105,9 @@ export class Nephilim implements CombatEnemy {
 
   private startDeath(rig: NephilimRigData): void {
     this.deathStarted = true;
+    this.deathFightOver = false;
+    this.deathHeadFallTimer = 0;
+    this.deathHeadChunk = null;
     this.deathTimer = 0;
     this.deathDropTimer = 0;
     this.deathDropIdx = 0;
@@ -1004,6 +1255,7 @@ export class Nephilim implements CombatEnemy {
       pivotY: def.pivotY,
       mirror: this.facingRight,
       hullLocal: hull,
+      head,
     });
   }
 
@@ -1016,13 +1268,16 @@ export class Nephilim implements CombatEnemy {
   }
 
   contactDamagePose(): Aabb {
-    const bodyIdx = this.indexOf("body");
-    if (bodyIdx >= 0) {
-      const rig = getNephilimRig();
-      if (rig) {
-        const box = this.partWorldRoleAabb(rig, bodyIdx, "hit");
-        if (box) return box;
-      }
+    if (this.liftPhase === "LAND") {
+      const loose = this.loosePartsContactDamageAabb();
+      if (loose) return loose;
+    }
+    const rig = getNephilimRig();
+    if (rig) {
+      const hurt = this.combinedRoleAabb(rig, "hurt");
+      if (hurt) return hurt;
+      const hit = this.combinedRoleAabb(rig, "hit");
+      if (hit) return hit;
     }
     return this.rect();
   }
@@ -1053,12 +1308,17 @@ export class Nephilim implements CombatEnemy {
 
   intersectsAttack(sword: Aabb): boolean {
     if (!this.isCombatActive()) return false;
+    if (this.shieldBlockAabb() && aabbOverlap(sword, this.shieldBlockAabb()!)) {
+      this.lastStruckParts.length = 0;
+      return false;
+    }
     this.lastStruckParts.length = 0;
     const rig = getNephilimRig();
     if (!rig) return aabbOverlap(sword, this.damageReceivePose());
     let any = false;
     for (let i = 0; i < this.partSims.length; i++) {
       if (this.partScattered?.[i]) continue;
+      if (this.isArmShieldPart(this.simNames[i]!)) continue;
       const box = this.partWorldRoleAabb(rig, i, "hurt");
       if (box && aabbOverlap(sword, box)) {
         this.lastStruckParts.push(i);
@@ -1071,7 +1331,9 @@ export class Nephilim implements CombatEnemy {
   applyWeaponStrike(strike: WeaponStrike): boolean {
     if (!this.isCombatActive()) return false;
     this.hp = Math.max(0, this.hp - strike.damage);
+    this.offensiveHitlagFrames = 0;
     this.onDamaged(strike.freezeFrames);
+    this.noteHitForArmGuard();
     const attackerCx = strike.attackerX + strike.attackerW * 0.5;
     this.knockStruckParts(attackerCx, strike.damage, strike.facing);
     if (this.hp <= 0 && !this.deathStarted) {
@@ -1083,13 +1345,23 @@ export class Nephilim implements CombatEnemy {
 
   intersectsProjectile(projectile: HitboxPose): boolean {
     if (!this.isCombatActive()) return false;
-    return projectile.intersectsRect(this.damageReceivePose());
+    if (this.projectileBlockedByShield(projectile)) return false;
+    const rig = getNephilimRig();
+    if (!rig) return projectile.intersectsRect(this.damageReceivePose());
+    for (let i = 0; i < this.partSims.length; i++) {
+      if (this.partScattered?.[i]) continue;
+      if (this.isArmShieldPart(this.simNames[i]!)) continue;
+      const box = this.partWorldRoleAabb(rig, i, "hurt");
+      if (box && projectile.intersectsRect(box)) return true;
+    }
+    return false;
   }
 
   applyProjectileStrike(strike: ProjectileStrike): boolean {
     if (!this.isCombatActive()) return false;
     this.hp = Math.max(0, this.hp - strike.damage);
     this.onDamaged(strike.freezeFrames);
+    this.noteHitForArmGuard();
     const facing = strike.projectileVelX >= 0 ? 1 : -1;
     const attackerCx =
       strike.debrisCenterWorldX != null && Number.isFinite(strike.debrisCenterWorldX)
@@ -1106,14 +1378,14 @@ export class Nephilim implements CombatEnemy {
   }
 
   hurtsPlayer(playerHurt: Aabb): boolean {
-    if (!this.isCombatActive()) return false;
-    if (this.contactActiveTimer <= 0) return false;
-    if (this.hitstun > 0 || this.knockbackContactTimer > 0) return false;
-    return aabbOverlap(playerHurt, this.contactDamagePose());
+    if (!this.isLiftLandingContactActive()) return false;
+    if (this.hitstun > 0) return false;
+    const pose = this.contactDamagePose();
+    return aabbOverlap(playerHurt, pose);
   }
 
   contactDamageToPlayer(): number {
-    return 1;
+    return LIFT_DROP_CONTACT_DAMAGE;
   }
 
   private onDamaged(freezeFrames: number): void {
@@ -1122,8 +1394,6 @@ export class Nephilim implements CombatEnemy {
     this.hitlagSolidRed = true;
     this.hurtTintRemaining = Math.max(this.hurtTintRemaining, HURT_TINT_SEC);
     this.hurtPoseTimer = HURT_POSE_SEC;
-    this.knockbackContactTimer = Math.max(this.knockbackContactTimer, KNOCKBACK_CONTACT_DISABLE);
-    this.contactActiveTimer = Math.max(this.contactActiveTimer, 0.4);
   }
 
   private knockStruckParts(attackerCx: number, dmg: number, facing: number): void {
@@ -1175,9 +1445,13 @@ export class Nephilim implements CombatEnemy {
     const p = this.partSims[idx]!;
     p.loose = true;
     p.looseTimer = Math.max(p.looseTimer, LOOSE_MIN_SEC);
+    p.looseAge = 0;
     p.vx += impX;
     p.vy += impY;
     p.angleVel += spinDeg;
+    if (name === "handL" || name === "handR" || name === "head" || name === "footL" || name === "footR") {
+      p.chainLen = Math.max(4, 12 * CHAIN_SLACK);
+    }
   }
 
   getHealth(): number {
@@ -1189,7 +1463,7 @@ export class Nephilim implements CombatEnemy {
   }
 
   isDying(): boolean {
-    return this.deathStarted && this.deathTimer < DEATH_REWARD_DELAY_SEC;
+    return this.deathStarted && !this.deathFightOver;
   }
 
   isOnGround(): boolean {
@@ -1197,7 +1471,7 @@ export class Nephilim implements CombatEnemy {
   }
 
   isDead(): boolean {
-    return this.deathStarted && this.deathTimer >= DEATH_REWARD_DELAY_SEC;
+    return this.deathFightOver;
   }
 
   isInCombatHitstun(): boolean {
@@ -1221,11 +1495,1646 @@ export class Nephilim implements CombatEnemy {
     return !this.isDead();
   }
 
-  attackBlockedByShield(_attack: Aabb): boolean {
+  attackBlockedByShield(attack: Aabb): boolean {
+    if (!this.armGuardActive()) return false;
+    const shield = this.shieldBlockAabb();
+    return shield != null && aabbOverlap(attack, shield);
+  }
+
+  applyShieldBlockStrike(strike: WeaponStrike): void {
+    if (!this.isCombatActive()) return;
+    this.onShieldBlocked(strike.freezeFrames);
+  }
+
+  projectileBlockedByShield(projectile: HitboxPose): boolean {
+    if (!this.armGuardActive()) return false;
+    const shield = this.combinedForearmShieldPose(SHIELD_PROJECTILE_INFLATE_PX);
+    return shield != null && shield.intersects(projectile);
+  }
+
+  applyProjectileShieldBlock(strike: ProjectileStrike): void {
+    if (!this.isCombatActive()) return;
+    this.onShieldBlocked(strike.freezeFrames);
+  }
+
+  applyOffensiveHitlag(freezeFrames: number): void {
+    this.offensiveHitlagFrames = Math.max(this.offensiveHitlagFrames, Math.max(0, freezeFrames));
+  }
+
+  registerDeathHeadChunk(chunk: import("../fx/BrickChunk").BrickChunk): void {
+    this.deathHeadChunk = chunk;
+  }
+
+  tickDeathHeadLanding(dt: number, map: TileMap): void {
+    if (this.deathFightOver || !this.deathHeadChunkQueued) return;
+    this.deathHeadFallTimer += dt;
+    if (this.deathHeadChunk != null && this.deathHeadChunk.isBossDeathHeadResting(map)) {
+      this.deathFightOver = true;
+      return;
+    }
+    if (this.deathHeadFallTimer >= DEATH_HEAD_LAND_MAX_SEC) {
+      this.deathFightOver = true;
+    }
+  }
+
+  liftPuppetString(renderAlpha = 1): LiftPuppetString | null {
+    if (this.liftPhase !== "RISE" && this.liftPhase !== "DRAG") return null;
+    const a = Math.max(0, Math.min(1, renderAlpha));
+    const ax = this.renderPrevX + (this.x - this.renderPrevX) * a;
+    const ay = this.renderPrevY + (this.y - this.renderPrevY) * a;
+    return {
+      handWorldX: this.liftHandWorldX,
+      handWorldY: this.liftHandWorldY,
+      anchorWorldX: ax,
+      anchorWorldY: ay - 4,
+    };
+  }
+
+  drinkHealOverlayActive(): boolean {
+    return this.drinkHealOverlayAge >= 0 && this.drinkHealOverlayAge < DRINK_HEAL_OVERLAY_DURATION_SEC;
+  }
+
+  drinkHealOverlayAlpha(): number {
+    if (!this.drinkHealOverlayActive()) return 0;
+    const u = this.drinkHealOverlayAge / DRINK_HEAL_OVERLAY_DURATION_SEC;
+    return DRINK_HEAL_OVERLAY_BASE_ALPHA * (1 - u);
+  }
+
+  drinkHealOverlayScrollWorldPx(): number {
+    if (!this.drinkHealOverlayActive()) return 0;
+    const u = this.drinkHealOverlayAge / DRINK_HEAL_OVERLAY_DURATION_SEC;
+    return u * DRINK_HEAL_OVERLAY_RISE_WORLD_PX;
+  }
+
+  // --- Grab (CombatEnemy hooks) ----------------------------------------------
+
+  tryGrabLatch(playerHurt: HitboxPose): boolean {
+    if (
+      !this.isCombatActive() ||
+      !this.seesPlayer ||
+      !playerHurt ||
+      this.grabLatched ||
+      !this.isGrabReachPhase()
+    ) {
+      return false;
+    }
+    const catchHull = this.combinedHandHitPose();
+    if (!catchHull || !polygonIntersectsPolygon(catchHull.worldVertices(), playerHurt.worldVertices())) {
+      return false;
+    }
+    this.grabLatched = true;
+    this.grabReleaseKind = this.isDesperateBand() ? "DRINK" : "THROW";
+    this.grabDrinkActive = false;
+    return true;
+  }
+
+  applyGrabDrinkStealIfDue(player: {
+    applyGrabDrinkSteal(halfHearts: number, freezeFrames: number): boolean;
+  }): void {
+    if (!this.grabDrinkStealPending) return;
+    this.grabDrinkStealPending = false;
+    const fz = freezeFrames(GRAB_DRINK_STEAL_HALF_HEARTS, GRAB_DRINK_HITSTUN_MULT);
+    if (player.applyGrabDrinkSteal(GRAB_DRINK_STEAL_HALF_HEARTS, fz)) {
+      this.hp = Math.min(this.maxHp, this.hp + GRAB_DRINK_HEAL_HP);
+      this.hitstun = Math.max(this.hitstun, fz / 60);
+      this.offensiveHitlagFrames = Math.max(this.offensiveHitlagFrames, fz);
+      this.drinkHealOverlayAge = 0;
+    }
+  }
+
+  isGrabHoldingPlayer(): boolean {
+    return this.isGrabHoldPhase();
+  }
+
+  grabHoldBoxPose(): HitboxPose | null {
+    if (!this.isGrabHoldPhase()) return null;
+    return this.combinedGrabBoxPose();
+  }
+
+  consumeGrabReleasePunish(): boolean {
+    if (!this.grabReleasePending) return false;
+    this.grabReleasePending = false;
+    this.grabLatched = false;
+    return true;
+  }
+
+  grabReleaseDamageToPlayer(): number {
+    return 1;
+  }
+
+  flipGrabHoldFacing(): void {
+    const rig = getNephilimRig();
+    if (!rig || !this.isGrabHoldPhase() || this.grabHoldWallTurned) return;
+    this.facingRight = !this.facingRight;
+    this.grabHoldWallTurned = true;
+    this.snapGrabHoldPoseToFacing(rig);
+  }
+
+  grabPlayerDrawBeforePart(): string {
+    return "handR";
+  }
+
+  chainStringSegments(alpha = 1): ChainStringSegment[] {
+    const rig = getNephilimRig();
+    if (!rig) return [];
+    const out: ChainStringSegment[] = [];
+    for (const link of NEPHILIM_LINKS) {
+      const idxA = this.indexOf(link.partA);
+      const idxB = this.indexOf(link.partB);
+      if (idxA < 0 || idxB < 0) continue;
+      if (this.partScattered?.[idxA] || this.partScattered?.[idxB]) continue;
+      const pinA = this.chainPin(rig, link.partA, link.pinA);
+      const pinB = this.chainPin(rig, link.partB, link.pinB);
+      const wA = this.attachPointWorldInterp(idxA, pinA[0], pinA[1], alpha);
+      const wB = this.attachPointWorldInterp(idxB, pinB[0], pinB[1], alpha);
+      const a = this.partSims[idxA]!;
+      const b = this.partSims[idxB]!;
+      out.push({ ax: wA[0], ay: wA[1], bx: wB[0], by: wB[1], loose: a.loose || b.loose });
+    }
+    return out;
+  }
+
+  handGrabStringSegments(alpha = 1): ChainStringSegment[] {
+    const rig = getNephilimRig();
+    if (!rig) return [];
+    const out: ChainStringSegment[] = [];
+    for (const hand of ["handL", "handR"] as const) {
+      const idx = this.indexOf(hand);
+      if (idx < 0 || this.partScattered?.[idx]) continue;
+      const parent = this.chainPin(rig, hand, PARENT);
+      const child = this.chainPin(rig, hand, CHILD);
+      const wP = this.attachPointWorldInterp(idx, parent[0], parent[1], alpha);
+      const wC = this.attachPointWorldInterp(idx, child[0], child[1], alpha);
+      out.push({
+        ax: wP[0],
+        ay: wP[1],
+        bx: wC[0],
+        by: wC[1],
+        loose: this.partSims[idx]!.loose,
+      });
+    }
+    return out;
+  }
+
+  // --- Lift, arm guard, planted feet -----------------------------------------
+
+  private liftSequence(rig: NephilimRigData): string[] {
+    return sequence(rig, "lift");
+  }
+
+  private liftPoseName(rig: NephilimRigData): string {
+    const seq = this.liftSequence(rig);
+    return seq.length > 0 ? seq[0]! : "death";
+  }
+
+  private isLiftActive(): boolean {
+    return this.liftPhase != null;
+  }
+
+  private isLiftAttackPose(): boolean {
+    return (
+      this.liftPhase === "RISE" ||
+      this.liftPhase === "DRAG" ||
+      this.liftPhase === "DROP" ||
+      this.liftPhase === "LAND"
+    );
+  }
+
+  private isLiftSuspended(): boolean {
+    return this.liftPhase === "RISE" || this.liftPhase === "DRAG";
+  }
+
+  private isLiftDropping(): boolean {
+    return this.liftPhase === "DROP" && !this.onGround;
+  }
+
+  private isLiftPartsDetached(): boolean {
+    return this.liftPhase === "LAND" || this.liftPhase === "RECOVER";
+  }
+
+  private isLiftLandingContactActive(): boolean {
+    return this.isLiftDropping() || this.liftPhase === "LAND";
+  }
+
+  private isLiftDropIkActive(): boolean {
+    return this.liftPhase === "DROP" && !this.onGround && !this.deathStarted;
+  }
+
+  private liftStuckAttemptRequiredSec(): number {
+    return this.lerpAgg(LIFT_STUCK_ATTEMPT_BASE_SEC, LIFT_STUCK_ATTEMPT_AGG_SEC);
+  }
+
+  private liftUnreachableAttemptRequiredSec(): number {
+    return this.lerpAgg(LIFT_UNREACHABLE_ATTEMPT_BASE_SEC, LIFT_UNREACHABLE_ATTEMPT_AGG_SEC);
+  }
+
+  private liftCooldownSec(): number {
+    return this.lerpAgg(LIFT_COOLDOWN_BASE_SEC, LIFT_COOLDOWN_AGG_SEC);
+  }
+
+  private liftDragSpeed(): number {
+    return this.lerpAgg(LIFT_DRAG_SPEED_BASE, LIFT_DRAG_SPEED_AGG);
+  }
+
+  private canTrackLiftFrustration(): boolean {
+    return (
+      this.seesPlayer &&
+      this.onGround &&
+      this.lifePhase === "ACTIVE" &&
+      this.isStandoffTrackingPlayer() &&
+      !this.anyArmChainLoose() &&
+      !this.armGuardActive()
+    );
+  }
+
+  private canBeginLift(): boolean {
+    return this.canTrackLiftFrustration() && this.attackCooldown <= 0 && this.liftCooldown <= 0;
+  }
+
+  private tickLiftStuckTimers(dt: number, map: TileMap, rig: NephilimRigData): void {
+    if (!this.canTrackLiftFrustration()) {
+      this.anchorStuckTimer = 0;
+      this.liftStuckAttemptTimer = 0;
+      this.liftUnreachableTimer = 0;
+      return;
+    }
+    if (this.isEffectivelyStuck(map, rig)) {
+      this.anchorStuckTimer += dt;
+    } else {
+      this.anchorStuckTimer = Math.max(0, this.anchorStuckTimer - dt * 1.5);
+    }
+    if (this.anchorStuckTimer >= LIFT_STUCK_MIN_SEC) {
+      this.liftStuckAttemptTimer += dt;
+    } else {
+      this.liftStuckAttemptTimer = 0;
+    }
+    if (this.isPlayerUnreachable(map, rig)) {
+      this.liftUnreachableTimer += dt;
+    } else {
+      this.liftUnreachableTimer = Math.max(0, this.liftUnreachableTimer - dt * 1.2);
+    }
+  }
+
+  private isPlayerUnreachable(map: TileMap, rig: NephilimRigData): boolean {
+    if (!this.onGround || !this.seesPlayer || !Number.isFinite(this.playerCx) || !Number.isFinite(this.playerCy)) {
+      return false;
+    }
+    if (Math.abs(this.lastHorzStepPx) >= LIFT_STUCK_MOVE_EPS || Math.abs(this.vx) > PLANTED_VEL_PX) {
+      return false;
+    }
+    if (Math.abs(this.playerCy - this.y) > LIFT_UNREACHABLE_VERT_PX) return true;
+    const gapX = Math.abs(this.playerCx - this.x);
+    const approachPx = this.standoffApproachPx();
+    if (gapX > approachPx + 2) {
+      const dir = Math.sign(this.playerCx - this.x);
+      if (dir !== 0 && !this.canMoveHorizontally(map, rig, dir * this.walkSpeed())) return true;
+    }
     return false;
   }
 
-  applyShieldBlockStrike(_strike: WeaponStrike): void {}
+  private isEffectivelyStuck(map: TileMap, rig: NephilimRigData): boolean {
+    if (!this.onGround || !this.seesPlayer || !Number.isFinite(this.playerCx)) return false;
+    if (Math.abs(this.lastHorzStepPx) >= LIFT_STUCK_MOVE_EPS) return false;
+    if (Math.abs(this.vx) > PLANTED_VEL_PX) return false;
+    const gap = Math.abs(this.playerCx - this.x);
+    const approachPx = this.standoffApproachPx();
+    const retreatPx = this.standoffRetreatPx();
+    const wantsApproach = gap > approachPx + 2;
+    const wantsRetreat = gap < retreatPx - 2;
+    if (!wantsApproach && !wantsRetreat) return false;
+    if (wantsApproach) {
+      const dir = Math.sign(this.playerCx - this.x);
+      if (dir === 0) return false;
+      return !this.canMoveHorizontally(map, rig, dir * this.walkSpeed());
+    }
+    let away = Math.sign(this.x - this.playerCx);
+    if (away === 0) away = this.facingRight ? -1 : 1;
+    return !this.canMoveHorizontally(map, rig, away * this.backpedalSpeed());
+  }
+
+  private beginLift(map: TileMap, rig: NephilimRigData): void {
+    void map;
+    this.clearGrabState();
+    this.grabSeqIdx = -1;
+    this.liftPhase = "RISE";
+    this.liftPhaseTimer = LIFT_RISE_SEC;
+    const desiredTargetY = this.y - LIFT_HEIGHT_WORLD_PX;
+    const ceilingCapY = this.liftCeilingCapAnchorY(rig, this.x, this.y);
+    this.liftTargetAnchorY = Number.isFinite(ceilingCapY) ? Math.max(desiredTargetY, ceilingCapY) : desiredTargetY;
+    this.liftHandWorldX = this.x;
+    this.liftHandWorldY = this.liftTargetAnchorY - LIFT_HAND_ABOVE_ANCHOR_PX;
+    this.vx = 0;
+    this.vy = 0;
+    this.standoffHoldTimer = 0;
+    this.liftStuckAttemptTimer = 0;
+    this.liftUnreachableTimer = 0;
+    this.anchorStuckTimer = 0;
+    this.plantedFootL = false;
+    this.plantedFootR = false;
+    this.endLiftRagdoll();
+    this.updateFacingTowardPlayer();
+  }
+
+  private liftDragTargetX(map: TileMap, rig: NephilimRigData): number {
+    if (!Number.isFinite(this.playerCx)) return this.x;
+    let target = this.playerCx;
+    const margin = ROOM_MARGIN;
+    const rw = map.getWidth() * TILE_SIZE;
+    const r = this.anchorCollisionRect(rig, target, this.y);
+    if (!r) return target;
+    if (r.x < margin) target += margin - r.x;
+    if (r.x + r.w > rw - margin) target -= r.x + r.w - (rw - margin);
+    return target;
+  }
+
+  private endLiftRagdoll(): void {
+    for (const p of this.partSims) {
+      p.loose = false;
+      p.looseTimer = 0;
+      p.looseAge = 0;
+      p.vx = 0;
+      p.vy = 0;
+      p.angleVel = 0;
+    }
+  }
+
+  private clearLiftState(): void {
+    this.liftPhase = null;
+    this.liftPhaseTimer = 0;
+    this.liftHandWorldX = 0;
+    this.liftHandWorldY = 0;
+    this.liftTargetAnchorY = 0;
+    this.endLiftRagdoll();
+  }
+
+  private tickLiftPhases(dt: number, map: TileMap, rig: NephilimRigData): void {
+    void map;
+    void rig;
+    switch (this.liftPhase) {
+      case "RISE": {
+        const riseSpeed = LIFT_HEIGHT_WORLD_PX / Math.max(1e-6, LIFT_RISE_SEC);
+        this.y -= riseSpeed * dt;
+        this.liftHandWorldX = this.x;
+        this.liftHandWorldY = this.liftTargetAnchorY - LIFT_HAND_ABOVE_ANCHOR_PX;
+        if (this.y <= this.liftTargetAnchorY || this.liftPhaseTimer <= 0) {
+          this.y = Math.max(this.y, this.liftTargetAnchorY);
+          this.liftPhase = "DRAG";
+          this.liftPhaseTimer = LIFT_DRAG_SEC;
+          this.liftHandWorldY = this.liftTargetAnchorY - LIFT_HAND_ABOVE_ANCHOR_PX;
+          this.updateFacingTowardPlayer();
+        }
+        break;
+      }
+      case "DRAG": {
+        this.vx = 0;
+        this.vy = 0;
+        const targetX = this.liftDragTargetX(map, rig);
+        const dx = targetX - this.x;
+        const step = this.liftDragSpeed() * dt;
+        if (Math.abs(dx) <= step) this.x = targetX;
+        else this.x += Math.sign(dx) * step;
+        this.liftHandWorldX = this.x + Math.sin(this.bobTime * 2.4) * 3;
+        this.liftHandWorldY = this.liftTargetAnchorY - LIFT_HAND_ABOVE_ANCHOR_PX;
+        if (this.liftPhaseTimer <= 0) {
+          this.liftPhase = "DROP";
+          this.liftPhaseTimer = 0;
+          this.endLiftRagdoll();
+        }
+        break;
+      }
+      case "DROP":
+      case "LAND":
+      case "RECOVER":
+        break;
+    }
+  }
+
+  private tickLiftMovement(dt: number, map: TileMap, rig: NephilimRigData): void {
+    if (this.liftPhase === "RISE" || this.liftPhase === "DRAG") {
+      this.applyLiftCeilingCap(map, rig);
+      this.onGround = false;
+      this.wasOnGround = false;
+      this.clampToRoom(map, rig);
+      return;
+    }
+    if (this.liftPhase === "DROP") {
+      this.vy += GRAVITY * dt;
+      if (this.vy > MAX_FALL) this.vy = MAX_FALL;
+      this.vx *= Math.max(0, 1 - dt * 2);
+      this.moveAndCollide(dt, map, rig);
+      this.onGround = this.isGrounded(map, rig);
+      if (this.onGround) {
+        const impactVy = this.vy;
+        this.vy = 0;
+        this.vx *= 0.35;
+        this.beginLiftLandingCollapse(impactVy);
+        this.liftPhase = "LAND";
+        this.liftPhaseTimer = LIFT_LAND_SEC;
+      }
+      this.clampToRoom(map, rig);
+      return;
+    }
+    if (this.liftPhase === "LAND") {
+      this.vy += GRAVITY * dt * 0.72;
+      if (this.vy > MAX_FALL) this.vy = MAX_FALL;
+      this.vx *= Math.max(0, 1 - dt * 3.5);
+      this.moveAndCollide(dt, map, rig);
+      this.onGround = this.isGrounded(map, rig);
+      if (this.onGround && this.vy > 0) this.vy = 0;
+      if (this.liftPhaseTimer <= 0) {
+        this.liftPhase = "RECOVER";
+        this.liftPhaseTimer = LIFT_RECOVER_SEC;
+      }
+      return;
+    }
+    if (this.liftPhase === "RECOVER") {
+      this.vx *= Math.max(0, 1 - dt * 8);
+      this.onGround = this.isGrounded(map, rig);
+      if (this.liftPhaseTimer <= 0) {
+        this.clearLiftState();
+        this.liftCooldown = this.liftCooldownSec();
+        this.attackCooldown = Math.max(this.attackCooldown, this.grabCooldownSec() * 0.5);
+      }
+    }
+  }
+
+  private liftCeilingCapAnchorY(rig: NephilimRigData, anchorX: number, anchorY: number): number {
+    const r = this.anchorCollisionRect(rig, anchorX, anchorY);
+    if (!r || !this.cameraViewWorld) return Number.NEGATIVE_INFINITY;
+    const capTopY = this.cameraViewWorld.y - TILE_SIZE;
+    const topOffset = r.y - anchorY;
+    return capTopY - topOffset;
+  }
+
+  private applyLiftCeilingCap(map: TileMap, rig: NephilimRigData): void {
+    void map;
+    const capY = this.liftCeilingCapAnchorY(rig, this.x, this.y);
+    if (!Number.isFinite(capY)) return;
+    if (this.y < capY) this.y = capY;
+    this.liftTargetAnchorY = Math.max(this.liftTargetAnchorY, capY);
+    this.liftHandWorldY = this.liftTargetAnchorY - LIFT_HAND_ABOVE_ANCHOR_PX;
+  }
+
+  private beginLiftLandingCollapse(impactVy: number): void {
+    const impact = Math.min(2.5, Math.max(1.05, impactVy / 160));
+    const outL = this.facingRight ? 1 : -1;
+    const outR = -outL;
+    const kx = KNOCK_SPEED * 0.78 * impact;
+    const ky = -KNOCK_UP * 0.42 * impact;
+    const splashY = 38 + impact * 22;
+    const spin = (Math.random() - 0.5) * KNOCK_SPIN_DEG * 1.2;
+    this.loosenLimbChainForLiftLand(NEPHILIM_LIMBS[0]!, outL * kx * 0.62, ky * 1.15, spin, 0.58, 0.62, 1.05);
+    this.loosenLimbChainForLiftLand(NEPHILIM_LIMBS[1]!, outL * kx * 1.08, ky * 0.88, -spin, 0.88, 0.84, 1.12);
+    this.loosenLimbChainForLiftLand(NEPHILIM_LIMBS[2]!, outR * kx * 1.08, ky * 0.88, spin, 0.88, 0.84, 1.12);
+    this.loosenLimbChainForLiftLand(
+      NEPHILIM_LEG_CHAINS[0]!,
+      outL * kx * 0.95,
+      splashY,
+      -spin * 0.75,
+      0.72,
+      0.9,
+      1.18,
+    );
+    this.loosenLimbChainForLiftLand(
+      NEPHILIM_LEG_CHAINS[1]!,
+      outR * kx * 0.95,
+      splashY,
+      spin * 0.75,
+      0.72,
+      0.9,
+      1.18,
+    );
+    this.offensiveHitlagFrames = Math.max(this.offensiveHitlagFrames, LIFT_LAND_IMPACT_HITLAG);
+    const landStunSec = LIFT_LAND_IMPACT_HITLAG / 60;
+    this.hitstun = Math.max(this.hitstun, landStunSec);
+    const towardPlayer = Number.isFinite(this.playerCx)
+      ? Math.sign(this.playerCx - this.x)
+      : this.facingRight
+        ? 1
+        : -1;
+    if (towardPlayer !== 0) this.vx = towardPlayer * (52 + impact * 38);
+    this.plantedFootL = false;
+    this.plantedFootR = false;
+  }
+
+  private loosenLimbChainForLiftLand(
+    chain: LimbChain,
+    impX: number,
+    impY: number,
+    spinDeg: number,
+    connSpinScale: number,
+    extSpinScale: number,
+    impScale: number,
+  ): void {
+    this.loosenLimbChain(chain, impX, impY, spinDeg, connSpinScale, extSpinScale, impScale);
+    const connIdx = this.indexOf(chain.connector);
+    const extIdx = this.indexOf(chain.extremity);
+    if (connIdx >= 0) {
+      this.partSims[connIdx]!.looseTimer = Math.max(this.partSims[connIdx]!.looseTimer, LIFT_LAND_LOOSE_SEC);
+    }
+    if (extIdx >= 0) {
+      this.partSims[extIdx]!.looseTimer = Math.max(this.partSims[extIdx]!.looseTimer, LIFT_LAND_LOOSE_SEC);
+    }
+  }
+
+  private loosenLimbChain(
+    chain: LimbChain,
+    impX: number,
+    impY: number,
+    spinDeg: number,
+    connSpinScale: number,
+    extSpinScale: number,
+    impScale: number,
+  ): void {
+    const rig = getNephilimRig();
+    if (!rig) return;
+    const connIdx = this.indexOf(chain.connector);
+    if (connIdx < 0) return;
+    const conn = this.partSims[connIdx]!;
+    conn.loose = true;
+    conn.looseTimer = Math.max(conn.looseTimer, LOOSE_MIN_SEC);
+    conn.looseAge = 0;
+    conn.angleVel += spinDeg * connSpinScale;
+    const extIdx = this.indexOf(chain.extremity);
+    if (extIdx < 0) return;
+    const connChild = this.chainPin(rig, chain.connector, CHILD);
+    const childPin = this.attachPointWorld(rig, connIdx, connChild[0], connChild[1]);
+    const extParent = this.chainPin(rig, chain.extremity, PARENT);
+    const extAttach = this.attachPointWorld(rig, extIdx, extParent[0], extParent[1]);
+    const dist = Math.hypot(extAttach[0] - childPin[0], extAttach[1] - childPin[1]);
+    const ext = this.partSims[extIdx]!;
+    ext.chainLen = Math.max(4, dist * CHAIN_SLACK);
+    ext.loose = true;
+    ext.looseTimer = Math.max(ext.looseTimer, LOOSE_MIN_SEC);
+    ext.looseAge = 0;
+    ext.vx += impX * impScale;
+    ext.vy += impY * impScale;
+    ext.angleVel += spinDeg * extSpinScale;
+  }
+
+  private applyLiftDropIk(rig: NephilimRigData): void {
+    const wob = Math.sin(this.bobTime * LIFT_DROP_IK_WOBBLE_HZ);
+    const wob2 = Math.sin(this.bobTime * (LIFT_DROP_IK_WOBBLE_HZ * 0.73) + 1.1);
+    const fallLean = Math.min(1, Math.max(0.4, Math.hypot(this.vx * 0.018, this.vy * 0.006)));
+    const sillyBack = this.facingRight ? 1 : -1;
+    const trailSign = this.vx !== 0 ? -Math.sign(this.vx) : sillyBack;
+    const trailX = this.x + trailSign * (30 + wob * 9);
+    this.applyLiftDropArmIkSide(
+      rig,
+      this.x + sillyBack * (46 + wob * 11),
+      this.y - (60 + wob2 * 14),
+      "socketHandL",
+      "armL",
+      "handL",
+    );
+    this.applyLiftDropArmIkSide(
+      rig,
+      this.x + sillyBack * (34 - wob * 7),
+      this.y - (46 - wob2 * 9),
+      "socketHandR",
+      "armR",
+      "handR",
+    );
+    this.applyLiftDropLegIk(rig, trailX - 14, this.y + 40 + fallLean * 12, true, NEPHILIM_LEG_CHAINS[0]!);
+    this.applyLiftDropLegIk(rig, trailX + 18, this.y + 34 + fallLean * 10, false, NEPHILIM_LEG_CHAINS[1]!);
+    this.applyLiftDropHeadNeck(
+      rig,
+      this.x + sillyBack * (10 + wob * 7),
+      this.y - (52 + Math.abs(wob2) * 16),
+      wob * 22,
+    );
+  }
+
+  private applyLiftDropArmIkSide(
+    rig: NephilimRigData,
+    aimX: number,
+    aimY: number,
+    bodySocket: string,
+    armName: string,
+    handName: string,
+  ): void {
+    const armIdx = this.indexOf(armName);
+    const handIdx = this.indexOf(handName);
+    if (armIdx < 0 || handIdx < 0) return;
+    const arm = this.partSims[armIdx]!;
+    const hand = this.partSims[handIdx]!;
+    if (arm.loose || hand.loose) return;
+    const shoulder = this.bodySocketWorld(rig, bodySocket);
+    const armParent = this.chainPin(rig, armName, PARENT);
+    const armChild = this.chainPin(rig, armName, CHILD);
+    const handParent = this.chainPin(rig, handName, PARENT);
+    const handChild = this.chainPin(rig, handName, CHILD);
+    const lenUpper = this.pinDistance(armParent, armChild);
+    const lenLower = this.pinDistance(handParent, handChild);
+    const elbowAuth = this.attachPointWorld(rig, armIdx, armChild[0], armChild[1]);
+    const solved = solveTwoBoneIk(
+      shoulder[0],
+      shoulder[1],
+      aimX,
+      aimY,
+      lenUpper,
+      lenLower,
+      elbowAuth[0],
+      elbowAuth[1],
+    );
+    if (!solved) return;
+    this.gluePartTwoPins(rig, armIdx, armParent, armChild, shoulder[0], shoulder[1], solved.ex, solved.ey);
+    this.gluePartTwoPins(rig, handIdx, handParent, handChild, solved.ex, solved.ey, solved.tx, solved.ty);
+  }
+
+  private applyLiftDropLegIk(
+    rig: NephilimRigData,
+    plantX: number,
+    plantY: number,
+    leftLeg: boolean,
+    chain: LimbChain,
+  ): void {
+    const connIdx = this.indexOf(chain.connector);
+    const footIdx = this.indexOf(chain.extremity);
+    if (connIdx < 0 || footIdx < 0) return;
+    const conn = this.partSims[connIdx]!;
+    const foot = this.partSims[footIdx]!;
+    if (conn.loose || foot.loose) return;
+    const hip = this.bodySocketWorld(rig, chain.bodySocket);
+    const connParent = this.chainPin(rig, chain.connector, PARENT);
+    const connChild = this.chainPin(rig, chain.connector, CHILD);
+    const footParent = this.chainPin(rig, chain.extremity, PARENT);
+    const footChild = this.chainPin(rig, chain.extremity, CHILD);
+    const lenUpper = this.pinDistance(connParent, connChild);
+    const lenLower = this.pinDistance(footParent, footChild);
+    const pole = this.legKneePoleWorld(hip[0], hip[1], plantX, plantY, leftLeg);
+    const solved = solveTwoBoneIk(hip[0], hip[1], plantX, plantY, lenUpper, lenLower, pole[0], pole[1]);
+    if (!solved) return;
+    this.gluePartTwoPins(rig, connIdx, connParent, connChild, hip[0], hip[1], solved.ex, solved.ey);
+    this.gluePartTwoPins(rig, footIdx, footParent, footChild, solved.ex, solved.ey, solved.tx, solved.ty);
+  }
+
+  private applyLiftDropHeadNeck(
+    rig: NephilimRigData,
+    headAimX: number,
+    headAimY: number,
+    headTiltDeg: number,
+  ): void {
+    const neckIdx = this.indexOf("neck");
+    const headIdx = this.indexOf("head");
+    if (neckIdx < 0 || headIdx < 0) return;
+    const neck = this.partSims[neckIdx]!;
+    const head = this.partSims[headIdx]!;
+    if (neck.loose || head.loose) return;
+    const bodyPin = this.bodySocketWorld(rig, "socketNeck");
+    const neckParent = this.chainPin(rig, "neck", PARENT);
+    const neckChild = this.chainPin(rig, "neck", CHILD);
+    this.gluePartTwoPins(rig, neckIdx, neckParent, neckChild, bodyPin[0], bodyPin[1], headAimX, headAimY);
+    const neckTip = this.attachPointWorld(rig, neckIdx, neckChild[0], neckChild[1]);
+    const headParent = this.chainPin(rig, "head", PARENT);
+    this.pinPartAttachAt(rig, headIdx, headParent[0], headParent[1], neckTip[0], neckTip[1]);
+    head.angleDeg = this.partPoseEntry(rig, this.liftPoseName(rig), "head").angleDeg + headTiltDeg;
+    head.angleVel *= 0.12;
+    head.vx *= 0.15;
+    head.vy *= 0.15;
+  }
+
+  private applyLiftRebuildRecall(
+    p: NephilimPartSim,
+    partName: string,
+    targetX: number,
+    targetY: number,
+    targetAng: number,
+    dt: number,
+  ): void {
+    const k = chainIsConnector(partName) ? LIFT_REBUILD_RECALL_K * 0.82 : LIFT_REBUILD_RECALL_K;
+    p.vx += (targetX - p.cx) * k * dt;
+    p.vy += (targetY - p.cy) * k * dt;
+    p.angleVel += this.angleDelta(targetAng, p.angleDeg) * LIFT_REBUILD_ANGLE_K * dt;
+  }
+
+  private applyLooseRecall(
+    p: NephilimPartSim,
+    partName: string,
+    targetX: number,
+    targetY: number,
+    targetAng: number,
+    dt: number,
+  ): void {
+    if (this.isLiftSuspended()) return;
+    if (this.liftPhase === "RECOVER") {
+      this.applyLiftRebuildRecall(p, partName, targetX, targetY, targetAng, dt);
+      return;
+    }
+    if (this.isLiftPartsDetached()) return;
+    if (partName !== "head" && !partName.startsWith("hand")) return;
+    const k = partName === "head" ? 78 : LOOSE_K;
+    p.vx += (targetX - p.cx) * k * dt;
+    p.vy += (targetY - p.cy) * k * dt;
+    p.angleVel += this.angleDelta(targetAng, p.angleDeg) * 130 * dt;
+  }
+
+  private trySettleLoosePart(
+    p: NephilimPartSim,
+    _partName: string,
+    targetX: number,
+    targetY: number,
+  ): boolean {
+    if (this.isLiftSuspended() || this.liftPhase === "LAND") return false;
+    if (p.looseTimer > 0) return false;
+    if (this.liftPhase === "RECOVER") {
+      const dist = Math.hypot(targetX - p.cx, targetY - p.cy);
+      const sp = Math.hypot(p.vx, p.vy);
+      if (dist < 11 && sp < 42 && Math.abs(p.angleVel) < 220) {
+        p.loose = false;
+        p.vx *= 0.2;
+        p.vy *= 0.2;
+        p.angleVel *= 0.2;
+        return true;
+      }
+      return false;
+    }
+    const dist = Math.hypot(targetX - p.cx, targetY - p.cy);
+    const sp = Math.hypot(p.vx, p.vy);
+    if (p.looseTimer <= 0 && dist < 9 && sp < 42) {
+      p.loose = false;
+      p.vx *= 0.2;
+      p.vy *= 0.2;
+      p.angleVel *= 0.2;
+      return true;
+    }
+    return false;
+  }
+
+  private tickArmGuard(dt: number): void {
+    if (this.armGuardCooldown > 0) {
+      this.armGuardCooldown = Math.max(0, this.armGuardCooldown - dt);
+    }
+    if (this.armGuardTimer > 0) {
+      this.armGuardTimer = Math.max(0, this.armGuardTimer - dt);
+      this.armGuardGlow = 1;
+    } else if (this.armGuardGlow > 0) {
+      this.armGuardGlow = Math.max(0, this.armGuardGlow - dt / ARM_GUARD_GLOW_FADE_SEC);
+    }
+    if (this.comboHitWindow > 0) {
+      this.comboHitWindow = Math.max(0, this.comboHitWindow - dt);
+      if (this.comboHitWindow <= 0) this.comboHitCount = 0;
+    }
+  }
+
+  armGuardActive(): boolean {
+    return this.armGuardTimer > 0 && this.lifePhase === "ACTIVE" && !this.deathStarted;
+  }
+
+  private noteHitForArmGuard(): void {
+    if (this.armGuardCooldown > 0 || !this.isCombatActive()) return;
+    if (this.comboHitWindow <= 0) this.comboHitCount = 0;
+    this.comboHitWindow = ARM_GUARD_COMBO_SEC;
+    this.comboHitCount++;
+    if (this.comboHitCount >= ARM_GUARD_HITS) {
+      this.armGuardTimer = ARM_GUARD_DURATION_SEC;
+      this.armGuardCooldown = ARM_GUARD_COOLDOWN_SEC;
+      this.armGuardGlow = 1;
+      this.comboHitCount = 0;
+      this.comboHitWindow = 0;
+    }
+  }
+
+  private isForearmPart(partName: string): boolean {
+    if (partName === "handL") return !this.isChainLoose("armL", "handL");
+    if (partName === "handR") return !this.isChainLoose("armR", "handR");
+    return false;
+  }
+
+  private isArmShieldPart(partName: string): boolean {
+    return this.armGuardActive() && this.isForearmPart(partName);
+  }
+
+  private forearmShieldGlowAlpha(partName: string): number {
+    if (this.armGuardGlow <= 0 || !this.isForearmPart(partName)) return 0;
+    return Math.round(ARM_GUARD_GLOW_PEAK_ALPHA * this.armGuardGlow);
+  }
+
+  private isArmGuardWalkOverlayPart(partName: string): boolean {
+    return (
+      partName === "body" ||
+      partName === "head" ||
+      partName === "neck" ||
+      partName === "armL" ||
+      partName === "armR" ||
+      partName === "handL" ||
+      partName === "handR"
+    );
+  }
+
+  private partPoseEntry(rig: NephilimRigData, poseName: string, partName: string) {
+    if (this.armGuardActive() && poseName.startsWith("walk") && this.isArmGuardWalkOverlayPart(partName)) {
+      return poseOffset(rig, ARM_GUARD_POSE, partName);
+    }
+    if (poseName === "hurt") return poseOffset(rig, "idle", partName);
+    return poseOffset(rig, poseName, partName);
+  }
+
+  private onShieldBlocked(freezeFrames: number): void {
+    const stunSec = Math.max(0, freezeFrames) / 60;
+    this.hitstun = Math.max(this.hitstun, stunSec);
+    this.hitlagSolidRed = false;
+  }
+
+  private shieldBlockAabb(): Aabb | null {
+    if (!this.armGuardActive()) return null;
+    return this.combinedRoleAabb(getNephilimRig()!, "hurt");
+  }
+
+  private combinedRoleAabb(rig: NephilimRigData, role: "hurt" | "hit"): Aabb | null {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let any = false;
+    for (let i = 0; i < this.partSims.length; i++) {
+      if (this.partScattered?.[i]) continue;
+      const box = this.partWorldRoleAabb(rig, i, role);
+      if (!box) continue;
+      minX = Math.min(minX, box.x);
+      maxX = Math.max(maxX, box.x + box.w);
+      minY = Math.min(minY, box.y);
+      maxY = Math.max(maxY, box.y + box.h);
+      any = true;
+    }
+    if (!any) return null;
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+
+  private loosePartsContactDamageAabb(): Aabb | null {
+    const rig = getNephilimRig();
+    if (!rig) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let any = false;
+    for (let i = 0; i < this.partSims.length; i++) {
+      if (!this.partSims[i]!.loose) continue;
+      const box = this.partWorldRoleAabb(rig, i, "hurt");
+      if (!box) continue;
+      minX = Math.min(minX, box.x);
+      maxX = Math.max(maxX, box.x + box.w);
+      minY = Math.min(minY, box.y);
+      maxY = Math.max(maxY, box.y + box.h);
+      any = true;
+    }
+    if (!any) return null;
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+
+  private combinedForearmShieldPose(inflateLocalPx: number): HitboxPose | null {
+    const rig = getNephilimRig();
+    if (!rig) return null;
+    const worldVerts: number[] = [];
+    for (let i = 0; i < this.partSims.length; i++) {
+      if (!this.isForearmPart(this.simNames[i]!)) continue;
+      const def = rig.parts[i]!;
+      let local: ReadonlyArray<number> = def.hurt;
+      if (local.length < 6) continue;
+      if (inflateLocalPx > 0) local = inflateHullLocal(local, inflateLocalPx);
+      const p = this.partSims[i]!;
+      const m = this.facingMul();
+      const poly = transformHull(local, def.pivotX, def.pivotY, p.cx, p.cy, p.angleDeg, m);
+      for (let j = 0; j < poly.length; j += 2) worldVerts.push(poly[j]!, poly[j + 1]!);
+    }
+    if (worldVerts.length < 6) return null;
+    return HitboxPoseClass.fromWorldPolygon(worldVerts);
+  }
+
+  private applyAttachedLegChains(rig: NephilimRigData): void {
+    if (this.lifePhase !== "ACTIVE" || !this.onGround || this.deathStarted) return;
+    for (const chain of NEPHILIM_LEG_CHAINS) this.glueAttachedLegChain(rig, chain);
+  }
+
+  private glueAttachedLegChain(rig: NephilimRigData, chain: LimbChain): void {
+    const connIdx = this.indexOf(chain.connector);
+    const footIdx = this.indexOf(chain.extremity);
+    if (connIdx < 0 || footIdx < 0) return;
+    const conn = this.partSims[connIdx]!;
+    const foot = this.partSims[footIdx]!;
+    if (conn.loose || foot.loose) return;
+    const hip = this.bodySocketWorld(rig, chain.bodySocket);
+    const connParent = this.chainPin(rig, chain.connector, PARENT);
+    const connChild = this.chainPin(rig, chain.connector, CHILD);
+    const footParent = this.chainPin(rig, chain.extremity, PARENT);
+    const ankle = this.attachPointWorld(rig, footIdx, footParent[0], footParent[1]);
+    this.gluePartTwoPins(rig, connIdx, connParent, connChild, hip[0], hip[1], ankle[0], ankle[1]);
+  }
+
+  private applyPlantedLegConstraints(rig: NephilimRigData): void {
+    if (!this.usePlantedStance()) {
+      this.plantedFootL = false;
+      this.plantedFootR = false;
+      return;
+    }
+    this.updatePlantedLeg(rig, NEPHILIM_LEG_CHAINS[0]!, true);
+    this.updatePlantedLeg(rig, NEPHILIM_LEG_CHAINS[1]!, false);
+  }
+
+  private updatePlantedLeg(rig: NephilimRigData, chain: LimbChain, left: boolean): void {
+    const extIdx = this.indexOf(chain.extremity);
+    if (extIdx < 0 || this.partSims[extIdx]!.loose) {
+      if (left) this.plantedFootL = false;
+      else this.plantedFootR = false;
+      return;
+    }
+    const plantLocal = this.chainPin(rig, chain.extremity, CHILD);
+    const plantWorld = this.attachPointWorld(rig, extIdx, plantLocal[0], plantLocal[1]);
+    if (left) {
+      if (!this.plantedFootL) {
+        this.plantedFootLWorldX = plantWorld[0];
+        this.plantedFootLWorldY = plantWorld[1];
+        this.plantedFootL = true;
+      }
+      this.applyPlantedLegChain(rig, chain, this.plantedFootLWorldX, this.plantedFootLWorldY, true);
+    } else {
+      if (!this.plantedFootR) {
+        this.plantedFootRWorldX = plantWorld[0];
+        this.plantedFootRWorldY = plantWorld[1];
+        this.plantedFootR = true;
+      }
+      this.applyPlantedLegChain(rig, chain, this.plantedFootRWorldX, this.plantedFootRWorldY, false);
+    }
+  }
+
+  private applyPlantedLegChain(
+    rig: NephilimRigData,
+    chain: LimbChain,
+    plantX: number,
+    plantY: number,
+    leftLeg: boolean,
+  ): void {
+    const connIdx = this.indexOf(chain.connector);
+    const footIdx = this.indexOf(chain.extremity);
+    if (connIdx < 0 || footIdx < 0) return;
+    const conn = this.partSims[connIdx]!;
+    const foot = this.partSims[footIdx]!;
+    if (conn.loose || foot.loose) return;
+    const hip = this.bodySocketWorld(rig, chain.bodySocket);
+    const connParent = this.chainPin(rig, chain.connector, PARENT);
+    const connChild = this.chainPin(rig, chain.connector, CHILD);
+    const footParent = this.chainPin(rig, chain.extremity, PARENT);
+    const footChild = this.chainPin(rig, chain.extremity, CHILD);
+    const lenUpper = this.pinDistance(connParent, connChild);
+    const lenLower = this.pinDistance(footParent, footChild);
+    const pole = this.legKneePoleWorld(hip[0], hip[1], plantX, plantY, leftLeg);
+    const solved = solveTwoBoneIk(hip[0], hip[1], plantX, plantY, lenUpper, lenLower, pole[0], pole[1]);
+    if (!solved) return;
+    this.gluePartTwoPins(rig, connIdx, connParent, connChild, hip[0], hip[1], solved.ex, solved.ey);
+    this.gluePartTwoPins(rig, footIdx, footParent, footChild, solved.ex, solved.ey, solved.tx, solved.ty);
+  }
+
+  private finalizeGroundedStance(rig: NephilimRigData, map: TileMap): void {
+    if (!this.usePlantedStance()) return;
+    this.snapPlantedFeetToFloor(map);
+    if (this.plantedFootL) {
+      this.applyPlantedLegChain(
+        rig,
+        NEPHILIM_LEG_CHAINS[0]!,
+        this.plantedFootLWorldX,
+        this.plantedFootLWorldY,
+        true,
+      );
+    }
+    if (this.plantedFootR) {
+      this.applyPlantedLegChain(
+        rig,
+        NEPHILIM_LEG_CHAINS[1]!,
+        this.plantedFootRWorldX,
+        this.plantedFootRWorldY,
+        false,
+      );
+    }
+  }
+
+  private snapPlantedFeetToFloor(map: TileMap): void {
+    if (this.plantedFootL) {
+      const floor = this.floorTopYUnder(map, this.plantedFootLWorldX, this.plantedFootLWorldY);
+      if (floor != null) this.plantedFootLWorldY = floor;
+    }
+    if (this.plantedFootR) {
+      const floor = this.floorTopYUnder(map, this.plantedFootRWorldX, this.plantedFootRWorldY);
+      if (floor != null) this.plantedFootRWorldY = floor;
+    }
+  }
+
+  private floorTopYUnder(map: TileMap, worldX: number, worldY: number): number | null {
+    const tx = Math.floor(worldX / TILE_SIZE);
+    if (tx < 0 || tx >= map.getWidth()) return null;
+    let ty = Math.max(0, Math.floor((worldY - 2) / TILE_SIZE));
+    for (; ty < map.getHeight(); ty++) {
+      if (map.isSolidTile(tx, ty) || map.isPlatformTile(tx, ty)) return ty * TILE_SIZE;
+    }
+    return null;
+  }
+
+  private legKneePoleWorld(
+    hipX: number,
+    hipY: number,
+    plantX: number,
+    plantY: number,
+    leftLeg: boolean,
+  ): [number, number] {
+    const mx = (hipX + plantX) * 0.5;
+    const my = (hipY + plantY) * 0.5;
+    const dx = plantX - hipX;
+    const dy = plantY - hipY;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-3) return [mx, my + 14];
+    const perpX = -dy / len;
+    const perpY = dx / len;
+    const outward = leftLeg ? -1 : 1;
+    const poleDist = Math.max(12, len * 0.35);
+    return [mx + perpX * outward * poleDist, my + perpY * outward * poleDist];
+  }
+
+  // --- Grab + chain internals ------------------------------------------------
+
+  private isDesperateBand(): boolean {
+    return this.hpFrac() <= BAND_DESPERATE_HP_FRAC;
+  }
+
+  private grabStandoffHoldSec(): number {
+    return this.lerpAgg(GRAB_STANDOFF_HOLD_BASE_SEC, GRAB_STANDOFF_HOLD_AGG_SEC);
+  }
+
+  private grabCooldownSec(): number {
+    return this.lerpAgg(GRAB_COOLDOWN_BASE_SEC, GRAB_COOLDOWN_AGG_SEC);
+  }
+
+  private grabWindupSec(): number {
+    return this.lerpAgg(GRAB_WINDUP_SEC, GRAB_WINDUP_AGG_SEC);
+  }
+
+  private grabRecoverSec(): number {
+    return this.lerpAgg(GRAB_RECOVER_SEC, GRAB_RECOVER_AGG_SEC);
+  }
+
+  private armIkReachScale(): number {
+    return this.lerpAgg(ARM_IK_REACH_SCALE_BASE, ARM_IK_REACH_SCALE_AGG);
+  }
+
+  private grabSequence(rig: NephilimRigData): string[] {
+    return sequence(rig, "grab");
+  }
+
+  private isGrabActive(): boolean {
+    return this.grabSeqIdx >= 0;
+  }
+
+  private grabPoseName(rig: NephilimRigData): string {
+    const seq = this.grabSequence(rig);
+    if (this.grabSeqIdx < 0 || this.grabSeqIdx >= seq.length) return "idle";
+    return seq[this.grabSeqIdx]!;
+  }
+
+  private grabFrameDurationSec(_rig: NephilimRigData, poseName: string): number {
+    switch (poseName) {
+      case "grab_windup":
+        return this.grabWindupSec();
+      case GRAB_POSE_REACH:
+        return GRAB_REACH_SEC;
+      case GRAB_POSE_HOLD_1:
+        return GRAB_RELEASE_BEAT_SEC;
+      case "grab_recover":
+        return this.grabRecoverSec();
+      case GRAB_POSE_HOLD_0:
+        return this.grabHold0DurationSec();
+      default:
+        return 0.4;
+    }
+  }
+
+  private grabHold0DurationSec(): number {
+    if (!this.grabLatched) return GRAB_HOLD_SEC;
+    if (this.grabReleaseKind === "DRINK") {
+      return this.grabDrinkActive ? GRAB_DRINK_SIP_SEC : GRAB_HOLD_LATCHED_DRINK_SEC;
+    }
+    return GRAB_HOLD_LATCHED_THROW_SEC;
+  }
+
+  private isGrabReachIk(rig: NephilimRigData): boolean {
+    return this.isGrabActive() && this.grabPoseName(rig) === GRAB_POSE_REACH;
+  }
+
+  private isGrabReachPhase(): boolean {
+    const rig = getNephilimRig();
+    return rig != null && this.isGrabActive() && this.grabPoseName(rig) === GRAB_POSE_REACH;
+  }
+
+  private isGrabHoldPhase(): boolean {
+    const rig = getNephilimRig();
+    if (!rig || !this.isGrabActive() || !this.grabLatched) return false;
+    const pose = this.grabPoseName(rig);
+    return pose === GRAB_POSE_HOLD_0 || pose === GRAB_POSE_HOLD_1;
+  }
+
+  private grabHoldPhaseTimerScale(): number {
+    const rig = getNephilimRig();
+    if (!rig || !this.grabLatched || this.grabReleaseKind !== "THROW") return 1;
+    if (this.grabPoseName(rig) !== GRAB_POSE_HOLD_0) return 1;
+    return this.grabStruggleMashing ? GRAB_HOLD_MASH_TIMER_MULT : 1;
+  }
+
+  private advanceGrabSequence(rig: NephilimRigData): void {
+    const seq = this.grabSequence(rig);
+    this.grabSeqIdx++;
+    while (
+      this.grabSeqIdx < seq.length &&
+      seq[this.grabSeqIdx] === GRAB_POSE_HOLD_1 &&
+      !this.grabLatched
+    ) {
+      this.grabSeqIdx++;
+    }
+  }
+
+  private clearGrabState(): void {
+    this.grabLatched = false;
+    this.grabReleaseKind = "THROW";
+    this.grabDrinkActive = false;
+    this.grabDrinkStealPending = false;
+    this.grabStruggleMashing = false;
+    this.grabReleasePending = false;
+    this.grabHoldWallTurned = false;
+    this.drinkHealOverlayAge = -1;
+  }
+
+  private tickAttack(dt: number, map: TileMap, rig: NephilimRigData): void {
+    this.attackCooldown = Math.max(0, this.attackCooldown - dt);
+    this.liftCooldown = Math.max(0, this.liftCooldown - dt);
+    if (this.isLiftActive()) {
+      this.tickLiftPhases(dt, map, rig);
+      return;
+    }
+    if (!this.isGrabActive()) {
+      this.tickLiftStuckTimers(dt, map, rig);
+      const stuckReady = this.liftStuckAttemptTimer >= this.liftStuckAttemptRequiredSec();
+      const unreachableReady = this.liftUnreachableTimer >= this.liftUnreachableAttemptRequiredSec();
+      if (this.canBeginLift() && (stuckReady || unreachableReady)) {
+        this.beginLift(map, rig);
+        return;
+      }
+      const frustratedForLift =
+        this.anchorStuckTimer >= LIFT_STUCK_MIN_SEC ||
+        this.liftUnreachableTimer >= LIFT_UNREACHABLE_MIN_SEC;
+      if (this.canBeginGrab() && !frustratedForLift) {
+        this.standoffHoldTimer += dt;
+        if (this.standoffHoldTimer >= this.grabStandoffHoldSec() && this.attackCooldown <= 0) {
+          this.beginGrab(rig);
+        }
+      } else {
+        this.standoffHoldTimer = 0;
+      }
+      return;
+    }
+    if (this.anyArmChainLoose()) {
+      this.grabSeqIdx = -1;
+      this.clearGrabState();
+      this.attackCooldown = this.grabCooldownSec() * 0.35;
+      return;
+    }
+    this.standoffHoldTimer = 0;
+    if (!this.isGrabHoldPhase()) this.updateFacingTowardPlayer();
+    this.attackPhaseTimer -= dt * this.grabHoldPhaseTimerScale();
+    if (this.attackPhaseTimer > 0) return;
+    const seq = this.grabSequence(rig);
+    const currentPose = this.grabPoseName(rig);
+    if (
+      currentPose === GRAB_POSE_HOLD_0 &&
+      this.grabLatched &&
+      this.grabReleaseKind === "DRINK" &&
+      !this.grabDrinkActive
+    ) {
+      this.grabDrinkActive = true;
+      this.grabDrinkStealPending = true;
+      this.attackPhaseTimer = this.grabFrameDurationSec(rig, currentPose);
+      return;
+    }
+    const releaseAfterHold = currentPose === GRAB_POSE_HOLD_1 && this.grabLatched;
+    this.advanceGrabSequence(rig);
+    if (releaseAfterHold) this.grabReleasePending = true;
+    if (this.grabSeqIdx >= seq.length) {
+      this.grabSeqIdx = -1;
+      this.clearGrabState();
+      this.attackCooldown = this.grabCooldownSec();
+    } else {
+      this.attackPhaseTimer = this.grabFrameDurationSec(rig, seq[this.grabSeqIdx]!);
+    }
+  }
+
+  private canBeginGrab(): boolean {
+    return this.seesPlayer && this.onGround && this.isStandoffTrackingPlayer() && !this.anyArmChainLoose();
+  }
+
+  private anyArmChainLoose(): boolean {
+    return this.isChainLoose("armL", "handL") || this.isChainLoose("armR", "handR");
+  }
+
+  private isChainLoose(connectorName: string, extremityName: string): boolean {
+    const ci = this.indexOf(connectorName);
+    if (ci < 0 || !this.partSims[ci]!.loose) return false;
+    const ei = this.indexOf(extremityName);
+    return ei < 0 || this.partSims[ei]!.loose;
+  }
+
+  private beginGrab(rig: NephilimRigData): void {
+    const seq = this.grabSequence(rig);
+    if (seq.length === 0) return;
+    this.clearGrabState();
+    this.grabSeqIdx = 0;
+    this.attackPhaseTimer = this.grabFrameDurationSec(rig, seq[0]!);
+    this.vx = 0;
+    this.updateFacingTowardPlayer();
+  }
+
+  private grabReachBlend(rig: NephilimRigData): number {
+    if (!this.isGrabReachIk(rig)) return 0;
+    let u = 1 - Math.max(0, this.attackPhaseTimer / GRAB_REACH_SEC);
+    u = u * u * (3 - 2 * u);
+    return u * GRAB_REACH_IK;
+  }
+
+  private applyGrabReachHeadTarget(
+    targetX: number[],
+    _targetY: number[],
+    targetAng: number[],
+    i: number,
+    reachU: number,
+  ): void {
+    if (!Number.isFinite(this.playerCx)) return;
+    targetX[i] = targetX[i]! + (this.playerCx - this.x) * 0.14 * reachU;
+    targetAng[i] = targetAng[i]! + (this.playerCx - this.x) * 0.018 * reachU;
+  }
+
+  private applyGrabReachArmIk(rig: NephilimRigData, reachU: number): void {
+    if (!Number.isFinite(this.playerCx) || this.anyArmChainLoose()) return;
+    const aimX = this.playerCx;
+    const aimY = Number.isFinite(this.playerCy) ? this.playerCy : this.y;
+    this.applyGrabReachArmIkSide(rig, reachU, aimX, aimY, "socketHandL", "armL", "handL");
+    this.applyGrabReachArmIkSide(rig, reachU, aimX, aimY, "socketHandR", "armR", "handR");
+  }
+
+  private applyGrabReachArmIkSide(
+    rig: NephilimRigData,
+    reachU: number,
+    aimX: number,
+    aimY: number,
+    bodySocket: string,
+    armName: string,
+    handName: string,
+  ): void {
+    const armIdx = this.indexOf(armName);
+    const handIdx = this.indexOf(handName);
+    if (armIdx < 0 || handIdx < 0) return;
+    const arm = this.partSims[armIdx]!;
+    const hand = this.partSims[handIdx]!;
+    if (arm.loose || hand.loose) return;
+    const shoulder = this.bodySocketWorld(rig, bodySocket);
+    const armParent = this.chainPin(rig, armName, PARENT);
+    const armChild = this.chainPin(rig, armName, CHILD);
+    const handParent = this.chainPin(rig, handName, PARENT);
+    const handChild = this.chainPin(rig, handName, CHILD);
+    let lenUpper = this.pinDistance(armParent, armChild);
+    let lenLower = this.pinDistance(handParent, handChild);
+    const ikScale = this.armIkReachScale();
+    lenUpper *= ikScale;
+    lenLower *= ikScale;
+    const tipAuth = this.attachPointWorld(rig, handIdx, handChild[0], handChild[1]);
+    const elbowAuth = this.attachPointWorld(rig, armIdx, armChild[0], armChild[1]);
+    const targetX = tipAuth[0] + (aimX - tipAuth[0]) * reachU;
+    const targetY = tipAuth[1] + (aimY - tipAuth[1]) * reachU;
+    const solved = solveTwoBoneIk(
+      shoulder[0],
+      shoulder[1],
+      targetX,
+      targetY,
+      lenUpper,
+      lenLower,
+      elbowAuth[0],
+      elbowAuth[1],
+    );
+    if (!solved) return;
+    this.gluePartTwoPins(
+      rig,
+      armIdx,
+      armParent,
+      armChild,
+      shoulder[0],
+      shoulder[1],
+      solved.ex,
+      solved.ey,
+    );
+    this.gluePartTwoPins(
+      rig,
+      handIdx,
+      handParent,
+      handChild,
+      solved.ex,
+      solved.ey,
+      solved.tx,
+      solved.ty,
+    );
+  }
+
+  private applyChainConstraints(rig: NephilimRigData): void {
+    for (const chain of NEPHILIM_LIMBS) this.applyLimbChain(rig, chain);
+    for (const chain of NEPHILIM_LEG_CHAINS) this.applyLimbChain(rig, chain);
+  }
+
+  private applyLimbChain(rig: NephilimRigData, chain: LimbChain): void {
+    const connIdx = this.indexOf(chain.connector);
+    const extIdx = this.indexOf(chain.extremity);
+    if (connIdx < 0) return;
+    const conn = this.partSims[connIdx]!;
+    const ext = extIdx >= 0 ? this.partSims[extIdx]! : null;
+    if (!conn.loose && (ext == null || !ext.loose)) return;
+    const bodyPin = this.bodySocketWorld(rig, chain.bodySocket);
+    const connParent = this.chainPin(rig, chain.connector, PARENT);
+    const connChild = this.chainPin(rig, chain.connector, CHILD);
+    if (ext != null && ext.loose) {
+      this.alignLooseConnectorBone(
+        rig,
+        connIdx,
+        connParent,
+        connChild,
+        bodyPin,
+        extIdx,
+        chain.extremity,
+      );
+    }
+    this.pinPartAttachAt(rig, connIdx, connParent[0], connParent[1], bodyPin[0], bodyPin[1]);
+    conn.vx *= 0.12;
+    conn.vy *= 0.12;
+    if (ext != null && ext.loose) {
+      const childPin = this.attachPointWorld(rig, connIdx, connChild[0], connChild[1]);
+      const extParent = this.chainPin(rig, chain.extremity, PARENT);
+      this.constrainAttachToPin(rig, extIdx, extParent[0], extParent[1], childPin[0], childPin[1]);
+      ext.angleVel *= chain.extremity === "head" ? 0.48 : chain.extremity.startsWith("hand") ? 0.62 : 0.72;
+    }
+  }
+
+  private alignLooseConnectorBone(
+    rig: NephilimRigData,
+    connIdx: number,
+    parentLocal: [number, number],
+    childLocal: [number, number],
+    bodyPinWorld: [number, number],
+    extIdx: number,
+    extremity: string,
+  ): void {
+    const conn = this.partSims[connIdx]!;
+    const ext = this.partSims[extIdx]!;
+    let aimX: number;
+    let aimY: number;
+    if (extremity === "head" || extremity.startsWith("hand") || extremity.startsWith("foot")) {
+      aimX = ext.cx;
+      aimY = ext.cy;
+    } else {
+      const extParentLocal = this.chainPin(rig, extremity, PARENT);
+      const extAttach = this.attachPointWorld(rig, extIdx, extParentLocal[0], extParentLocal[1]);
+      aimX = extAttach[0];
+      aimY = extAttach[1];
+    }
+    const wx = aimX - bodyPinWorld[0];
+    const wy = aimY - bodyPinWorld[1];
+    if (Math.hypot(wx, wy) < 1e-3) return;
+    const m = this.facingMul();
+    const wantDeg = (Math.atan2(wy, wx * m) * 180) / Math.PI;
+    const boneDx = childLocal[0] - parentLocal[0];
+    const boneDy = childLocal[1] - parentLocal[1];
+    const boneDeg = (Math.atan2(boneDy, boneDx * m) * 180) / Math.PI;
+    let aligned = this.wrapAngleDeg(wantDeg - boneDeg);
+    const flipped = this.wrapAngleDeg(aligned + 180);
+    const prevAng = conn.angleDeg;
+    if (Math.abs(this.angleDelta(flipped, prevAng)) < Math.abs(this.angleDelta(aligned, prevAng))) {
+      aligned = flipped;
+    }
+    conn.angleDeg = aligned;
+    conn.angleVel *= 0.12;
+  }
+
+  private integrateLoosePart(
+    rig: NephilimRigData,
+    index: number,
+    p: NephilimPartSim,
+    partName: string,
+    dt: number,
+    map: TileMap,
+  ): void {
+    if (chainIsConnector(partName)) return;
+    const angDamp =
+      partName === "head"
+        ? LOOSE_ANGLE_DAMP_HEAD
+        : partName === "handL" || partName === "handR"
+          ? LOOSE_ANGLE_DAMP_HAND
+          : LOOSE_ANGLE_DAMP;
+    const damp = Math.max(0, 1 - angDamp * dt);
+    p.angleVel *= damp;
+    p.vy += CHAIN_GRAVITY * (this.liftPhase === "RECOVER" ? 0.28 : 1) * dt;
+    const linDampRate =
+      partName === "head" || partName.startsWith("hand") ? LOOSE_LINEAR_DAMP_EXT : LOOSE_LINEAR_DAMP;
+    const linDamp = Math.max(0, 1 - linDampRate * dt);
+    p.vx *= linDamp;
+    p.vy *= linDamp;
+    this.moveLooseWithBounce(rig, index, p, dt, map);
+  }
+
+  private settleLooseConnectors(): void {
+    this.settleConnectorWhenExtremitySettled("neck", "head");
+    this.settleConnectorWhenExtremitySettled("armL", "handL");
+    this.settleConnectorWhenExtremitySettled("armR", "handR");
+    this.settleConnectorWhenExtremitySettled("connFootL", "footL");
+    this.settleConnectorWhenExtremitySettled("connFootR", "footR");
+  }
+
+  private settleConnectorWhenExtremitySettled(connName: string, extName: string): void {
+    const connIdx = this.indexOf(connName);
+    const extIdx = this.indexOf(extName);
+    if (connIdx < 0 || extIdx < 0) return;
+    const conn = this.partSims[connIdx]!;
+    const ext = this.partSims[extIdx]!;
+    if (conn.loose && !ext.loose) {
+      conn.loose = false;
+      conn.angleVel = 0;
+    }
+  }
+
+  private bodySocketWorld(rig: NephilimRigData, socketPin: string): [number, number] {
+    const local = this.chainPin(rig, "body", socketPin);
+    const bodyIdx = this.indexOf("body");
+    if (bodyIdx < 0) return [this.x, this.y];
+    return this.attachPointWorld(rig, bodyIdx, local[0], local[1]);
+  }
+
+  private chainPin(rig: NephilimRigData, part: string, pin: string): [number, number] {
+    return chainAttach(rig, part, pin, rig.frameW, rig.frameH);
+  }
+
+  private gluePartTwoPins(
+    rig: NephilimRigData,
+    partIdx: number,
+    parentLocal: [number, number],
+    childLocal: [number, number],
+    parentWorldX: number,
+    parentWorldY: number,
+    childWorldX: number,
+    childWorldY: number,
+  ): void {
+    const p = this.partSims[partIdx]!;
+    const m = this.facingMul();
+    const wantDx = childWorldX - parentWorldX;
+    const wantDy = childWorldY - parentWorldY;
+    if (Math.hypot(wantDx, wantDy) < 1e-4) return;
+    const wantDeg = (Math.atan2(wantDy, wantDx * m) * 180) / Math.PI;
+    const boneDx = (childLocal[0] - parentLocal[0]) * m;
+    const boneDy = childLocal[1] - parentLocal[1];
+    const boneDeg = (Math.atan2(boneDy, boneDx) * 180) / Math.PI;
+    p.angleDeg = this.wrapAngleDeg(wantDeg - boneDeg);
+    this.pinPartAttachAt(rig, partIdx, parentLocal[0], parentLocal[1], parentWorldX, parentWorldY);
+    p.vx *= 0.15;
+    p.vy *= 0.15;
+    p.angleVel *= 0.12;
+  }
+
+  private attachPointWorld(rig: NephilimRigData, partIdx: number, localX: number, localY: number): [number, number] {
+    void rig;
+    const p = this.partSims[partIdx]!;
+    const m = this.facingMul();
+    const lx = localX * m;
+    const ly = localY;
+    const a = ((m < 0 ? -p.angleDeg : p.angleDeg) * Math.PI) / 180;
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    return [p.cx + lx * cos - ly * sin, p.cy + lx * sin + ly * cos];
+  }
+
+  private attachPointWorldInterp(
+    partIdx: number,
+    localX: number,
+    localY: number,
+    alpha: number,
+  ): [number, number] {
+    const p = this.partSims[partIdx]!;
+    const a = Math.max(0, Math.min(1, alpha));
+    const cx = p.prevCx + (p.cx - p.prevCx) * a;
+    const cy = p.prevCy + (p.cy - p.prevCy) * a;
+    const angleDeg = p.prevAngle + this.angleDelta(p.angleDeg, p.prevAngle) * a;
+    const m = this.facingMul();
+    const lx = localX * m;
+    const ly = localY;
+    const rad = ((m < 0 ? -angleDeg : angleDeg) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    return [cx + lx * cos - ly * sin, cy + lx * sin + ly * cos];
+  }
+
+  private pinPartAttachAt(
+    rig: NephilimRigData,
+    partIdx: number,
+    localX: number,
+    localY: number,
+    worldX: number,
+    worldY: number,
+  ): void {
+    const p = this.partSims[partIdx]!;
+    const m = this.facingMul();
+    const lx = localX * m;
+    const ly = localY;
+    const a = ((m < 0 ? -p.angleDeg : p.angleDeg) * Math.PI) / 180;
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    p.cx = worldX - (lx * cos - ly * sin);
+    p.cy = worldY - (lx * sin + ly * cos);
+    void rig;
+  }
+
+  private constrainAttachToPin(
+    rig: NephilimRigData,
+    partIdx: number,
+    localX: number,
+    localY: number,
+    pinX: number,
+    pinY: number,
+  ): void {
+    void rig;
+    const p = this.partSims[partIdx]!;
+    const attach = this.attachPointWorld(rig, partIdx, localX, localY);
+    const dx = attach[0] - pinX;
+    const dy = attach[1] - pinY;
+    const dist = Math.hypot(dx, dy);
+    if (dist <= p.chainLen || dist < 1e-6) return;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const targetAx = pinX + nx * p.chainLen;
+    const targetAy = pinY + ny * p.chainLen;
+    p.cx += targetAx - attach[0];
+    p.cy += targetAy - attach[1];
+    const radial = p.vx * nx + p.vy * ny;
+    if (radial > 0) {
+      p.vx -= radial * nx * 0.85;
+      p.vy -= radial * ny * 0.85;
+    }
+  }
+
+  private pinDistance(a: [number, number], b: [number, number]): number {
+    return Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+
+  private wrapAngleDeg(deg: number): number {
+    let d = deg;
+    while (d > 180) d -= 360;
+    while (d < -180) d += 360;
+    return d;
+  }
+
+  private combinedHandHitPose(): HitboxPose | null {
+    return this.combinedHandRolePose("hit");
+  }
+
+  private combinedGrabBoxPose(): HitboxPose | null {
+    return this.combinedHandRolePose("grab") ?? this.combinedHandHitPose();
+  }
+
+  private combinedHandRolePose(role: "hit" | "grab"): HitboxPose | null {
+    const rig = getNephilimRig();
+    if (!rig) return null;
+    const worldVerts: number[] = [];
+    for (const name of ["handL", "handR"] as const) {
+      const idx = this.indexOf(name);
+      if (idx < 0) continue;
+      const def = rig.parts[idx]!;
+      let local: ReadonlyArray<number>;
+      if (role === "grab" && def.grab.length >= 6) local = def.grab;
+      else if (def.hit.length >= 6) local = def.hit;
+      else continue;
+      const p = this.partSims[idx]!;
+      const m = this.facingMul();
+      const poly = transformHull(local, def.pivotX, def.pivotY, p.cx, p.cy, p.angleDeg, m);
+      for (let i = 0; i < poly.length; i += 2) worldVerts.push(poly[i]!, poly[i + 1]!);
+    }
+    if (worldVerts.length < 6) return null;
+    return HitboxPoseClass.fromWorldPolygon(worldVerts);
+  }
+
+  private snapGrabHoldPoseToFacing(rig: NephilimRigData): void {
+    const pose = this.grabPoseName(rig);
+    const m = this.facingMul();
+    for (let i = 0; i < this.partSims.length; i++) {
+      const def = rig.parts[i]!;
+      const p = this.partSims[i]!;
+      const pe = poseOffset(rig, pose, def.name);
+      p.cx = this.x + m * pe.dx;
+      p.cy = this.y + pe.dy;
+      p.prevCx = p.cx;
+      p.prevCy = p.cy;
+      p.angleDeg = pe.angleDeg;
+      p.prevAngle = p.angleDeg;
+      p.vx = 0;
+      p.vy = 0;
+      p.angleVel = 0;
+    }
+  }
 
   // --- Internals -------------------------------------------------------------
 
@@ -1243,13 +3152,18 @@ export class Nephilim implements CombatEnemy {
         name: def.name,
         cx: this.x + m * pe.dx,
         cy: this.y + pe.dy,
+        prevCx: this.x + m * pe.dx,
+        prevCy: this.y + pe.dy,
+        prevAngle: pe.angleDeg,
         vx: 0,
         vy: 0,
         angleDeg: pe.angleDeg,
         angleVel: 0,
         loose: false,
         looseTimer: 0,
+        looseAge: 0,
         bobPhase: i * 1.4,
+        chainLen: 0,
       };
       this.partSims.push(p);
       this.simNames.push(def.name);
@@ -1296,6 +3210,34 @@ export class Nephilim implements CombatEnemy {
     const x1 = left + Math.max(hx0, hx1);
     return { x: x0, y: top + hull.minY, w: x1 - x0, h: hull.maxY - hull.minY };
   }
+}
+
+function inflateHullLocal(local: ReadonlyArray<number>, px: number): number[] {
+  if (local.length < 6 || px <= 0) return [...local];
+  const n = local.length / 2;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < local.length; i += 2) {
+    cx += local[i]!;
+    cy += local[i + 1]!;
+  }
+  cx /= n;
+  cy /= n;
+  const out: number[] = new Array(local.length);
+  for (let i = 0; i < local.length; i += 2) {
+    const dx = local[i]! - cx;
+    const dy = local[i + 1]! - cy;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) {
+      out[i] = local[i]!;
+      out[i + 1] = local[i + 1]!;
+    } else {
+      const scale = (len + px) / len;
+      out[i] = cx + dx * scale;
+      out[i + 1] = cy + dy * scale;
+    }
+  }
+  return out;
 }
 
 function transformHull(

@@ -1,4 +1,4 @@
-import type { HitboxPose } from "../collision/HitboxPose";
+import { HitboxPose } from "../collision/HitboxPose";
 import {
   aabbOverlap,
   type Aabb,
@@ -105,6 +105,30 @@ const HURT_POSE_SEC = 0.2;
 /** Matches Java Possessed.HURT_TINT_SEC (also HitlagState.HURT_TINT_SECONDS). */
 const HURT_TINT_SEC = HURT_TINT_SECONDS;
 const BULLET_HALF = 3;
+const POSSESSED_BULLET_BOX_LOCAL = [
+  0,
+  0,
+  BULLET_HALF * 2,
+  0,
+  BULLET_HALF * 2,
+  BULLET_HALF * 2,
+  0,
+  BULLET_HALF * 2,
+] as const;
+
+/** Damage hitbox for possessed boss bullets (Java Possessed.Bullet.damagePose). */
+export function possessedBulletDamagePose(b: PossessedBullet): HitboxPose {
+  const fs = b.vx >= 0 ? 1 : -1;
+  const anchorX = b.x - BULLET_HALF;
+  const anchorY = b.y - BULLET_HALF;
+  return new HitboxPose(
+    POSSESSED_BULLET_BOX_LOCAL,
+    anchorX,
+    anchorY,
+    fs,
+    BULLET_HALF,
+  );
+}
 const PEEK_CHANCE = 0.5;
 const SETTLED_K = 220;
 const SETTLED_C = 2 * Math.sqrt(SETTLED_K);
@@ -138,6 +162,10 @@ export type PossessedBullet = {
   age: number;
   dead: boolean;
   hitPlayer: boolean;
+  stickReflected?: boolean;
+  stickReflectBaseDamage?: number;
+  hitlagRemoveRemaining?: number;
+  playerOverlapHandled?: boolean;
 };
 
 export type PossessedBulletDieFx = {
@@ -1141,6 +1169,11 @@ export class Possessed implements CombatEnemy {
     const mapH = map.getHeight() * TILE_SIZE;
     for (const b of this.bullets) {
       if (b.dead) continue;
+      if ((b.hitlagRemoveRemaining ?? 0) > 0) {
+        b.hitlagRemoveRemaining = Math.max(0, (b.hitlagRemoveRemaining ?? 0) - dt);
+        if (b.hitlagRemoveRemaining <= 0) b.dead = true;
+        continue;
+      }
       b.age += dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
@@ -1273,6 +1306,10 @@ export class Possessed implements CombatEnemy {
       }
     }
     return false;
+  }
+
+  addBulletDieFx(x: number, y: number): void {
+    this.bulletDieFx.push({ x, y, age: 0 });
   }
 
   applyBulletHits(playerHurt: Aabb, onHit: (damage: number, bulletCx: number) => void): void {

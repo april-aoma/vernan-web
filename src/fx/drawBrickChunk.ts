@@ -133,9 +133,6 @@ export function drawOneBrickChunk(
     if (chunk.sprite) {
       const sp = chunk.sprite;
       g.drawImage(sp.image, sp.sx, sp.sy, sp.sw, sp.sh, -dw * 0.5, -dh * 0.5, dw, dh);
-    } else {
-      g.fillStyle = chunk.color;
-      g.fillRect(-dw * 0.5, -dh * 0.5, dw, dh);
     }
   }
   g.restore();
@@ -152,7 +149,6 @@ function drawPivotAnchoredBrickChunk(
 ): void {
   const dcx = camera.worldToDeviceX(chunk.x);
   const dcy = camera.worldToDeviceY(chunk.y);
-  const ws = Math.max(1, Math.round(chunk.worldSize()));
   const homingWait = isHomingWaitDraw(chunk, dashTarget);
   g.save();
   g.imageSmoothingEnabled = false;
@@ -176,9 +172,6 @@ function drawPivotAnchoredBrickChunk(
   if (chunk.sprite) {
     const sp = chunk.sprite;
     g.drawImage(sp.image, sp.sx, sp.sy, sp.sw, sp.sh, 0, 0, sp.sw, sp.sh);
-  } else {
-    g.fillStyle = chunk.color;
-    g.fillRect(0, 0, ws, ws);
   }
   g.restore();
 }

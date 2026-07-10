@@ -231,6 +231,19 @@ export class FrisbeeProjectile {
       if (this.hitEnemyIndicesThisSegment.has(i)) continue;
       const e = enemies[i]!;
       if (e.isDead()) continue;
+      if (e.projectileBlockedByShield?.(pose)) {
+        const enemyFreeze = freezeFrames(FrisbeeProjectile.DAMAGE, 1);
+        e.applyProjectileShieldBlock?.({
+          damage: FrisbeeProjectile.DAMAGE,
+          freezeFrames: enemyFreeze,
+          projectileVelX: this.vx,
+          knockKind: "frisbee",
+        });
+        const hl = freezeFrames(FrisbeeProjectile.DAMAGE, FrisbeeProjectile.HITLAG_MULT) / 60;
+        this.projectileHitlagTimeRemaining = Math.max(this.projectileHitlagTimeRemaining, hl);
+        this.hitEnemyIndicesThisSegment.add(i);
+        continue;
+      }
       if (!e.intersectsProjectile(pose)) continue;
 
       const enemyFreeze = freezeFrames(FrisbeeProjectile.DAMAGE, 1);

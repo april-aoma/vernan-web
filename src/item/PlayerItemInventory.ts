@@ -84,6 +84,25 @@ export class PlayerItemInventory {
     return this.backpackSubweapons.size;
   }
 
+  /** Next primary in cycle; null sentinel = vanilla sword. Undefined = fewer than two options. */
+  peekNextBackpackPrimary(): PrimaryWeaponId | null | undefined {
+    const order = this.backpackPrimaryCycleOrder();
+    if (order.length < 2) return undefined;
+    let idx = this.indexOfPrimaryInCycle(order, this.backpackSelectedPrimaryId);
+    if (idx < 0) idx = 0;
+    return order[(idx + 1) % order.length] ?? null;
+  }
+
+  /** Next subweapon in backpack pool; undefined when fewer than two options. */
+  peekNextBackpackSubweapon(): string | null | undefined {
+    const order = this.backpackSubweaponCycleOrder();
+    if (order.length < 2) return undefined;
+    const eq = this.equippedSub;
+    let idx = eq == null ? -1 : order.indexOf(eq);
+    if (idx < 0) idx = 0;
+    return order[(idx + 1) % order.length] ?? null;
+  }
+
   backpackPrimaryCycleOrder(): Array<PrimaryWeaponId | null> {
     const owned: PrimaryWeaponId[] = [];
     for (const id of PRIMARY_WEAPON_IDS) {

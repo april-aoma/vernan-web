@@ -35,15 +35,16 @@ import {
   WALK_SPEED_THRESHOLD,
 } from "../config/AnimStats";
 import { HitboxPose } from "../collision/HitboxPose";
+import * as JumpFoot from "../collision/JumpFootProbe";
 import * as StandSurfaceQuery from "../collision/StandSurfaceQuery";
 import { clipVelocityDelta, clipWorldDelta } from "../combat/KnockbackCollision";
 import {
   PLAYER_JUMP_HITBOX_H,
-  PLAYER_JUMP_LEAD_FOOT_LOCAL_Y,
+  PLAYER_JUMP_LEAD_FOOT_LOCAL_X,
   PLAYER_JUMP_LOCAL,
   PLAYER_JUMP_PIVOT_X,
   PLAYER_JUMP_STAND_HITBOX_H,
-  PLAYER_JUMP_TRAIL_FOOT_LOCAL_Y,
+  PLAYER_JUMP_TRAIL_FOOT_LOCAL_X,
   PLAYER_HURT_LOCAL,
   PLAYER_HURT_PIVOT_X,
   PLAYER_PIVOT_LOCAL_X,
@@ -73,6 +74,7 @@ import {
   FLINT_SPARK_BASE_CHANCE,
   FLINT_SPARK_LUCK_MULT,
   GEM_SWORD_HITSTUN_MULT,
+  ARCING_ENEMY_BULLET_PLAYER_DAMAGE,
 } from "../config/Physics";
 import type { ItemCatalog } from "../item/ItemCatalog";
 import { PlayerItemInventory } from "../item/PlayerItemInventory";
@@ -92,7 +94,7 @@ import { TileMap } from "../world/TileMap";
 import type { CombatEnemy } from "./CombatEnemy";
 import { HeadbandCombat } from "./HeadbandCombat";
 import type { LemonShotHost } from "./LemonShotHost";
-import { swordKnockbackKind, swordMeleeHitbox } from "./SwordHitbox";
+import { swordKnockbackKind, swordMeleeHitboxPose, shieldAttackWindupHitboxPose, shieldBlockHitboxPose } from "./WeaponHitbox";
 import { FrisbeeAimSnapshot } from "./FrisbeeAimSnapshot";
 import { PlayerStats } from "./PlayerStats";
 import type { SubweaponHost } from "./SubweaponHost";
@@ -159,6 +161,7 @@ export class Player {
   private swordDamageMult = 1;
   private swordTimingScale = 1;
   gemSwordStacks = 0;
+  shieldStacks = 0;
   attackStickFrameW = 48;
   private flintIgniteCallback: ((enemy: CombatEnemy) => void) | null = null;
   private gemSwordHitCallback: ((enemy: CombatEnemy) => void) | null = null;
@@ -216,8 +219,6 @@ export class Player {
   private attackBufferTimer = 0;
   private jumpSquatRemaining = 0;
   private jumpSquatMaxAbsVx = 0;
-  /** Lift-off deferred until after leave-ground attack cancel (Java order). */
-  private jumpSquatLiftOffPending = false;
   private jumpHeld = false;
   private wasOnGround = false;
   private crouchQueuedFromLanding = false;
@@ -239,6 +240,14 @@ export class Player {
   private landedThisTick = false;
   private hurtAirAnimAccum = 0;
   private hurtAirFrame = 0;
+
+  /** Nephilim grab hold — movement/attack skipped while true. */
+  private grabHeld = false;
+  private grabAnimFrame = 0;
+  private grabAnimAccum = 0;
+  private static readonly GRAB_ANIM_FRAMES = 4;
+  private static readonly GRAB_ANIM_SLOW_FPS = 3.5;
+  private static readonly GRAB_ANIM_MASH_FPS = 13.0;
 
   spawnAt(worldX: number, groundTopWorldY: number): void {
     this.w = PLAYER_W;
@@ -263,7 +272,6 @@ export class Player {
     this.attackBufferTimer = 0;
     this.jumpSquatRemaining = 0;
     this.jumpSquatMaxAbsVx = 0;
-    this.jumpSquatLiftOffPending = false;
     this.cancelAttack();
     this.landingLockFrames = 0;
     this.hitlagFrames = 0;
@@ -417,13 +425,7 @@ export class Player {
 
   /** Floor probe Y: jump uses max(lead, trail) feet; stand uses AABB bottom. */
   private collisionFootWorldY(pose: HitboxPose = this.hitboxPose()): number {
-    if (this.usesJumpCollisionHull()) {
-      return Math.max(
-        pose.maxLocalYWorld(PLAYER_JUMP_LEAD_FOOT_LOCAL_Y),
-        pose.maxLocalYWorld(PLAYER_JUMP_TRAIL_FOOT_LOCAL_Y),
-      );
-    }
-    return pose.bounds().y + pose.bounds().h;
+    return JumpFoot.footProbeSupportY(JumpFoot.jumpFootProbeFrom(pose));
   }
 
   /** Camera horizontal follow: hitbox center X. */
@@ -451,6 +453,7 @@ export class Player {
     map: TileMap,
     subweaponHost: SubweaponHost | null = null,
     pedestalPlatforms: Aabb[] | null = null,
+    enemies: readonly CombatEnemy[] = [],
   ): void {
     this.tickPedestalPlatforms = pedestalPlatforms;
     this.health.update(dt);
@@ -520,6 +523,11 @@ export class Player {
       this.getupRenderHold = false;
     }
 
+    if (this.tickEnemyGrab(dt, input, enemies, map)) {
+      this.tickAnim(dt);
+      return;
+    }
+
     const landingLocked = this.landingLockFrames > 0;
     const downRaw = input.down && !input.up;
     if (landingLocked && this.onGround && downRaw) this.crouchQueuedFromLanding = true;
@@ -581,10 +589,20 @@ export class Player {
     // Latch/clear uses post-collide pose (Java).
     this.updateClimbLatch(input, map);
     this.afterGroundTimers(dt);
-    this.detectWalkOff();
-    // Leave-ground cancel before jumpsquat lift-off so X-during-squat rising attacks survive (Java).
+
+    if (
+      !this.wasOnGround &&
+      this.onGround &&
+      !this.crouchJumpMode &&
+      !this.climbing &&
+      this.normalJumpAirborne
+    ) {
+      this.finishJumpLandingCollision(map);
+    }
+
     this.cancelAttackOnLeaveGround();
-    this.tryCompleteJumpSquatLiftOff();
+    this.detectWalkOff();
+    this.finishJumpSquat(map, dt);
     this.tickExtendedFall(dt);
     this.applyLandingFromTouchdown(map);
     if (this.justLanded) {
@@ -592,12 +610,16 @@ export class Player {
       this.squash.applyStretchX(1.2, recover);
     }
     if (!this.climbing) {
+      // Input-driven crouch before height resolve (Java: crouching = onGround && down).
+      if (this.normalJumpAirborne && !this.crouchJumpMode) {
+        this.crouching = false;
+      } else {
+        this.crouching = this.onGround && crouchHeld;
+      }
       this.applyCrouchHeight(crouchHeld, map);
-      this.crouching =
-        (crouchHeld && this.onGround) ||
-        (this.crouchJumpMode && !this.onGround) ||
-        // Forced crouch from finishJumpLandingCollision / failed stand-up under ceiling.
-        (this.onGround && this.h <= PLAYER_CROUCH_H + 0.5);
+      if (this.crouchJumpMode && !this.onGround) {
+        this.crouching = true;
+      }
     } else {
       this.crouching = false;
     }
@@ -614,7 +636,6 @@ export class Player {
   private updateHurtLocked(dt: number, map: TileMap): void {
     this.cancelAttack();
     this.jumpSquatRemaining = 0;
-    this.jumpSquatLiftOffPending = false;
     this.vy += GRAVITY * dt;
     if (this.vy > MAX_FALL) this.vy = MAX_FALL;
     this.moveAndCollide(dt, map);
@@ -809,11 +830,80 @@ export class Player {
     return this.swordVisual === "lemon";
   }
 
-  applySwordProfile(profile: SwordProfile, gemStacks: number): void {
+  applySwordProfile(profile: SwordProfile, gemStacks: number, shieldStacks = 0): void {
     this.swordVisual = profile.visual;
     this.swordDamageMult = profile.damageMult;
     this.swordTimingScale = profile.timingScale;
     this.gemSwordStacks = Math.max(0, gemStacks);
+    this.shieldStacks = Math.max(0, shieldStacks);
+  }
+
+  /** Which shield player.png frame applies for passive block (Java shieldOverlaySheetIndex subset). */
+  shieldBlockFrameIndex(): 0 | 1 | -1 {
+    if (this.shieldStacks <= 0) return -1;
+    if (this.attackPhase !== 0 || this.headband.isActive()) return -1;
+    if (this.crouching || this.isCrouchJumpMode() || this.isJumpSquatting() || this.isLandingLocked()) {
+      return 1;
+    }
+    return 0;
+  }
+
+  /** shield player.png frame for draw (-1 = hidden). Includes climb frames 2–3. */
+  shieldOverlayFrameIndex(climbAnimMod2 = 0): number {
+    if (this.shieldStacks <= 0) return -1;
+    if (this.attackPhase !== 0 || this.headband.isActive()) return -1;
+    if (this.climbing) return 2 + (climbAnimMod2 & 1);
+    if (
+      this.crouching ||
+      this.isCrouchJumpMode() ||
+      this.isJumpSquatting() ||
+      this.isLandingLocked()
+    ) {
+      return 1;
+    }
+    return 0;
+  }
+
+  hasShieldEquipped(): boolean {
+    return this.shieldStacks > 0;
+  }
+
+  /** Shield arm windup hull during attack phase 1 (Java attackShieldWindupPose). */
+  attackShieldWindupHitbox(): Aabb | null {
+    const pose = this.attackShieldWindupHitboxPose();
+    return pose ? pose.bounds() : null;
+  }
+
+  attackShieldWindupHitboxPose(): HitboxPose | null {
+    if (this.shieldStacks <= 0 || this.attackPhase !== 1) return null;
+    if (this.headband.isActive()) return null;
+    return shieldAttackWindupHitboxPose({
+      x: this.x,
+      y: this.y,
+      w: this.w,
+      h: this.h,
+      facing: this.facing,
+      groundCrouchAttack: this.groundCrouchAttack,
+    });
+  }
+
+  /** Passive shield block hull when not attacking (Java shieldBlockHitboxPose). */
+  shieldBlockHitbox(): Aabb | null {
+    const pose = this.shieldBlockHitboxPose();
+    return pose ? pose.bounds() : null;
+  }
+
+  shieldBlockHitboxPose(): HitboxPose | null {
+    const idx = this.shieldBlockFrameIndex();
+    if (idx < 0) return null;
+    return shieldBlockHitboxPose({
+      x: this.x,
+      y: this.y,
+      w: this.w,
+      h: this.h,
+      facing: this.facing,
+      frameIndex: idx as 0 | 1,
+    });
   }
 
   swordVisualId(): SwordVisual {
@@ -904,10 +994,16 @@ export class Player {
 
   /** Sword / headband active AABB, or null when not swinging. */
   attackHitbox(): Aabb | null {
-    const hb = this.headband.attackHitbox(this.headbandHost());
+    const pose = this.attackHitboxPose();
+    return pose ? pose.bounds() : null;
+  }
+
+  /** Sword / headband active polygon pose, or null when not swinging. */
+  attackHitboxPose(): HitboxPose | null {
+    const hb = this.headband.attackHitboxPose(this.headbandHost());
     if (hb) return hb;
     if (this.attackPhase !== 2 || this.usesLemonBuster()) return null;
-    return swordMeleeHitbox({
+    return swordMeleeHitboxPose({
       visual: this.swordVisual,
       x: this.x,
       y: this.y,
@@ -936,6 +1032,221 @@ export class Player {
 
   hurtbox(): Aabb {
     return this.hurtboxPose().bounds();
+  }
+
+  isGrabHeld(): boolean {
+    return this.grabHeld;
+  }
+
+  /**
+   * Nephilim drink sip — half-heart steal (can kill). Defensive hitstun, no i-frames.
+   */
+  applyGrabDrinkSteal(halfHearts: number, freezeFrameCount: number): boolean {
+    if (this.health.isDead || halfHearts <= 0) return false;
+    if (!this.health.tryDamageIgnoringInvuln(halfHearts)) return false;
+    this.beginDefensiveHitstun(freezeFrameCount, 0);
+    return true;
+  }
+
+  /**
+   * Nephilim grab-box: latch on reach, clamp through grab_0, punish on release.
+   * @returns true when Vernan is held this tick (movement/attack skipped).
+   */
+  tickEnemyGrab(
+    dt: number,
+    input: Input,
+    enemies: readonly CombatEnemy[],
+    map: TileMap,
+  ): boolean {
+    this.grabHeld = false;
+    if (this.health.isDead) {
+      this.resetGrabAnim();
+      return false;
+    }
+    if (this.hurtLocked) {
+      this.resetGrabAnim();
+      return false;
+    }
+    const vernanHurt = this.hurtboxPose();
+    if (!this.hurtLocked) {
+      for (const e of enemies) {
+        e.tryGrabLatch?.(vernanHurt);
+      }
+    }
+    for (const e of enemies) {
+      if (!e.isGrabHoldingPlayer?.()) continue;
+      const box = e.grabHoldBoxPose?.();
+      if (!box) continue;
+      this.applyGrabBoxHold(box, map);
+      if (this.overlapsSolid(map, this.collisionPoseAt(this.x, this.y))) {
+        e.flipGrabHoldFacing?.();
+        const turnedBox = e.grabHoldBoxPose?.();
+        if (turnedBox) {
+          this.resolveGrabHoldPosition(turnedBox, map);
+        }
+      }
+      e.applyGrabDrinkStealIfDue?.(this);
+      this.tickGrabStruggleAnim(dt, input);
+      return true;
+    }
+    this.resetGrabAnim();
+    for (const e of enemies) {
+      if (e.consumeGrabReleasePunish?.()) {
+        this.applyGrabReleasePunish(e, map);
+      }
+    }
+    return false;
+  }
+
+  private tickGrabStruggleAnim(dt: number, input: Input): void {
+    const fps = anyStrugglePressed(input) ? Player.GRAB_ANIM_MASH_FPS : Player.GRAB_ANIM_SLOW_FPS;
+    this.grabAnimAccum += dt;
+    const frameSec = 1 / fps;
+    while (this.grabAnimAccum >= frameSec) {
+      this.grabAnimAccum -= frameSec;
+      this.grabAnimFrame = (this.grabAnimFrame + 1) % Player.GRAB_ANIM_FRAMES;
+    }
+  }
+
+  private resetGrabAnim(): void {
+    this.grabAnimAccum = 0;
+    this.grabAnimFrame = 0;
+  }
+
+  private applyGrabBoxHold(box: HitboxPose, map: TileMap): void {
+    void map;
+    this.grabHeld = true;
+    this.vx = 0;
+    this.vy = 0;
+    this.climbing = false;
+    this.crouching = false;
+    this.jumpSquatRemaining = 0;
+    this.cancelAttack();
+    this.cancelSubweaponAnim();
+    const b = box.bounds();
+    const hurt = this.hurtbox();
+    const halfW = hurt.w * 0.5;
+    const halfH = hurt.h * 0.5;
+    const cx = hurt.x + halfW;
+    const cy = hurt.y + halfH;
+    const minCx = b.x + halfW;
+    const maxCx = b.x + b.w - halfW;
+    const minCy = b.y + halfH;
+    const maxCy = b.y + b.h - halfH;
+    const targetCx =
+      minCx > maxCx ? b.x + b.w * 0.5 : Math.max(minCx, Math.min(maxCx, cx));
+    const targetCy =
+      minCy > maxCy ? b.y + b.h * 0.5 : Math.max(minCy, Math.min(maxCy, cy));
+    this.x += targetCx - cx;
+    this.y += targetCy - cy;
+    this.onGround = true;
+  }
+
+  /** Keep hurt center inside the grab hull, then slide off adjacent walls when corner-pinned. */
+  private resolveGrabHoldPosition(box: HitboxPose, map: TileMap): void {
+    const xy = this.anchorClampedInsideGrabBox(box, this.x, this.y);
+    this.x = xy[0];
+    this.y = xy[1];
+    if (!this.overlapsSolid(map, this.collisionPoseAt(this.x, this.y))) return;
+    for (const dx of [2, -2, 4, -4, 6, -6, 8, -8, 10, -10]) {
+      const clipped = clipWorldDelta(map, this.collisionPoseAt.bind(this), this.x, this.y, dx, 0);
+      if (Math.abs(clipped.dx) < 0.5) continue;
+      const next = this.anchorClampedInsideGrabBox(box, this.x + clipped.dx, this.y);
+      if (!this.overlapsSolid(map, this.collisionPoseAt(next[0], next[1]))) {
+        this.x = next[0];
+        this.y = next[1];
+        return;
+      }
+    }
+    this.nudgeCollisionPoseOutOfSolids(map);
+  }
+
+  private anchorClampedInsideGrabBox(box: HitboxPose, anchorX: number, anchorY: number): [number, number] {
+    const b = box.bounds();
+    const hurt = this.hurtBoundsAt(anchorX, anchorY);
+    const halfW = hurt.w * 0.5;
+    const halfH = hurt.h * 0.5;
+    const cx = hurt.x + halfW;
+    const cy = hurt.y + halfH;
+    const minCx = b.x + halfW;
+    const maxCx = b.x + b.w - halfW;
+    const minCy = b.y + halfH;
+    const maxCy = b.y + b.h - halfH;
+    const targetCx = minCx > maxCx ? b.x + b.w * 0.5 : Math.max(minCx, Math.min(maxCx, cx));
+    const targetCy = minCy > maxCy ? b.y + b.h * 0.5 : Math.max(minCy, Math.min(maxCy, cy));
+    return [anchorX + targetCx - cx, anchorY + targetCy - cy];
+  }
+
+  private hurtBoundsAt(anchorX: number, anchorY: number): Aabb {
+    return new HitboxPose(
+      PLAYER_HURT_LOCAL,
+      anchorX,
+      anchorY,
+      this.facing,
+      PLAYER_HURT_PIVOT_X,
+      this.h / PLAYER_STAND_HITBOX_H,
+    ).bounds();
+  }
+
+  private applyGrabReleasePunish(e: CombatEnemy, map: TileMap): void {
+    void map;
+    if (this.health.isDead) return;
+    const dmg = e.grabReleaseDamageToPlayer?.() ?? e.contactDamageToPlayer();
+    if (!this.health.tryDamage(dmg, CONTACT_DAMAGE_IFRAMES)) return;
+    const er = e.rect();
+    const ecx = er.x + er.w * 0.5;
+    const px = this.x + this.w * 0.5;
+    const away = px < ecx ? -1 : 1;
+    this.beginDefensiveHitstun(freezeFrames(dmg), away);
+  }
+
+  /**
+   * Arcing enemy projectile overlap (Java Player.hitArcingEnemyBullet).
+   * Stick active frame reflects; hurtbox overlap damages Vernan.
+   */
+  hitArcingEnemyBullet(
+    bulletPose: HitboxPose,
+    bulletCenterX: number,
+  ): "miss" | "player_hit" | "stick_reflect" | "shield_destroy" {
+    if (
+      this.health.isDead ||
+      this.health.isInvulnerable ||
+      this.isHurtLocked() ||
+      this.isInDefensiveHitstun()
+    ) {
+      return "miss";
+    }
+    if (this.shieldStacks > 0) {
+      if (this.isAttacking()) {
+        const windup = this.attackShieldWindupHitboxPose();
+        if (windup?.intersects(bulletPose)) {
+          return "shield_destroy";
+        }
+      } else {
+        const blockIdx = this.shieldBlockFrameIndex();
+        if (blockIdx >= 0) {
+          const shieldPose = this.shieldBlockHitboxPose();
+          if (shieldPose?.intersects(bulletPose)) {
+            return "shield_destroy";
+          }
+        }
+      }
+    }
+    if (this.swordVisual === "stick") {
+      const stick = this.attackHitboxPose();
+      if (stick?.intersects(bulletPose)) {
+        return "stick_reflect";
+      }
+    }
+    if (!bulletPose.intersects(this.hurtboxPose())) return "miss";
+    const scaled = ARCING_ENEMY_BULLET_PLAYER_DAMAGE * KaleidoscopeEyeCombat.playerDamageMultiplier();
+    if (!this.health.tryDamage(scaled, CONTACT_DAMAGE_IFRAMES)) return "miss";
+    KaleidoscopeEyeCombat.notifyPlayerDamageApplied();
+    LeotardCombat.notifyPlayerDamageApplied(scaled);
+    let away = this.x + this.w * 0.5 >= bulletCenterX ? 1 : -1;
+    if (Math.abs(this.x + this.w * 0.5 - bulletCenterX) < 1e-4) away = -this.facing;
+    this.beginDefensiveHitstun(Math.max(1, Math.ceil(freezeFrames(scaled) * 0.85)), away);
+    return "player_hit";
   }
 
   /** Grant item, apply passives, sync HP cap, ItemEffects.onPickup, red heal. */
@@ -979,7 +1290,7 @@ export class Player {
       enemy: CombatEnemy,
       strike: WeaponStrike,
       sword: Aabb,
-      vfx: "slash" | "shield_break",
+      vfx: "slash" | "shield_break" | "shield_block",
     ) => void,
   ): number {
     if (this.headband.isActive()) {
@@ -1029,16 +1340,20 @@ export class Player {
           onHit?.(e, strike, sword, "shield_break");
         } else {
           const ff = this.scaleOutgoingHitstun(freezeFrames(dmg));
-          e.applyShieldBlockStrike({
+          const strike: WeaponStrike = {
             damage: 0,
             freezeFrames: ff,
             attackerX: this.x,
             attackerW: this.w,
             facing: this.facing,
             knockKind,
-          });
+            contactWorldX: contact.x,
+            contactWorldY: contact.y,
+          };
+          e.applyShieldBlockStrike(strike);
           any = true;
           maxFreeze = Math.max(maxFreeze, ff);
+          onHit?.(e, strike, sword, "shield_block");
         }
         continue;
       }
@@ -1124,7 +1439,6 @@ export class Player {
     this.pendingHurtKnockbackHalved = this.onGround && this.crouching;
     this.cancelAttack();
     this.jumpSquatRemaining = 0;
-    this.jumpSquatLiftOffPending = false;
   }
 
   /**
@@ -1138,7 +1452,6 @@ export class Player {
     this.cancelAttack();
     this.cancelGetup();
     this.jumpSquatRemaining = 0;
-    this.jumpSquatLiftOffPending = false;
     this.landingLockFrames = 0;
     this.justLanded = false;
     this.crouchQueuedFromLanding = false;
@@ -1462,9 +1775,7 @@ export class Player {
       this.wasOnGround &&
       !this.onGround &&
       this.jumpSquatRemaining === 0 &&
-      this.vy >= 0 &&
-      !this.crouchJumpMode &&
-      !this.climbing
+      this.vy >= 0
     ) {
       this.walkOffLedgeActive = true;
       this.walkOffFrozenFrame = this.walkAnimFrame;
@@ -1565,10 +1876,7 @@ export class Player {
       PLAYER_JUMP_PIVOT_X,
       this.h / PLAYER_JUMP_STAND_HITBOX_H,
     );
-    const bottomJump = Math.max(
-      jumpPose.maxLocalYWorld(PLAYER_JUMP_LEAD_FOOT_LOCAL_Y),
-      jumpPose.maxLocalYWorld(PLAYER_JUMP_TRAIL_FOOT_LOCAL_Y),
-    );
+    const bottomJump = this.jumpHullStandAlignFootY(jumpPose, map);
     const standPose = this.standCollisionPoseAt(this.x, this.y);
     const bottomStand = standPose.bounds().y + standPose.bounds().h;
     this.y += bottomJump - bottomStand;
@@ -1581,8 +1889,39 @@ export class Player {
         return;
       }
     }
-    // Always run (no-op if clear) — matches Java push after optional crouch snap.
     this.pushStandHullOutOfSolids(map);
+  }
+
+  /** Stand-feet align Y after jump strip: supported foot on deck, not the dangling vertex (Java). */
+  private jumpHullStandAlignFootY(jumpPose: HitboxPose, map: TileMap): number {
+    const leadY = JumpFoot.jumpLeadFootWorldY(jumpPose);
+    const trailY = JumpFoot.jumpTrailFootWorldY(jumpPose);
+    const leadX = JumpFoot.jumpFootLocalWorldX(jumpPose, PLAYER_JUMP_LEAD_FOOT_LOCAL_X);
+    const trailX = JumpFoot.jumpFootLocalWorldX(jumpPose, PLAYER_JUMP_TRAIL_FOOT_LOCAL_X);
+    const leadDeck = this.jumpFootOverSupportedDeck(map, leadX, leadY);
+    const trailDeck = this.jumpFootOverSupportedDeck(map, trailX, trailY);
+    if (leadDeck && trailDeck) return Math.max(leadY, trailY);
+    if (leadDeck) return leadY;
+    if (trailDeck) return trailY;
+    return Math.max(leadY, trailY);
+  }
+
+  private jumpFootOverSupportedDeck(map: TileMap, footX: number, footY: number): boolean {
+    const tx = Math.floor(footX / TILE_SIZE);
+    const tyCenter = Math.floor((footY - 1e-3) / TILE_SIZE);
+    for (let dty = -1; dty <= 1; dty++) {
+      const ty = tyCenter + dty;
+      if (ty < 0 || ty >= map.height) continue;
+      const deckTop = ty * TILE_SIZE;
+      if (!StandSurfaceQuery.footNearDeck(footY, deckTop) || !JumpFoot.footXOverTile(footX, tx)) {
+        continue;
+      }
+      if (map.isSolidTile(tx, ty)) return true;
+      if (map.isPlatformTile(tx, ty) && !this.dropsThroughOneWayPlatformTile(map, tx, ty)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Move y up until stand hull clears solids (capped at 1 tile). Java pushStandHullOutOfSolids. */
@@ -1596,31 +1935,44 @@ export class Player {
 
   private afterGroundTimers(dt: number): void {
     if (this.onGround) this.coyoteTimer = COYOTE_TIME;
-    else this.coyoteTimer = Math.max(0, this.coyoteTimer - dt);
+    else if (this.jumpSquatRemaining === 0) {
+      this.coyoteTimer = Math.max(0, this.coyoteTimer - dt);
+    }
     this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - dt);
   }
 
   private applyCrouchHeight(crouchHeld: boolean, map: TileMap): void {
     if (this.climbing) return;
-    let wantH = PLAYER_STAND_H;
+    let targetH = PLAYER_STAND_H;
     if (this.jumpSquatRemaining > 0) {
-      // Jumpsquat prefers stand (Java); stay crouch-height only if wind-up started crouched.
-      wantH = this.crouchJumpMode ? PLAYER_CROUCH_H : PLAYER_STAND_H;
+      targetH = this.crouchJumpMode ? PLAYER_CROUCH_H : PLAYER_STAND_H;
     } else if (this.crouchJumpMode && !this.onGround) {
-      wantH = PLAYER_CROUCH_H;
+      targetH = PLAYER_CROUCH_H;
     } else if (crouchHeld && this.onGround) {
-      wantH = PLAYER_CROUCH_H;
+      targetH = PLAYER_CROUCH_H;
     }
-    // Landing lock is visual-only (Java renderJumpSquatCrouch) — do not shrink collision h.
-    if (wantH === this.h) return;
+    this.applyHitboxHeight(targetH, map);
+    // Jumpsquat at STAND_H no-ops applyHitboxHeight; force crouch under a 1-tile ceiling (Java).
+    if (
+      this.jumpSquatRemaining > 0 &&
+      this.onGround &&
+      this.h >= PLAYER_STAND_H - 1e-6 &&
+      this.overlapsSolid(map, this.standHullAt(this.x, this.y, PLAYER_STAND_H))
+    ) {
+      this.applyHitboxHeight(PLAYER_CROUCH_H, map);
+      this.crouching = true;
+    }
+  }
+
+  /** Feet-anchored height change; reverts grow into solids (Java applyHitboxHeight). */
+  private applyHitboxHeight(newH: number, map: TileMap): void {
+    if (Math.abs(newH - this.h) < 1e-6) return;
     const oldH = this.h;
-    const oldBottom = this.bottom();
-    this.h = wantH;
-    this.y = oldBottom - this.h;
-    if (wantH > oldH && this.overlapsSolid(map)) {
-      // Can't stand up here (Java applyHitboxHeight) — stay short.
+    this.h = newH;
+    this.y += oldH - newH;
+    if (newH > oldH && this.overlapsSolid(map)) {
+      this.y -= oldH - newH;
       this.h = oldH;
-      this.y = oldBottom - this.h;
       this.crouching = true;
     }
   }
@@ -1689,26 +2041,19 @@ export class Player {
     this.vx = Math.max(-maxSpeed, Math.min(maxSpeed, this.vx));
   }
 
-  private applyJumpLogic(dt: number, crouchHeld: boolean): void {
-    void dt;
+  private applyJumpLogic(_dt: number, crouchHeld: boolean): void {
     // Getup clears jumpsquat. Sword does not — X during squat starts a rising attack (Java).
     if (this.getupLockFrames > 0) {
       if (this.jumpSquatRemaining > 0) {
         this.jumpSquatRemaining = 0;
         this.shyMaskCharge.cancelSuperJumpWindup();
       }
-      this.jumpSquatLiftOffPending = false;
       return;
     }
 
     if (this.jumpSquatRemaining > 0) {
       this.vy = 0;
       this.jumpSquatMaxAbsVx = Math.max(this.jumpSquatMaxAbsVx, Math.abs(this.vx));
-      this.jumpSquatRemaining--;
-      if (this.jumpSquatRemaining === 0) {
-        // Defer impulse until after leave-ground attack cancel (Java finish-jumpsquat order).
-        this.jumpSquatLiftOffPending = true;
-      }
       return;
     }
 
@@ -1729,7 +2074,6 @@ export class Player {
     ) {
       this.jumpSquatRemaining = this.stats.jumpSquatFrames;
       this.jumpSquatMaxAbsVx = Math.abs(this.vx);
-      this.jumpSquatLiftOffPending = false;
       this.jumpBufferTimer = 0;
       this.vy = 0;
       this.shyMaskCharge.latchSuperJumpWindup();
@@ -1745,25 +2089,37 @@ export class Player {
     }
   }
 
-  /** Apply deferred jumpsquat impulse (after leave-ground cancel). */
-  private tryCompleteJumpSquatLiftOff(): void {
-    if (!this.jumpSquatLiftOffPending) return;
-    this.jumpSquatLiftOffPending = false;
+  /** Ground/coyote support for jumpsquat lift-off (Java standsOnFullWavedashSupport, minus wavedash). */
+  private standsOnJumpSupport(): boolean {
+    return this.onGround || this.coyoteTimer > 0;
+  }
+
+  /**
+   * Decrement jumpsquat after collide/walk-off, then apply impulse + first vertical step (Java ~3714).
+   */
+  private finishJumpSquat(map: TileMap, dt: number): void {
+    if (this.jumpSquatRemaining <= 0) return;
+    this.jumpSquatRemaining--;
+    if (this.jumpSquatRemaining !== 0) return;
+    if (!this.standsOnJumpSupport()) return;
+
     const shyMaskSuperJump = this.shyMaskCharge.consumeSuperJumpAtLiftOff();
     let vel = shyMaskSuperJump ? SHY_MASK_SUPER_JUMP_VEL : this.stats.jumpVel;
+    this.jumpSquatMaxAbsVx = Math.max(this.jumpSquatMaxAbsVx, Math.abs(this.vx));
     const speedGate = Math.max(this.stats.maxGroundSpeed, this.stats.maxAirSpeed) * 0.99;
     if (!shyMaskSuperJump && this.jumpSquatMaxAbsVx >= speedGate) {
       vel *= HIGH_SPEED_JUMP_VEL_MULT;
     }
     this.vy = -vel;
-    this.vx = Math.max(
-      -this.stats.maxAirSpeed,
-      Math.min(this.stats.maxAirSpeed, this.vx),
-    );
     this.onGround = false;
     this.coyoteTimer = 0;
     this.jumpBufferTimer = 0;
     this.walkOffLedgeActive = false;
+
+    if (this.crouchJumpMode) {
+      this.applyHitboxHeight(PLAYER_CROUCH_H, map);
+    }
+
     if (shyMaskSuperJump) {
       this.crouchJumpMode = false;
       this.normalJumpAirborne = true;
@@ -1772,14 +2128,24 @@ export class Player {
         SquashStretch.DEFAULT_RECOVER_FRAMES,
       );
     } else {
-      // Keep crouchJumpMode for air hull until land; normal jump uses PLAYER_JUMP.
       this.normalJumpAirborne = !this.crouchJumpMode;
       this.squash.applyStretchY(1.2, SquashStretch.DEFAULT_RECOVER_FRAMES);
     }
+
+    this.vx = Math.max(
+      -this.stats.maxAirSpeed,
+      Math.min(this.stats.maxAirSpeed, this.vx),
+    );
+
+    const beforeImpulse = this.hitboxPose();
+    const prevFeet = JumpFoot.jumpFootProbeFrom(beforeImpulse);
+    const prevTop = beforeImpulse.bounds().y;
+    this.y += this.vy * dt;
+    this.onGround = false;
+    this.resolveVertical(map, prevFeet, prevTop);
   }
 
   private applyGravity(dt: number): void {
-    if (this.jumpSquatRemaining > 0 || this.jumpSquatLiftOffPending) return;
     let g = GRAVITY;
     g *= this.stats.shyMaskGravityMult * this.stats.kaleidoscopeGravityMult;
     if (this.vy < 0 && !this.jumpHeld) {
@@ -1876,7 +2242,6 @@ export class Player {
           this.vy = 0;
           this.onGround = false;
           this.jumpSquatRemaining = 0;
-          this.jumpSquatLiftOffPending = false;
           this.crouchJumpMode = false;
           this.normalJumpAirborne = false;
         }
@@ -1972,14 +2337,12 @@ export class Player {
     this.walkOffLedgeActive = false;
     this.cancelAttack();
     this.jumpSquatRemaining = 0;
-    this.jumpSquatLiftOffPending = false;
 
     if (kind === "ladder_top") {
       this.captureGetupMouthShaftFromClimb(map);
       this.computeGetupLandPlatform(map);
       this.x = this.getupLandX;
       this.y = this.getupLandY;
-      this.h = PLAYER_STAND_H;
       this.onGround = true;
     } else {
       this.captureGetupMouthShaftFromFeet(map);
@@ -2003,7 +2366,7 @@ export class Player {
     this.getupRenderHold = false;
   }
 
-  private finishGetup(_map: TileMap): void {
+  private finishGetup(map: TileMap): void {
     const finished = this.getupKind;
     if (finished === "ladder_mount") {
       if (this.getupMouthCol >= 0 && this.getupMouthRungTy >= 0) {
@@ -2012,9 +2375,9 @@ export class Player {
         this.onGround = false;
         this.vx = 0;
         this.vy = this.getupLatchDown ? this.stats.climbSpeed : 0;
-        this.h = PLAYER_STAND_H;
         this.x = this.getupLandX;
         this.y = this.getupLandY;
+        this.applyHitboxHeight(PLAYER_STAND_H, map);
         this.crouching = false;
         this.normalJumpAirborne = false;
         this.crouchJumpMode = false;
@@ -2024,10 +2387,10 @@ export class Player {
       this.y = this.getupLandY;
       this.climbing = false;
       this.climbShaftTx = -1;
-      this.onGround = true;
       this.vx = 0;
       this.vy = 0;
-      this.h = PLAYER_STAND_H;
+      this.applyHitboxHeight(PLAYER_STAND_H, map);
+      this.onGround = this.isGrounded(map);
       this.walkOffLedgeActive = false;
       // Latch-up was held through the pose; no post-frame climb (we're on the deck).
       void this.getupLatchUp;
@@ -2492,23 +2855,21 @@ export class Player {
 
   private moveAndCollide(dt: number, map: TileMap): void {
     const poseBefore = this.hitboxPose();
-    const prevFootY = this.collisionFootWorldY(poseBefore);
+    const prevStepFeet = JumpFoot.jumpFootProbeFrom(poseBefore);
     const prevTop = poseBefore.bounds().y;
-    // Full predicted pose (incl. vx) so landing decks aren't misread as side walls (Java).
-    const predictedFootY = this.collisionFootWorldY(
+    const predictedStepFeet = JumpFoot.jumpFootProbeFrom(
       this.collisionPoseAt(this.x + this.vx * dt, this.y + this.vy * dt),
     );
 
     const xBefore = this.x;
     this.x += this.vx * dt;
-    this.resolveHorizontal(map, xBefore, prevFootY, predictedFootY);
+    this.resolveHorizontal(map, xBefore, prevStepFeet, predictedStepFeet);
 
-    // Post-horizontal foot Y for vertical sweep (Java footYBeforeVertical).
-    const footYBeforeVertical = this.collisionFootWorldY();
+    const feetBeforeVertical = JumpFoot.jumpFootProbeFrom(this.hitboxPose());
     this.y += this.vy * dt;
     this.onGround = false;
-    this.resolveVertical(map, footYBeforeVertical, prevTop);
-    if (!this.onGround) {
+    this.resolveVertical(map, feetBeforeVertical, prevTop);
+    if (!this.onGround && !this.usesJumpCollisionHull()) {
       this.onGround = this.isGrounded(map);
     }
     this.followPedestalDeckWhileGrounded();
@@ -2551,8 +2912,8 @@ export class Player {
   private resolveHorizontal(
     map: TileMap,
     xBefore: number,
-    prevFootY: number,
-    predictedFootY: number,
+    prevFeet: JumpFoot.JumpFootProbe,
+    predictedFeet: JumpFoot.JumpFootProbe,
   ): void {
     if (this.vx === 0) return;
     if (
@@ -2560,8 +2921,8 @@ export class Player {
         this.collisionPoseAt(this.x, this.y),
         map,
         this.vx,
-        prevFootY,
-        predictedFootY,
+        prevFeet,
+        predictedFeet,
       )
     ) {
       return;
@@ -2577,8 +2938,8 @@ export class Player {
             this.collisionPoseAt(mid, this.y),
             map,
             this.vx,
-            prevFootY,
-            predictedFootY,
+            prevFeet,
+            predictedFeet,
           )
         ) {
           hi = mid;
@@ -2597,8 +2958,8 @@ export class Player {
             this.collisionPoseAt(mid, this.y),
             map,
             this.vx,
-            prevFootY,
-            predictedFootY,
+            prevFeet,
+            predictedFeet,
           )
         ) {
           lo = mid;
@@ -2611,19 +2972,18 @@ export class Player {
     this.vx = 0;
   }
 
-  private resolveVertical(map: TileMap, prevFootY: number, prevTop: number): void {
+  private resolveVertical(map: TileMap, prevFeet: JumpFoot.JumpFootProbe, prevTop: number): void {
     const pose = this.hitboxPose();
     const b = pose.bounds();
-    const nextFootY = this.collisionFootWorldY(pose);
+    const nextFeet = JumpFoot.jumpFootProbeFrom(pose);
+    const jumpHull = JumpFoot.isJumpHullPose(pose);
 
     if (this.vy >= 0) {
-      let bestFloor = Number.POSITIVE_INFINITY;
+      const landing = JumpFoot.createLandingSnapState();
       const leftTile = Math.floor((b.x + 0.001) / TILE_SIZE);
       const rightTile = Math.floor((b.x + b.w - 0.001) / TILE_SIZE);
-      const prevFootTile = Math.floor((prevFootY - 1e-4) / TILE_SIZE);
-      const nextFootTile = Math.floor((nextFootY - 1e-4) / TILE_SIZE);
-      const tyLo = Math.min(prevFootTile, nextFootTile);
-      const tyHi = Math.max(prevFootTile, nextFootTile);
+      const tyLo = JumpFoot.footProbeTySpanLoWith(prevFeet, nextFeet);
+      const tyHi = JumpFoot.footProbeTySpanHiWith(prevFeet, nextFeet);
       const platScanLo = leftTile - 1;
       const platScanHi = rightTile + 1;
       const feetSpan = this.poseForFeetSupport().bounds();
@@ -2637,7 +2997,7 @@ export class Player {
         ? StandSurfaceQuery.floorYUnderFeet(
             feetSpan.x,
             feetSpan.x + feetSpan.w,
-            nextFootY,
+            JumpFoot.footProbeSupportY(nextFeet),
             this.tickStandSegments,
             this.tickPedestalPlatforms,
           )
@@ -2645,56 +3005,111 @@ export class Player {
 
       for (let ty = tyLo; ty <= tyHi; ty++) {
         const floorY = ty * TILE_SIZE;
-        // Feet already below this deck (Y-down): skip.
-        if (prevFootY > floorY + 1e-3) continue;
-        if (nextFootY < floorY - 1e-3) continue;
+        if (JumpFoot.footProbeAllPrevBelowFloor(prevFeet, floorY)) continue;
+        if (JumpFoot.footProbeAllNextAboveFloor(nextFeet, floorY)) continue;
         if (onPedestalHull && !Number.isNaN(pedestalSupportY) && floorY >= pedestalSupportY - 1e-3) {
           continue;
         }
 
         for (let tx = leftTile; tx <= rightTile; tx++) {
-          if (!map.isSolidTile(tx, ty)) continue;
           const tile = { x: tx * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
-          if (!pose.intersectsRect(tile)) continue;
-          const crossedFromAbove = prevFootY <= floorY + 1e-3 || prevFootTile < ty;
-          if (crossedFromAbove && nextFootY >= floorY - 1e-3) {
-            bestFloor = Math.min(bestFloor, floorY);
+          if (!pose.intersectsRect(tile) || !map.isSolidTile(tx, ty)) continue;
+          const leadHit = JumpFoot.footDescendsOntoFloor(
+            prevFeet.leadY,
+            nextFeet.leadY,
+            ty,
+            floorY,
+            0,
+          );
+          const trailHit = JumpFoot.footDescendsOntoFloor(
+            prevFeet.trailY,
+            nextFeet.trailY,
+            ty,
+            floorY,
+            0,
+          );
+          // Solids: full snap to lowest foot (Java pins max(lead, trail) when both land).
+          if (jumpHull) {
+            if (leadHit || trailHit) {
+              JumpFoot.noteLandingFloor(floorY, true, true, landing);
+            }
+          } else if (leadHit || trailHit) {
+            JumpFoot.noteLandingFloor(floorY, leadHit, trailHit, landing);
           }
         }
 
         if (!this.climbing && !onPedestalHull) {
+          const leadFootX = JumpFoot.jumpFootLocalWorldX(pose, PLAYER_JUMP_LEAD_FOOT_LOCAL_X);
+          const trailFootX = JumpFoot.jumpFootLocalWorldX(pose, PLAYER_JUMP_TRAIL_FOOT_LOCAL_X);
           for (let tx = platScanLo; tx <= platScanHi; tx++) {
-            if (!map.isPlatformTile(tx, ty)) continue;
-            if (this.dropsThroughOneWayPlatformTile(map, tx, ty)) continue;
             const tile = { x: tx * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
             if (!pose.intersectsRect(tile)) continue;
-            const crossedFromAbove =
-              prevFootY <= floorY + PLATFORM_DECK_SLACK_PX + 1e-3 || prevFootTile < ty;
-            const restingOnDeck =
-              nextFootY >= floorY - 1e-3 &&
-              nextFootY <= floorY + PLATFORM_DECK_SLACK_PX &&
-              prevFootY >= floorY - 1e-3;
-            if ((crossedFromAbove && nextFootY >= floorY - 1e-3) || restingOnDeck) {
-              bestFloor = Math.min(bestFloor, floorY);
+            if (!map.isPlatformTile(tx, ty) || this.dropsThroughOneWayPlatformTile(map, tx, ty)) {
+              continue;
+            }
+            if (!jumpHull) {
+              if (
+                JumpFoot.footLandsOrRestsOnDeck(
+                  prevFeet.leadY,
+                  nextFeet.leadY,
+                  ty,
+                  floorY,
+                  PLATFORM_DECK_SLACK_PX,
+                ) &&
+                JumpFoot.feetSpanOverlapsTileColumn(feetSpan.x, feetSpan.x + feetSpan.w, tx)
+              ) {
+                JumpFoot.noteLandingFloor(floorY, true, true, landing);
+              }
+              continue;
+            }
+            const leadHit =
+              JumpFoot.footLandsOrRestsOnDeck(
+                prevFeet.leadY,
+                nextFeet.leadY,
+                ty,
+                floorY,
+                PLATFORM_DECK_SLACK_PX,
+              ) && JumpFoot.footXOverTile(leadFootX, tx);
+            const trailHit =
+              JumpFoot.footLandsOrRestsOnDeck(
+                prevFeet.trailY,
+                nextFeet.trailY,
+                ty,
+                floorY,
+                PLATFORM_DECK_SLACK_PX,
+              ) && JumpFoot.footXOverTile(trailFootX, tx);
+            if (leadHit || trailHit) {
+              JumpFoot.noteLandingFloor(floorY, true, true, landing);
             }
           }
         }
       }
 
-      const pedestalDeckY = StandSurfaceQuery.landingPedestalFloorY(
-        prevFootY,
-        nextFootY,
+      const pedestalDeckLead = StandSurfaceQuery.landingPedestalFloorY(
+        prevFeet.leadY,
+        nextFeet.leadY,
         feetSpan.x,
         feetSpan.x + feetSpan.w,
         this.vy,
         this.tickPedestalPlatforms,
       );
-      if (!Number.isNaN(pedestalDeckY)) {
-        bestFloor = Math.min(bestFloor, pedestalDeckY);
+      const pedestalDeckTrail = StandSurfaceQuery.landingPedestalFloorY(
+        prevFeet.trailY,
+        nextFeet.trailY,
+        feetSpan.x,
+        feetSpan.x + feetSpan.w,
+        this.vy,
+        this.tickPedestalPlatforms,
+      );
+      if (!Number.isNaN(pedestalDeckLead)) {
+        JumpFoot.noteLandingFloor(pedestalDeckLead, true, false, landing);
+      }
+      if (!Number.isNaN(pedestalDeckTrail)) {
+        JumpFoot.noteLandingFloor(pedestalDeckTrail, false, true, landing);
       }
 
-      if (Number.isFinite(bestFloor)) {
-        this.snapFootToFloorY(bestFloor);
+      if (Number.isFinite(landing.bestFloorY)) {
+        this.snapFootToFloorY(landing.bestFloorY, landing.snapLead, landing.snapTrail);
         this.vy = 0;
         this.onGround = true;
         if (this.climbing) {
@@ -2703,7 +3118,6 @@ export class Player {
         }
       }
     } else {
-      // Ceiling — use polygon top against solid tiles (one-ways ignored while rising).
       const leftTile = Math.floor((b.x + 0.001) / TILE_SIZE);
       const rightTile = Math.floor((b.x + b.w - 0.001) / TILE_SIZE);
       const topTile = Math.floor((b.y + 1e-4) / TILE_SIZE);
@@ -2721,24 +3135,48 @@ export class Player {
     }
   }
 
-  private snapFootToFloorY(floorY: number): void {
-    // Keep current top `y`, shift so collisionFootWorldY lands on floorY.
-    const foot = this.collisionFootWorldY();
+  private snapFootToFloorY(floorY: number, snapLead = true, snapTrail = true): void {
+    const pose = this.hitboxPose();
+    if (JumpFoot.isJumpHullPose(pose)) {
+      const lead = JumpFoot.jumpLeadFootWorldY(pose);
+      const trail = JumpFoot.jumpTrailFootWorldY(pose);
+      let snapFoot: number;
+      if (snapLead && snapTrail) snapFoot = Math.max(lead, trail);
+      else if (snapLead) snapFoot = lead;
+      else if (snapTrail) snapFoot = trail;
+      else snapFoot = Math.max(lead, trail);
+      this.y += floorY - snapFoot;
+      return;
+    }
+    const foot = pose.bounds().y + pose.bounds().h;
     this.y += floorY - foot;
   }
 
   private isGrounded(map: TileMap): boolean {
     if (this.vy < 0) return false;
-    const foot = this.collisionFootWorldY();
     const pose = this.hitboxPose();
     const b = pose.bounds();
+    const footProbe = JumpFoot.jumpFootProbeFrom(pose);
+    const jumpHull = JumpFoot.isJumpHullPose(pose);
     const feetSpan = this.poseForFeetSupport().bounds();
     this.rebuildStandSegments();
     if (
       StandSurfaceQuery.isGroundedUnderFeet(
         feetSpan.x,
         feetSpan.x + feetSpan.w,
-        foot,
+        footProbe.leadY,
+        this.vy,
+        this.tickStandSegments,
+        this.tickPedestalPlatforms,
+      )
+    ) {
+      return true;
+    }
+    if (
+      StandSurfaceQuery.isGroundedUnderFeet(
+        feetSpan.x,
+        feetSpan.x + feetSpan.w,
+        footProbe.trailY,
         this.vy,
         this.tickStandSegments,
         this.tickPedestalPlatforms,
@@ -2753,27 +3191,37 @@ export class Player {
     );
     const leftTile = Math.floor((b.x + 0.001) / TILE_SIZE);
     const rightTile = Math.floor((b.x + b.w - 0.001) / TILE_SIZE);
-    const tyCenter = Math.floor((foot - 1e-3) / TILE_SIZE);
-    const scanLo = leftTile - 1;
-    const scanHi = rightTile + 1;
-    for (let dty = -1; dty <= 1; dty++) {
-      const ty = tyCenter + dty;
+    const tyCenterLo = Math.floor((JumpFoot.footProbeHighestY(footProbe) - 1e-3) / TILE_SIZE);
+    const tyCenterHi = Math.floor((JumpFoot.footProbeSupportY(footProbe) - 1e-3) / TILE_SIZE);
+    const scanLo = Math.max(0, leftTile - 1);
+    const scanHi = Math.min(map.getWidth() - 1, rightTile + 1);
+    for (let ty = tyCenterLo - 1; ty <= tyCenterHi + 1; ty++) {
       if (ty < 0 || ty >= map.getHeight()) continue;
       for (let tx = leftTile; tx <= rightTile; tx++) {
-        if (!map.isSolidTile(tx, ty)) continue;
         const tile = { x: tx * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
-        if (pose.intersectsRect(tile)) return true;
+        if (!pose.intersectsRect(tile)) continue;
+        if (map.isSolidTile(tx, ty)) {
+          if (jumpHull) {
+            const deckTop = ty * TILE_SIZE;
+            if (!JumpFoot.jumpFeetOnSolidFloor(footProbe, deckTop)) continue;
+          }
+          return true;
+        }
       }
-      // Platforms ignored while climbing or standing on pedestal hull (Java).
       if (!this.climbing && !onPedestalHull) {
         for (let tx = scanLo; tx <= scanHi; tx++) {
           if (!map.isPlatformTile(tx, ty)) continue;
           if (this.dropsThroughOneWayPlatformTile(map, tx, ty)) continue;
+          const deckTop = ty * TILE_SIZE;
+          if (jumpHull) {
+            if (JumpFoot.jumpHullEitherFootOnPlatformTile(pose, tx, deckTop)) return true;
+            continue;
+          }
           const tileLeft = tx * TILE_SIZE;
           const tileRight = (tx + 1) * TILE_SIZE;
           if (b.x + b.w <= tileLeft + 1e-6 || b.x >= tileRight - 1e-6) continue;
-          const deckTop = ty * TILE_SIZE;
-          if (foot >= deckTop - 1e-3 && foot <= deckTop + PLATFORM_DECK_SLACK_PX) {
+          const supportY = JumpFoot.footProbeSupportY(footProbe);
+          if (supportY >= deckTop - 1e-3 && supportY <= deckTop + PLATFORM_DECK_SLACK_PX) {
             return true;
           }
         }
@@ -2790,8 +3238,8 @@ export class Player {
     pose: HitboxPose,
     map: TileMap,
     vx: number,
-    prevFootY: number,
-    predictedFootY: number,
+    prevFeet: JumpFoot.JumpFootProbe,
+    predictedFeet: JumpFoot.JumpFootProbe,
   ): boolean {
     const pb = pose.bounds();
     const topTile = Math.floor((pb.y + 0.001) / TILE_SIZE);
@@ -2803,7 +3251,7 @@ export class Player {
           if (!map.isSolidTile(c, ty)) continue;
           const tile = { x: c * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
           if (!pose.intersectsRect(tile)) continue;
-          if (this.solidTileBlocksHorizontalWall(pose, map, c, ty, prevFootY, predictedFootY)) {
+          if (this.solidTileBlocksHorizontalWall(pose, map, c, ty, prevFeet, predictedFeet)) {
             return true;
           }
         }
@@ -2815,7 +3263,7 @@ export class Player {
           if (!map.isSolidTile(c, ty)) continue;
           const tile = { x: c * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
           if (!pose.intersectsRect(tile)) continue;
-          if (this.solidTileBlocksHorizontalWall(pose, map, c, ty, prevFootY, predictedFootY)) {
+          if (this.solidTileBlocksHorizontalWall(pose, map, c, ty, prevFeet, predictedFeet)) {
             return true;
           }
         }
@@ -2829,63 +3277,75 @@ export class Player {
     map: TileMap,
     tx: number,
     ty: number,
-    prevFootY: number,
-    predictedFootY: number,
+    prevFeet: JumpFoot.JumpFootProbe,
+    predictedFeet: JumpFoot.JumpFootProbe,
   ): boolean {
-    if (this.vy < 0 || !Number.isFinite(prevFootY) || !Number.isFinite(predictedFootY)) {
-      return false;
-    }
+    if (this.vy < 0) return false;
     if (!map.isPlatformTile(tx, ty) || this.dropsThroughOneWayPlatformTile(map, tx, ty)) {
       return false;
     }
     const deckTop = ty * TILE_SIZE;
-    const prevFootTile = Math.floor((prevFootY - 1e-4) / TILE_SIZE);
-    const crossedFromAbove =
-      prevFootY <= deckTop + PLATFORM_DECK_SLACK_PX + 1e-3 || prevFootTile < ty;
-    const reachesDeck = predictedFootY >= deckTop - 1e-3;
-    return crossedFromAbove && reachesDeck;
+    return (
+      JumpFoot.footDescendsOntoFloor(
+        prevFeet.leadY,
+        predictedFeet.leadY,
+        ty,
+        deckTop,
+        PLATFORM_DECK_SLACK_PX,
+      ) ||
+      JumpFoot.footDescendsOntoFloor(
+        prevFeet.trailY,
+        predictedFeet.trailY,
+        ty,
+        deckTop,
+        PLATFORM_DECK_SLACK_PX,
+      )
+    );
   }
 
   private solidTileFloorContactThisStep(
     map: TileMap,
     tx: number,
     ty: number,
-    prevFootY: number,
-    nextFootY: number,
+    prevFeet: JumpFoot.JumpFootProbe,
+    nextFeet: JumpFoot.JumpFootProbe,
   ): boolean {
     if (!map.isSolidTile(tx, ty)) return false;
     const floorY = ty * TILE_SIZE;
-    const prevFootTile = Math.floor((prevFootY - 1e-4) / TILE_SIZE);
-    const crossedFromAbove = prevFootY <= floorY + 1e-3 || prevFootTile < ty;
-    const restingOnDeck =
-      nextFootY >= floorY - 1e-3 &&
-      nextFootY <= floorY + PLATFORM_DECK_SLACK_PX &&
-      prevFootY >= floorY - 1e-3;
-    return (crossedFromAbove && nextFootY >= floorY - 1e-3) || restingOnDeck;
+    return (
+      JumpFoot.footLandsOrRestsOnDeck(prevFeet.leadY, nextFeet.leadY, ty, floorY, 0) ||
+      JumpFoot.footLandsOrRestsOnDeck(prevFeet.trailY, nextFeet.trailY, ty, floorY, 0)
+    );
   }
 
-  /**
-   * Solid floor deck feet will touch after vertical resolve — defer horizontal so landing
-   * momentum isn't zeroed. Still blocks knockback sliding along an already-grounded deck.
-   */
   private tileIsSolidFloorLandingThisStep(
     map: TileMap,
     tx: number,
     ty: number,
-    prevFootY: number,
-    predictedFootY: number,
+    prevFeet: JumpFoot.JumpFootProbe,
+    predictedFeet: JumpFoot.JumpFootProbe,
   ): boolean {
-    if (this.vy < 0 || !Number.isFinite(prevFootY) || !Number.isFinite(predictedFootY)) {
-      return false;
-    }
-    if (!this.solidTileFloorContactThisStep(map, tx, ty, prevFootY, predictedFootY)) {
+    if (this.vy < 0) return false;
+    if (!this.solidTileFloorContactThisStep(map, tx, ty, prevFeet, predictedFeet)) {
       return false;
     }
     const deckTop = ty * TILE_SIZE;
+    return (
+      this.footIsNewSolidLanding(prevFeet.leadY, predictedFeet.leadY, ty, deckTop) ||
+      this.footIsNewSolidLanding(prevFeet.trailY, predictedFeet.trailY, ty, deckTop)
+    );
+  }
+
+  private footIsNewSolidLanding(
+    prevFootY: number,
+    nextFootY: number,
+    ty: number,
+    deckTop: number,
+  ): boolean {
     const prevFootTile = Math.floor((prevFootY - 1e-4) / TILE_SIZE);
     const alreadyGroundedOnDeck =
       prevFootY >= deckTop - 1e-3 && prevFootY <= deckTop + PLATFORM_DECK_SLACK_PX;
-    const descendingOntoDeck = predictedFootY > prevFootY + 1e-3;
+    const descendingOntoDeck = nextFootY > prevFootY + 1e-3;
     const fromAirTileRow = prevFootTile < ty;
     if (alreadyGroundedOnDeck && !descendingOntoDeck && !fromAirTileRow) {
       return false;
@@ -2893,21 +3353,18 @@ export class Player {
     return true;
   }
 
-  /**
-   * False when feet rest on / are landing on a deck (trail may extend into the tile — not a side wall).
-   */
   private solidTileBlocksHorizontalWall(
     pose: HitboxPose,
     map: TileMap,
     tx: number,
     ty: number,
-    prevFootY: number,
-    predictedFootY: number,
+    prevFeet: JumpFoot.JumpFootProbe,
+    predictedFeet: JumpFoot.JumpFootProbe,
   ): boolean {
-    if (this.tileIsVerticalDeckContactThisStep(map, tx, ty, prevFootY, predictedFootY)) {
+    if (this.tileIsVerticalDeckContactThisStep(map, tx, ty, prevFeet, predictedFeet)) {
       return false;
     }
-    if (this.tileIsSolidFloorLandingThisStep(map, tx, ty, prevFootY, predictedFootY)) {
+    if (this.tileIsSolidFloorLandingThisStep(map, tx, ty, prevFeet, predictedFeet)) {
       return false;
     }
     const deckTop = ty * TILE_SIZE;
@@ -3017,6 +3474,21 @@ function ladderShaftInColumnFromRow(map: TileMap, columnTx: number, startTy: num
     if (map.isPlatformTile(columnTx, ty)) break;
   }
   return false;
+}
+
+function anyStrugglePressed(input: Input): boolean {
+  return (
+    input.jump ||
+    input.attack ||
+    input.subweapon ||
+    input.up ||
+    input.wasPressed("ArrowLeft") ||
+    input.wasPressed("KeyA") ||
+    input.wasPressed("ArrowRight") ||
+    input.wasPressed("KeyD") ||
+    input.wasPressed("ArrowDown") ||
+    input.wasPressed("KeyS")
+  );
 }
 
 function approach(current: number, target: number, maxDelta: number): number {

@@ -282,6 +282,10 @@ export class Penisman implements PeerWalkingEnemy {
     this.bullets.push(new PenismanBullet(spawnX, this.y, this.patrolDir));
   }
 
+  addBulletDieFx(x: number, y: number): void {
+    this.bulletDieFx.push({ x, y, age: 0 });
+  }
+
   applyBulletHits(
     playerHurt: Aabb,
     onHit: (damage: number, bulletCx: number) => void,

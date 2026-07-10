@@ -31,7 +31,9 @@ export const PLAYER_JUMP_LOCAL = [0, 0, 10, 0, 10, 5, 4, 11, 0, 13];
 export const PLAYER_JUMP_HITBOX_H = 13;
 export const PLAYER_JUMP_PIVOT_X = 5;
 /** Local Y of jump lead foot (right tip) and trail foot (left tip). */
+export const PLAYER_JUMP_LEAD_FOOT_LOCAL_X = 10;
 export const PLAYER_JUMP_LEAD_FOOT_LOCAL_Y = 5;
+export const PLAYER_JUMP_TRAIL_FOOT_LOCAL_X = 0;
 export const PLAYER_JUMP_TRAIL_FOOT_LOCAL_Y = 13;
 /** HitboxEditor only: jump strip feet line in local space (not used by the game). */
 export const PLAYER_JUMP_EDITOR_FEET_LOCAL_Y = 18;

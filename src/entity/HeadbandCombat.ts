@@ -1,10 +1,10 @@
 import {
   freezeFrames,
-  placePolygonAabb,
   type Aabb,
   type KnockbackKind,
   type WeaponStrike,
 } from "../combat/CombatMath";
+import { HitboxPose } from "../collision/HitboxPose";
 import {
   ATTACK_ACTIVE_FRAMES,
   ATTACK_RECOVER_EARLY_FRAMES,
@@ -280,8 +280,14 @@ export class HeadbandCombat {
 
   /** Sword active AABB for the current headband hit frame, or null. */
   attackHitbox(host: HeadbandCombatHost): Aabb | null {
+    const pose = this.attackHitboxPose(host);
+    return pose ? pose.bounds() : null;
+  }
+
+  /** Sword active polygon for the current headband hit frame, or null. */
+  attackHitboxPose(host: HeadbandCombatHost): HitboxPose | null {
     if (this.kind_ === "side_attack") {
-      return this.sideAttackHitbox(host);
+      return this.sideAttackHitboxPose(host);
     }
     if (this.kind_ === "none") return null;
     if (this.frameIndex_ !== this.hitFrameIndex()) return null;
@@ -290,7 +296,7 @@ export class HeadbandCombat {
     const pivot = up
       ? HEADBAND_UP_ATTACK0_ACTIVE_PIVOT_X
       : HEADBAND_CROUCH_ATTACK1_ACTIVE_PIVOT_X;
-    return this.placeHeadbandPolygonForHost(
+    return this.headbandHitboxPoseForHost(
       local,
       pivot,
       host,
@@ -310,7 +316,7 @@ export class HeadbandCombat {
       enemy: CombatEnemy,
       strike: WeaponStrike,
       hitbox: Aabb,
-      vfx: "slash" | "shield_break",
+      vfx: "slash" | "shield_break" | "shield_block",
     ) => void,
   ): number {
     if (this.kind_ === "side_attack") {
@@ -357,16 +363,20 @@ export class HeadbandCombat {
           onHit?.(e, strike, hitbox, "shield_break");
         } else {
           const ff = this.scaleOutgoingHitstun(host, freezeFrames(dmg));
-          e.applyShieldBlockStrike({
+          const strike: WeaponStrike = {
             damage: 0,
             freezeFrames: ff,
             attackerX: host.x,
             attackerW: host.w,
             facing: host.facing,
             knockKind: kb,
-          });
+            contactWorldX: contact.x,
+            contactWorldY: contact.y,
+          };
+          e.applyShieldBlockStrike(strike);
           any = true;
           maxFreeze = Math.max(maxFreeze, ff);
+          onHit?.(e, strike, hitbox, "shield_block");
         }
         continue;
       }
@@ -464,7 +474,7 @@ export class HeadbandCombat {
       enemy: CombatEnemy,
       strike: WeaponStrike,
       hitbox: Aabb,
-      vfx: "slash" | "shield_break",
+      vfx: "slash" | "shield_break" | "shield_block",
     ) => void,
   ): number {
     if (host.offensiveHitlagRemaining > 0) return 0;
@@ -529,7 +539,7 @@ export class HeadbandCombat {
           onHit?.(e, strike, hitbox, "shield_break");
         } else {
           const ff = this.scaleOutgoingHitstun(host, freezeFrames(dmg));
-          e.applyShieldBlockStrike({
+          const strike: WeaponStrike = {
             damage: 0,
             freezeFrames: ff,
             attackerX: host.x,
@@ -538,10 +548,12 @@ export class HeadbandCombat {
             knockKind: kb,
             contactWorldX: contact.x,
             contactWorldY: contact.y,
-          });
+          };
+          e.applyShieldBlockStrike(strike);
           hitSet.add(e);
           anyShieldBlock = true;
           maxFreeze = Math.max(maxFreeze, ff);
+          onHit?.(e, strike, hitbox, "shield_block");
         }
         continue;
       }
@@ -762,6 +774,11 @@ export class HeadbandCombat {
   }
 
   private sideAttackHitbox(host: HeadbandCombatHost): Aabb | null {
+    const pose = this.sideAttackHitboxPose(host);
+    return pose ? pose.bounds() : null;
+  }
+
+  private sideAttackHitboxPose(host: HeadbandCombatHost): HitboxPose | null {
     if (!this.isSideAttack()) return null;
     if (
       this.frameIndex_ === HEADBAND_SIDE_ATTACK0_HIT_FRAME_SETUP &&
@@ -787,7 +804,7 @@ export class HeadbandCombat {
       default:
         return null;
     }
-    return this.placeHeadbandPolygonForHost(
+    return this.headbandHitboxPoseForHost(
       local,
       pivot,
       host,
@@ -809,16 +826,16 @@ export class HeadbandCombat {
     return null;
   }
 
-  private placeHeadbandPolygonForHost(
+  private headbandHitboxPoseForHost(
     local: number[],
     pivot: number,
     host: HeadbandCombatHost,
     feetWorldY: number,
     facing: number,
-  ): Aabb {
+  ): HitboxPose {
     const bodyLeft = host.x + host.w * 0.5 - pivot;
     const bodyTop = feetWorldY - HEADBAND_ATTACK_BODY_SPRITE_H;
-    return placePolygonAabb(local, pivot, bodyLeft, bodyTop, facing);
+    return new HitboxPose(local, bodyLeft, bodyTop, facing, pivot);
   }
 
   private frameTicks(): readonly number[] {

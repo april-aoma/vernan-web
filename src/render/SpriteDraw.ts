@@ -171,20 +171,27 @@ export function drawAttackComposite(
   camera: WorldCamera,
   juice?: JuiceDrawOpts,
   stickCentered = false,
+  shield: SpriteStrip | null = null,
 ): void {
   const bodyW = body.frameW;
   const bodyLeft = hitboxLeft + hitboxW * 0.5 - bodyW * 0.5;
   const bodyTop = feetWorldY - body.frameH;
   drawStripFrame(g, body, frameIndex, bodyLeft, bodyTop, facing, camera, juice);
 
-  if (!sword) return;
-  const swordJuice = juice
+  const overlayJuice = juice
     ? { ...juice, solidRed: false, hurtTintAlpha: 0 }
     : undefined;
+
+  if (shield) {
+    const overlayLeft = facing >= 0 ? bodyLeft : bodyLeft - 16;
+    drawStripFrame(g, shield, frameIndex, overlayLeft, bodyTop, facing, camera, overlayJuice);
+  }
+
+  if (!sword) return;
   const overlayLeft = stickCentered
     ? bodyLeft + bodyW * 0.5 - sword.frameW * 0.5
     : facing >= 0
       ? bodyLeft
       : bodyLeft - 16;
-  drawStripFrame(g, sword, frameIndex, overlayLeft, bodyTop, facing, camera, swordJuice);
+  drawStripFrame(g, sword, frameIndex, overlayLeft, bodyTop, facing, camera, overlayJuice);
 }

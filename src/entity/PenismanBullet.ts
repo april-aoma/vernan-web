@@ -5,7 +5,7 @@ import {
   PROJECTILE_PENIS_BULLET_LOCAL,
   PROJECTILE_PENIS_BULLET_PIVOT_X,
 } from "../config/HitboxValues";
-import { GRAVITY } from "../config/Physics";
+import { GRAVITY, STICK_REFLECT_DAMAGE_MULT } from "../config/Physics";
 import { TILE_SIZE } from "../specs";
 import type { TileMap } from "../world/TileMap";
 
@@ -25,6 +25,8 @@ export class PenismanBullet {
   alive = true;
   private hitlagBeforeRemove = 0;
   private playerOverlapDone = false;
+  private stickReflected = false;
+  private stickReflectBaseDamage = 0;
   private animFrame = 0;
   private animAccum = 0;
   private visualAge = 0;
@@ -78,6 +80,20 @@ export class PenismanBullet {
 
   kill(): void {
     this.alive = false;
+  }
+
+  markStickReflected(baseDamage: number): void {
+    this.stickReflected = true;
+    this.stickReflectBaseDamage = Math.max(0, baseDamage);
+    this.playerOverlapDone = true;
+  }
+
+  isStickReflected(): boolean {
+    return this.stickReflected;
+  }
+
+  stickReflectEnemyDamage(): number {
+    return this.stickReflectBaseDamage * STICK_REFLECT_DAMAGE_MULT;
   }
 
   beginHitlagThenRemove(hitlagSec: number): void {

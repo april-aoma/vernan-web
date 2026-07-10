@@ -1,8 +1,9 @@
 import { HeartKind } from "../combat/Health";
 import type { Player } from "../entity/Player";
 import type { ItemCatalog } from "../item/ItemCatalog";
+import { resolveSwordProfile } from "../combat/SwordProfile";
 import { primaryItemIdForVisual } from "../combat/SwordVisual";
-import { drawItemHudIcon, drawItemPickupCell } from "../item/ItemSpriteArt";
+import { drawItemHudIcon, drawItemPickupCellContainedInRect } from "../item/ItemSpriteArt";
 import type { SubweaponCooldowns } from "../item/SubweaponCooldowns";
 import { HUD_HEIGHT, INTERNAL_HEIGHT, INTERNAL_WIDTH } from "../specs";
 import type { DungeonLayout } from "../world/DungeonLayout";
@@ -361,8 +362,21 @@ function drawWeaponSlots(
         : slotY;
     const iw = inner.w > 0 ? Math.round(inner.w * frameScale) : slot;
     const ih = inner.h > 0 ? Math.round(inner.h * frameScale) : slot;
-    drawHudIconContainedInRect(g, weaponPickupIcon, ix, iy, iw, ih);
+    drawItemPickupCellContainedInRect(g, weaponPickupIcon, ix, iy, iw, ih);
   }
+
+  drawBackpackHudWeaponPreviews(
+    g,
+    player,
+    catalog,
+    itemBitmaps,
+    sprites,
+    slotsX,
+    slotY,
+    slot,
+    frameScale,
+    subFrameScale,
+  );
 
   const eqSub = player.inventory.equippedSubweapon();
   if (eqSub) {
@@ -377,7 +391,7 @@ function drawWeaponSlots(
         inner.h > 0 ? slotY + Math.round(inner.y * subFrameScale) : slotY;
       const iw = inner.w > 0 ? Math.round(inner.w * subFrameScale) : slot;
       const ih = inner.h > 0 ? Math.round(inner.h * subFrameScale) : slot;
-      drawItemPickupCell(g, bmp, ix, iy, iw, ih);
+      drawItemPickupCellContainedInRect(g, bmp, ix, iy, iw, ih);
       drawSubweaponCooldownOverlay(
         g,
         ix,
@@ -590,27 +604,6 @@ export function drawHudIconContained(
   g.drawImage(img, 0, 0, iw, ih, dx, dy, dw, dh);
 }
 
-function drawHudIconContainedInRect(
-  g: CanvasRenderingContext2D,
-  img: ImageBitmap,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-): void {
-  const iw = img.width;
-  const ih = img.height;
-  if (iw <= 0 || ih <= 0 || w <= 0 || h <= 0) return;
-  let scale = Math.min(w / iw, h / ih);
-  if (scale >= 1) scale = Math.max(1, Math.floor(scale + 1e-9));
-  const dw = Math.max(1, Math.round(iw * scale));
-  const dh = Math.max(1, Math.round(ih * scale));
-  const dx = x + Math.floor((w - dw) / 2);
-  const dy = y + Math.floor((h - dh) / 2);
-  g.imageSmoothingEnabled = false;
-  g.drawImage(img, 0, 0, iw, ih, dx, dy, dw, dh);
-}
-
 /** Slice UI health / hud stats horizontal strips into frames. */
 export async function sliceHudStrip(
   sheet: ImageBitmap,
@@ -673,17 +666,112 @@ export function innerBoxFrom0000feBorder(
   return { x: ix, y: iy, w: iw, h: ih };
 }
 
-/** Active primary weapon pickup icon (Java resolveHudWeaponIcon). */
+/** Active primary weapon pickup sheet for HUD weapon slot (Java resolveHudWeaponIcon). */
 export function resolveWeaponSlotPickupIcon(
   player: Player,
   catalog: ItemCatalog,
   itemBitmaps: Map<string, ImageBitmap>,
   swordFallback: ImageBitmap | null,
 ): ImageBitmap | null {
-  const itemId = primaryItemIdForVisual(player.swordVisualId());
+  const inv = player.inventory;
+  let itemId: string | null;
+  if (inv.hasBackpack()) {
+    itemId = inv.backpackSelectedPrimary();
+  } else {
+    itemId = primaryItemIdForVisual(resolveSwordProfile(inv, catalog).visual);
+  }
   if (!itemId) return swordFallback;
   const def = catalog.def(itemId);
   return itemBitmaps.get(def.spriteFileName) ?? swordFallback;
+}
+
+/** Item ids whose pickup art should be resident for HUD weapon slots. */
+export function hudWeaponItemIdsToPreload(player: Player, catalog: ItemCatalog): string[] {
+  const inv = player.inventory;
+  const ids = new Set<string>();
+  let activeId: string | null;
+  if (inv.hasBackpack()) {
+    activeId = inv.backpackSelectedPrimary();
+  } else {
+    activeId = primaryItemIdForVisual(resolveSwordProfile(inv, catalog).visual);
+  }
+  if (activeId) ids.add(activeId);
+  const nextPrimary = inv.peekNextBackpackPrimary();
+  if (nextPrimary) ids.add(nextPrimary);
+  const nextSub = inv.peekNextBackpackSubweapon();
+  if (nextSub) ids.add(nextSub);
+  const eqSub = inv.equippedSubweapon();
+  if (eqSub) ids.add(eqSub);
+  return [...ids];
+}
+
+function drawBackpackHudWeaponPreviews(
+  g: CanvasRenderingContext2D,
+  player: Player,
+  catalog: ItemCatalog,
+  itemBitmaps: Map<string, ImageBitmap>,
+  sprites: BottomHudSprites,
+  slotsX: number,
+  slotY: number,
+  slot: number,
+  frameScale: number,
+  subFrameScale: number,
+): void {
+  const inv = player.inventory;
+  if (!inv.hasBackpack()) return;
+
+  if (inv.backpackPrimaryOptionCount() > 1) {
+    const nextPrimary = inv.peekNextBackpackPrimary();
+    if (nextPrimary !== undefined) {
+      const sheet =
+        nextPrimary == null
+          ? sprites.swordPickup
+          : itemBitmaps.get(catalog.def(nextPrimary).spriteFileName) ?? null;
+      if (sheet) {
+        const inner = sprites.weaponInner;
+        const ix =
+          inner.w > 0 ? slotsX + Math.round(inner.x * frameScale) : slotsX;
+        const iy =
+          inner.h > 0 ? slotY + Math.round(inner.y * frameScale) : slotY;
+        const iw = inner.w > 0 ? Math.round(inner.w * frameScale) : slot;
+        const ih = inner.h > 0 ? Math.round(inner.h * frameScale) : slot;
+        drawHudNextWeaponPreview(g, sheet, ix, iy, iw, ih);
+      }
+    }
+  }
+
+  if (inv.backpackSubweaponOptionCount() > 1) {
+    const nextSub = inv.peekNextBackpackSubweapon();
+    if (nextSub) {
+      const sheet = itemBitmaps.get(catalog.def(nextSub).spriteFileName);
+      if (sheet) {
+        const sx = slotsX + slot;
+        const inner = sprites.subweaponInner;
+        const ix = inner.w > 0 ? sx + Math.round(inner.x * subFrameScale) : sx;
+        const iy =
+          inner.h > 0 ? slotY + Math.round(inner.y * subFrameScale) : slotY;
+        const iw = inner.w > 0 ? Math.round(inner.w * subFrameScale) : slot;
+        const ih = inner.h > 0 ? Math.round(inner.h * subFrameScale) : slot;
+        drawHudNextWeaponPreview(g, sheet, ix, iy, iw, ih);
+      }
+    }
+  }
+}
+
+/** Half-size preview of the next backpack cycle entry (Java drawHudNextWeaponPreview). */
+function drawHudNextWeaponPreview(
+  g: CanvasRenderingContext2D,
+  sheet: ImageBitmap,
+  innerX: number,
+  innerY: number,
+  innerW: number,
+  innerH: number,
+): void {
+  const previewW = Math.max(1, Math.floor(innerW / 2));
+  const previewH = Math.max(1, Math.floor(innerH / 2));
+  const previewX = innerX + innerW - previewW;
+  const previewY = innerY + innerH - previewH;
+  drawItemPickupCellContainedInRect(g, sheet, previewX, previewY, previewW, previewH);
 }
 
 /** Left 16×16 pickup cell as a standalone bitmap. */
