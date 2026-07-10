@@ -34,6 +34,8 @@ jobs:
         run: npm ci
 
       - name: Build
+        env:
+          VITE_SCORES_API: https://vernan-scores.henrysbasu.workers.dev
         run: npm run build
 
       - name: Configure Pages

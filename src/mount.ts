@@ -632,7 +632,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       } catch {
         /* ignore */
       }
-      // Brief delay so the scores.json download is not cancelled by navigation.
+      // Brief delay so a mirror download (no remote API) is not cancelled by navigation.
       await new Promise((r) => setTimeout(r, 400));
       window.location.assign(leaderboardUrl.href);
     } catch (err) {

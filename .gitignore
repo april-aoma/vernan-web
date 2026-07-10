@@ -4,6 +4,9 @@ dist/
 *.log
 .env
 .env.*
+.wrangler/
+workers/**/node_modules/
+workers/**/.wrangler/
 
 # Runtime assets under public/assets/ are committed so GitHub Pages CI can build.
 # Refresh them from the Java pack with: npm run sync-assets

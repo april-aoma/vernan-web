@@ -1,5 +1,9 @@
 import type { RunSummary } from "./types";
-import { loadSavedPlayerName, sanitizePlayerName } from "./scoresStore";
+import {
+  loadSavedPlayerName,
+  sanitizePlayerName,
+  usingRemoteScores,
+} from "./scoresStore";
 
 export type SubmitDialogResult =
   | { action: "submit"; playerName: string }
@@ -60,8 +64,9 @@ export function openSubmitDialog(summary: RunSummary): Promise<SubmitDialogResul
     } as CSSStyleDeclaration);
 
     const hint = document.createElement("p");
-    hint.textContent =
-      "Saves locally and downloads scores.json — replace vernan-web/data/scores.json and commit. The live site loads it from GitHub raw, not Pages.";
+    hint.textContent = usingRemoteScores()
+      ? "Posts this run to the live shared leaderboard."
+      : "Saves locally and downloads scores.json — replace vernan-web/data/scores.json and commit. The live site loads it from GitHub raw, not Pages.";
     Object.assign(hint.style, {
       margin: "0 0 1rem",
       fontSize: "0.7rem",
