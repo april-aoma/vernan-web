@@ -1,6 +1,7 @@
 import { HeartKind } from "../combat/Health";
 import type { Player } from "../entity/Player";
 import type { ItemCatalog } from "../item/ItemCatalog";
+import { primaryItemIdForVisual } from "../combat/SwordVisual";
 import { drawItemHudIcon, drawItemPickupCell } from "../item/ItemSpriteArt";
 import type { SubweaponCooldowns } from "../item/SubweaponCooldowns";
 import { HUD_HEIGHT, INTERNAL_HEIGHT, INTERNAL_WIDTH } from "../specs";
@@ -332,6 +333,13 @@ function drawWeaponSlots(
     g.drawImage(sprites.subweaponFrame, slotsX + slot, slotY, slot, slot);
   }
 
+  const weaponPickupIcon = resolveWeaponSlotPickupIcon(
+    player,
+    catalog,
+    itemBitmaps,
+    sprites.swordPickup,
+  );
+
   const frameScale =
     sprites.weaponFrame && sprites.weaponFrame.width > 0
       ? slot / sprites.weaponFrame.width
@@ -341,7 +349,7 @@ function drawWeaponSlots(
       ? slot / sprites.subweaponFrame.width
       : 2;
 
-  if (sprites.swordPickup) {
+  if (weaponPickupIcon) {
     const inner = sprites.weaponInner;
     const ix =
       inner.w > 0
@@ -353,7 +361,7 @@ function drawWeaponSlots(
         : slotY;
     const iw = inner.w > 0 ? Math.round(inner.w * frameScale) : slot;
     const ih = inner.h > 0 ? Math.round(inner.h * frameScale) : slot;
-    drawHudIconContainedInRect(g, sprites.swordPickup, ix, iy, iw, ih);
+    drawHudIconContainedInRect(g, weaponPickupIcon, ix, iy, iw, ih);
   }
 
   const eqSub = player.inventory.equippedSubweapon();
@@ -663,6 +671,19 @@ export function innerBoxFrom0000feBorder(
   ih = Math.max(0, Math.min(h - iy, ih));
   if (iw <= 0 || ih <= 0) return { x: 0, y: 0, w: 0, h: 0 };
   return { x: ix, y: iy, w: iw, h: ih };
+}
+
+/** Active primary weapon pickup icon (Java resolveHudWeaponIcon). */
+export function resolveWeaponSlotPickupIcon(
+  player: Player,
+  catalog: ItemCatalog,
+  itemBitmaps: Map<string, ImageBitmap>,
+  swordFallback: ImageBitmap | null,
+): ImageBitmap | null {
+  const itemId = primaryItemIdForVisual(player.swordVisualId());
+  if (!itemId) return swordFallback;
+  const def = catalog.def(itemId);
+  return itemBitmaps.get(def.spriteFileName) ?? swordFallback;
 }
 
 /** Left 16×16 pickup cell as a standalone bitmap. */

@@ -65,10 +65,10 @@ export const PENIS_BULLET_DIE_FRAME_COUNT = 2;
 export const GOLDEN_ROACH_WALK_FRAMES = 2;
 export const GOLDEN_ROACH_WALK_SPRITE_W = 8;
 export const GOLDEN_ROACH_WALK_SPRITE_H = 8;
-/** Golden roach fly `golden roach2 fly.png` — 32×16 → 2 frames of 16×8. */
+/** Golden roach fly `golden roach2 fly.png` — 32×16 → 2 frames of 16×16 (art centered in canvas). */
 export const GOLDEN_ROACH_FLY_FRAMES = 2;
 export const GOLDEN_ROACH_FLY_SPRITE_W = 16;
-export const GOLDEN_ROACH_FLY_SPRITE_H = 8;
+export const GOLDEN_ROACH_FLY_SPRITE_H = 16;
 export const POSSESSED_PART_W = 16;
 export const POSSESSED_PART_H = 16;
 /** Body part frame index on possessed.png (0 head, 1 body, …). */

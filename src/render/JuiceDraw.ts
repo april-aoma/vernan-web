@@ -39,6 +39,57 @@ export type JuiceDrawOpts = {
   tintRgb?: number;
 };
 
+export type TintBlitOpts = Pick<JuiceDrawOpts, "solidRed" | "hurtTintAlpha" | "tintRgb">;
+
+/** Blit one source cell with optional SrcAtop tint (caller owns transform). */
+export function blitTintedSpriteCell(
+  g: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+  tint: TintBlitOpts = {},
+): void {
+  const solidRed = tint.solidRed === true;
+  const tintA = tint.hurtTintAlpha ?? 0;
+  const needsTint = solidRed || tintA > 0;
+  g.imageSmoothingEnabled = false;
+  if (!needsTint) {
+    g.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
+    return;
+  }
+  const tc = ensureTintSurface(sw, sh);
+  tc.clearRect(0, 0, sw, sh);
+  tc.imageSmoothingEnabled = false;
+  tc.drawImage(source, sx, sy, sw, sh, 0, 0, sw, sh);
+  tc.globalCompositeOperation = "source-atop";
+  if (solidRed) {
+    tc.fillStyle = "#ff0000";
+    tc.globalAlpha = 1;
+    tc.fillRect(0, 0, sw, sh);
+  } else {
+    const rgb = tint.tintRgb;
+    if (rgb != null) {
+      const r = (rgb >> 16) & 0xff;
+      const gch = (rgb >> 8) & 0xff;
+      const b = rgb & 0xff;
+      tc.fillStyle = `rgb(${r},${gch},${b})`;
+    } else {
+      tc.fillStyle = "#ff0000";
+    }
+    tc.globalAlpha = Math.min(1, tintA / 255);
+    tc.fillRect(0, 0, sw, sh);
+  }
+  tc.globalAlpha = 1;
+  tc.globalCompositeOperation = "source-over";
+  g.drawImage(tintCanvas as CanvasImageSource, 0, 0, sw, sh, dx, dy, dw, dh);
+}
+
 /**
  * Draw an image (or strip cell) feet-pinned with optional shake, squash, and red tint.
  */

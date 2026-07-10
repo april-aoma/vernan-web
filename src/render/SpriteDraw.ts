@@ -170,6 +170,7 @@ export function drawAttackComposite(
   facing: number,
   camera: WorldCamera,
   juice?: JuiceDrawOpts,
+  stickCentered = false,
 ): void {
   const bodyW = body.frameW;
   const bodyLeft = hitboxLeft + hitboxW * 0.5 - bodyW * 0.5;
@@ -180,7 +181,10 @@ export function drawAttackComposite(
   const swordJuice = juice
     ? { ...juice, solidRed: false, hurtTintAlpha: 0 }
     : undefined;
-  // Overlay: body + 16px on the RIGHT; when facing left, shift left by 16.
-  const overlayLeft = facing >= 0 ? bodyLeft : bodyLeft - 16;
+  const overlayLeft = stickCentered
+    ? bodyLeft + bodyW * 0.5 - sword.frameW * 0.5
+    : facing >= 0
+      ? bodyLeft
+      : bodyLeft - 16;
   drawStripFrame(g, sword, frameIndex, overlayLeft, bodyTop, facing, camera, swordJuice);
 }

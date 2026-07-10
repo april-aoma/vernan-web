@@ -86,3 +86,16 @@ export const BRICKCHUNK_RESTITUTION_FLOOR = 0.22;
 export const BRICKCHUNK_RESTITUTION_WALL = 0.28;
 export const BRICKCHUNK_RESTITUTION_CEILING = 0.16;
 export const BRICKCHUNK_LINEAR_AIR_DAMP_VX_PER_SEC = 0.65;
+
+/** GEM_SWORD (Java Physics). */
+export const GEM_SWORD_HIT_COIN_CHANCE = 0.05;
+export const GEM_SWORD_KILL_COIN_CHANCE = 0.33;
+export const GEM_SWORD_HITSTUN_MULT = 2.0;
+
+/** STICK reflect (Java Physics). */
+export const STICK_REFLECT_SPEED_MULT = 1.05;
+export const STICK_REFLECT_DAMAGE_MULT = 2.0;
+
+/** Flint spark proc (Java Player). */
+export const FLINT_SPARK_BASE_CHANCE = 0.1;
+export const FLINT_SPARK_LUCK_MULT = 0.05;

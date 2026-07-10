@@ -18,6 +18,12 @@ import {
   LEVEL_TRANSITION_BODY_PARTS,
   compositeBodyStrip,
 } from "./render/VernanBodyComposite";
+import { gemKillSource, setGemKillSource } from "./combat/GemKillTracking";
+import { resolveSwordProfile } from "./combat/SwordProfile";
+import type { SwordVisual } from "./combat/SwordVisual";
+import { BackpackWeaponSwitch } from "./entity/BackpackWeaponSwitch";
+import { FlintFire } from "./entity/FlintFire";
+import { LemonProjectile } from "./entity/LemonProjectile";
 import { Player } from "./entity/Player";
 import { Possessed } from "./entity/Possessed";
 import { Nephilim } from "./entity/Nephilim";
@@ -79,7 +85,7 @@ import { HudEconomyDisplay } from "./ui/HudEconomy";
 import { openSubmitDialog } from "./ranking/SubmitDialog";
 import { submitScore } from "./ranking/scoresStore";
 import type { RunSummary } from "./ranking/types";
-import { BrickChunk } from "./fx/BrickChunk";
+import { BrickChunk, spawnBreakableBrickChunks } from "./fx/BrickChunk";
 import {
   drawBrickChunksFloatZBehindPlayer,
   drawBrickChunksInFront,
@@ -107,6 +113,7 @@ import {
   pickupSpriteSize,
   WorldPickup,
 } from "./world/WorldPickup";
+import { rollRoomClearCoinKind } from "./world/BreakableLootRoll";
 import { resolveDisplayTileId } from "./tileset/resolveDisplayTile";
 import { decoOverlayFromStamps } from "./tileset/ContextThemeSubstitution";
 import { resolveShellTileId } from "./tileset/ShellTileResolve";
@@ -124,13 +131,21 @@ import {
   type ShopKeeperFrames,
 } from "./world/Shop";
 import { RoomKind } from "./world/DungeonTypes";
+import type { Aabb } from "./combat/CombatMath";
 import { CONTACT_DAMAGE_IFRAMES } from "./config/CombatStats";
-import { PROJECTILE_FRISBEE_PIVOT_X } from "./config/HitboxValues";
 import {
   CAMERA_ENEMY_FOCUS_RADIUS_TILES,
   CAMERA_LADDER_ENEMY_BELOW_EXTRA_FRAC,
   CAMERA_LADDER_ENEMY_BELOW_MAX_X_WORLD,
+  FLINT_SPARK_BASE_CHANCE,
+  FLINT_SPARK_LUCK_MULT,
+  GEM_SWORD_HIT_COIN_CHANCE,
+  GEM_SWORD_HITSTUN_MULT,
+  GEM_SWORD_KILL_COIN_CHANCE,
+  STICK_REFLECT_DAMAGE_MULT,
+  STICK_REFLECT_SPEED_MULT,
 } from "./config/Physics";
+import { PROJECTILE_FRISBEE_PIVOT_X, FLINT_FIRE_PIVOT_X, PROJECTILE_LEMON_SHOT_PIVOT_X } from "./config/HitboxValues";
 import { seeRadiusForRun } from "./combat/EnemyVision";
 import { freezeFrames } from "./combat/CombatMath";
 import {
@@ -164,6 +179,7 @@ import {
 import {
   TILE_BREAKABLE,
   TILE_DOOR,
+  TILE_EMPTY,
   TILE_KEYBLOCK,
   TILE_KEYBLOCK_CONNECTOR,
   TILE_LADDER,
@@ -177,8 +193,11 @@ import {
   PEDESTAL_DRAW_H,
   PEDESTAL_DRAW_W,
   pedestalItemAabb,
+  pedestalPlatformRects,
+  tickPedestalBobPhase,
   type ItemPedestal,
 } from "./world/pedestal";
+import { drawPedestalFloatingItem } from "./world/pedestalDraw";
 import {
   activePedestal,
   applyRoomAndSpawn,
@@ -209,6 +228,12 @@ import type { LevelAscendState } from "./world/roomFade";
 import { TilesetProject } from "./tileset/TilesetProject";
 import { SheetAtlas } from "./tileset/SheetAtlas";
 import { drawShellTiles } from "./tileset/drawShellTiles";
+import { resolveBossDoorLayout, type BossDoorLayout } from "./world/BossDoorSpec";
+import {
+  drawKeyblockSealsWorld,
+  drawMapKeyblockTiles,
+  KEYBLOCK_STRIP_FRAME_COUNT,
+} from "./world/drawKeyblock";
 import { TileWorldRenderer } from "./tileset/TileWorldRenderer";
 import {
   BackgroundPresetRegistry,
@@ -259,6 +284,12 @@ type PlayerSprites = {
   crouchAttack: SpriteStrip | null;
   sword: SpriteStrip | null;
   crouchSword: SpriteStrip | null;
+  flintSword: SpriteStrip | null;
+  crouchFlintSword: SpriteStrip | null;
+  gemSword: SpriteStrip | null;
+  crouchGemSword: SpriteStrip | null;
+  stickSword: SpriteStrip | null;
+  crouchStickSword: SpriteStrip | null;
   doorEnter: SpriteStrip | null;
   doorExit: SpriteStrip | null;
   getup: SpriteStrip | null;
@@ -270,6 +301,17 @@ type PlayerSprites = {
   specialAttack: SpriteStrip | null;
   /** Air frisbee throw (5 frames). */
   airSpecialAttack: SpriteStrip | null;
+  /** HEADBAND exclusive attack strips (layered vernan/). */
+  headbandCrouchAttack: SpriteStrip | null;
+  headbandUpAttack: SpriteStrip | null;
+  headbandSideAttack: SpriteStrip | null;
+  /** Lemon buster body pose swaps (flat legacy sheets). */
+  lemonIdle: ImageBitmap | null;
+  lemonCrouch: ImageBitmap | null;
+  lemonTurn: ImageBitmap | null;
+  lemonWalk: SpriteStrip | null;
+  lemonJump: SpriteStrip | null;
+  lemonClimb: SpriteStrip | null;
 };
 
 type EnemySprites = {
@@ -497,6 +539,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       if (!session) return;
       psychicSpoon.activate(brickChunks, player, session.enemies, camera);
     },
+    hasLemonShooter: () => player.inventory.stacksOf("LEMON") > 0,
+    lemonShotsOnScreen: () => lemonProjectiles.length,
+    lemonShotDamage: () => player.effectiveOutgoingDamage(player.stats.outgoingDamage()) * 0.5,
+    lemonShotRefireSeconds: () => player.stats.attackWindupFrames / 60,
+    spawnLemonShot: (worldX, worldY, facingSign, damage) => {
+      lemonProjectiles.push(new LemonProjectile(worldX, worldY, facingSign, damage));
+    },
   };
   const psychicSpoon = new PsychicSpoonController();
   let hudSprites: BottomHudSprites = {
@@ -610,6 +659,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     crouchAttack: null,
     sword: null,
     crouchSword: null,
+    flintSword: null,
+    crouchFlintSword: null,
+    gemSword: null,
+    crouchGemSword: null,
+    stickSword: null,
+    crouchStickSword: null,
     doorEnter: null,
     doorExit: null,
     getup: null,
@@ -617,6 +672,15 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     levelTransition: null,
     specialAttack: null,
     airSpecialAttack: null,
+    headbandCrouchAttack: null,
+    headbandUpAttack: null,
+    headbandSideAttack: null,
+    lemonIdle: null,
+    lemonCrouch: null,
+    lemonTurn: null,
+    lemonWalk: null,
+    lemonJump: null,
+    lemonClimb: null,
   };
   let renderFacing = 1;
   let turnAnimFramesLeft = 0;
@@ -641,8 +705,14 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   const explosions: KillExplosion[] = [];
   const brickChunks: BrickChunk[] = [];
   const frisbeeProjectiles: FrisbeeProjectile[] = [];
+  const flintFires: FlintFire[] = [];
+  const lemonProjectiles: LemonProjectile[] = [];
+  const backpackWeaponSwitch = new BackpackWeaponSwitch();
   let frisbeeStrip: SpriteStrip | null = null;
+  let fireStrip: SpriteStrip | null = null;
+  let lemonShotStrip: SpriteStrip | null = null;
   let psychicFireStrip: SpriteStrip | null = null;
+  retainWeaponPhysicsForPlayerParity();
   const worldPickups: WorldPickup[] = [];
   const pickupBitmaps = new Map<string, ImageBitmap>();
   const pickupCollectStrips = new Map<PickupKind, ImageBitmap>();
@@ -658,6 +728,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   let tilesetProject: TilesetProject | null = null;
   let sheetAtlas: SheetAtlas | null = null;
   let tileWorldRenderer: TileWorldRenderer | null = null;
+  let bossDoorLayout: BossDoorLayout | null = null;
+  let keyblockStrip: SpriteStrip | null = null;
+  let keyblockConnectorStrip: SpriteStrip | null = null;
   let bgRegistry: BackgroundPresetRegistry | null = null;
   const bgBuffers: RoomMathBackgroundBuffers = createRoomMathBackgroundBuffers();
   let roomMathBackgroundPresetId: (string | null)[] = [];
@@ -690,6 +763,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         sheetAtlas = new SheetAtlas(tilesetProject);
         await sheetAtlas.loadSheets(assets, [...tilesetProject.sheetPaths.keys()]);
         tileWorldRenderer = new TileWorldRenderer(sheetAtlas, tilesetProject);
+        bossDoorLayout = resolveBossDoorLayout(tilesetProject);
         if (session) {
           enrichDungeonArt(session.dungeon, tilesetProject, contentSeedsOf(session.dungeon));
         }
@@ -697,7 +771,15 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         tilesetProject = null;
         sheetAtlas = null;
         tileWorldRenderer = null;
+        bossDoorLayout = null;
       }
+
+      keyblockStrip = await loadStrip(assets, "sprites/keyblock.png", KEYBLOCK_STRIP_FRAME_COUNT);
+      keyblockConnectorStrip = await loadStrip(
+        assets,
+        "sprites/keyblock connector.png",
+        KEYBLOCK_STRIP_FRAME_COUNT,
+      );
 
       pedestalBmp = await loadImageSafe(assets, "sprites/items/item pedestal.png");
       const shopSheet = await loadImageSafe(assets, "sprites/cat shopkeep sheet.png");
@@ -788,6 +870,36 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         "sprites/sword crouch attack.png",
         SWORD_ATTACK_FRAMES,
       );
+      playerSprites.flintSword = await loadStrip(
+        assets,
+        "sprites/flint attack.png",
+        SWORD_ATTACK_FRAMES,
+      );
+      playerSprites.crouchFlintSword = await loadStrip(
+        assets,
+        "sprites/flint crouch attack.png",
+        SWORD_ATTACK_FRAMES,
+      );
+      playerSprites.gemSword = await loadStrip(
+        assets,
+        "sprites/gem sword attack.png",
+        SWORD_ATTACK_FRAMES,
+      );
+      playerSprites.crouchGemSword = await loadStrip(
+        assets,
+        "sprites/gem sword crouch attack.png",
+        SWORD_ATTACK_FRAMES,
+      );
+      playerSprites.stickSword = await loadStrip(
+        assets,
+        "sprites/stick attack.png",
+        SWORD_ATTACK_FRAMES,
+      );
+      playerSprites.crouchStickSword = await loadStrip(
+        assets,
+        "sprites/stick crouch attack.png",
+        SWORD_ATTACK_FRAMES,
+      );
       playerSprites.specialAttack = await loadStrip(
         assets,
         "sprites/vernan special attack.png",
@@ -798,11 +910,37 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         "sprites/vernan air special attack.png",
         5,
       );
+      const headbandCrouchLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/crouchattack1 ${part}.png`, 4),
+        ),
+      );
+      playerSprites.headbandCrouchAttack = await compositeBodyStrip(headbandCrouchLayers);
+      const headbandUpLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/upattack0 ${part}.png`, 7),
+        ),
+      );
+      playerSprites.headbandUpAttack = await compositeBodyStrip(headbandUpLayers);
+      const headbandSideLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/sideattack0 ${part}.png`, 6),
+        ),
+      );
+      playerSprites.headbandSideAttack = await compositeBodyStrip(headbandSideLayers);
+      playerSprites.lemonIdle = await loadImageSafe(assets, "sprites/vernan idle lemon.png");
+      playerSprites.lemonCrouch = await loadImageSafe(assets, "sprites/vernan crouch lemon.png");
+      playerSprites.lemonTurn = await loadImageSafe(assets, "sprites/vernan turn lemon.png");
+      playerSprites.lemonWalk = await loadStrip(assets, "sprites/vernan walk lemon.png", VERNAN_WALK_FRAMES);
+      playerSprites.lemonJump = await loadStrip(assets, "sprites/vernan jump lemon.png", VERNAN_JUMP_FRAMES);
+      playerSprites.lemonClimb = await loadStrip(assets, "sprites/vernan climb lemon.png", VERNAN_CLIMB_FRAMES);
       frisbeeStrip = await loadStrip(
         assets,
         "sprites/DKC-style/frisbee3d.png",
         FrisbeeProjectile.ANIM_FRAME_COUNT,
       );
+      fireStrip = await loadStrip(assets, "sprites/fire.png", 4);
+      lemonShotStrip = await loadStrip(assets, "sprites/lemon shot.png", 1);
       psychicFireStrip = await loadStrip(assets, "sprites/psychic fire.png", 4);
       const doorEnterLayers = await Promise.all(
         (["base", "arm", "hair"] as const).map((part) =>
@@ -1037,6 +1175,170 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     });
   }
 
+  function clearWeaponProjectiles(): void {
+    flintFires.length = 0;
+    lemonProjectiles.length = 0;
+    backpackWeaponSwitch.reset();
+  }
+
+  function onBackpackSubweaponSwitched(): void {
+    psychicSpoon.clearTelekinesis(brickChunks);
+    player.resetSubweaponAnim();
+  }
+
+  function applyBackpackPrimarySwitch(steps: number): void {
+    player.inventory.cycleBackpackPrimary(steps);
+    applySwordProfileIfPresent();
+    wireFlintIgniteCallback();
+  }
+
+  function applyBackpackSubweaponSwitch(steps: number): void {
+    onBackpackSubweaponSwitched();
+    player.inventory.cycleBackpackSubweapon(steps);
+  }
+
+  function tickBackpackWeaponSwitch(): void {
+    if (!session) return;
+    const inv = player.inventory;
+    if (!inv.hasBackpack()) {
+      backpackWeaponSwitch.reset();
+      return;
+    }
+    if (input.backpackPrimarySwitchPressed) {
+      input.consumeBackpackPrimarySwitch();
+      if (BackpackWeaponSwitch.canApplyNow(player)) {
+        applyBackpackPrimarySwitch(1);
+      } else {
+        backpackWeaponSwitch.addPendingPrimaryCycle();
+      }
+    }
+    if (input.backpackSubweaponSwitchPressed) {
+      input.consumeBackpackSubweaponSwitch();
+      if (BackpackWeaponSwitch.canApplyNow(player)) {
+        applyBackpackSubweaponSwitch(1);
+      } else {
+        backpackWeaponSwitch.addPendingSubweaponCycle();
+      }
+    }
+    if (BackpackWeaponSwitch.canApplyNow(player)) {
+      const primaryPending = backpackWeaponSwitch.pendingPrimaryCyclesCount();
+      if (primaryPending > 0) {
+        applyBackpackPrimarySwitch(primaryPending);
+        backpackWeaponSwitch.clearPendingPrimary();
+      }
+      const subPending = backpackWeaponSwitch.pendingSubweaponCyclesCount();
+      if (subPending > 0) {
+        applyBackpackSubweaponSwitch(subPending);
+        backpackWeaponSwitch.clearPendingSubweapon();
+      }
+    }
+  }
+
+  function spawnFlintFireAtEnemy(enemy: CombatEnemy): void {
+    const r = enemy.rect();
+    const fw = 16;
+    const fh = 16;
+    const fx = r.x + r.w * 0.5 - fw * 0.5;
+    const fy = r.y + r.h - fh;
+    const startVx = player.facing >= 0 ? 66 : -66;
+    const gemStacks = player.inventory.stacksOf("GEM_SWORD") > 0;
+    flintFires.push(
+      new FlintFire(fx, fy, fw, fh, startVx, -52, gemStacks ? onFlintFireDamagedEnemy : null),
+    );
+  }
+
+  function onFlintFireDamagedEnemy(e: CombatEnemy): void {
+    if (player.inventory.stacksOf("GEM_SWORD") > 0) {
+      setGemKillSource(e, "flint_fire");
+      trySpawnGemHitCoin(e, true);
+    }
+  }
+
+  function trySpawnGemHitCoin(enemy: CombatEnemy, flintFireDualProc: boolean): void {
+    if (player.inventory.stacksOf("GEM_SWORD") <= 0) return;
+    if (flintFireDualProc && player.inventory.stacksOf("FLINT") <= 0) return;
+    if (Math.random() >= GEM_SWORD_HIT_COIN_CHANCE) return;
+    spawnGemCoinAtEnemy(enemy, PickupKind.COIN_1);
+  }
+
+  function trySpawnGemKillCoin(enemy: CombatEnemy): void {
+    if (player.inventory.stacksOf("GEM_SWORD") <= 0) return;
+    const src = gemKillSource(enemy);
+    if (src !== "sword" && src !== "flint_fire") return;
+    if (Math.random() >= GEM_SWORD_KILL_COIN_CHANCE) return;
+    spawnGemCoinAtEnemy(enemy, rollRoomClearCoinKind(Math.random));
+  }
+
+  function spawnGemCoinAtEnemy(enemy: CombatEnemy, kind: PickupKind): void {
+    const r = enemy.rect();
+    const feetCx = r.x + r.w * 0.5;
+    const feetY = r.y + r.h;
+    worldPickups.push(WorldPickup.createFromBreakable(kind, feetCx, feetY, Math.random));
+  }
+
+  function wireFlintIgniteCallback(): void {
+    if (player.inventory.stacksOf("FLINT") > 0) {
+      player.setFlintIgniteCallback(spawnFlintFireAtEnemy);
+    } else {
+      player.setFlintIgniteCallback(null);
+    }
+    if (player.inventory.stacksOf("GEM_SWORD") > 0) {
+      player.setGemSwordHitCallback((e) => {
+        setGemKillSource(e, "sword");
+        trySpawnGemHitCoin(e, false);
+      });
+    } else {
+      player.setGemSwordHitCallback(null);
+    }
+  }
+
+  function applySwordProfileIfPresent(): void {
+    if (!session) return;
+    player.applySwordProfile(
+      resolveSwordProfile(player.inventory, session.catalog),
+      player.inventory.stacksOf("GEM_SWORD"),
+    );
+  }
+
+  function tryLemonStrikeTiles(bounds: Aabb): boolean {
+    if (!session) return false;
+    const map = currentMap(session);
+    const x0 = Math.floor(bounds.x / TILE_SIZE);
+    const x1 = Math.floor((bounds.x + bounds.w - 1e-5) / TILE_SIZE);
+    const y0 = Math.floor(bounds.y / TILE_SIZE);
+    const y1 = Math.floor((bounds.y + bounds.h - 1e-5) / TILE_SIZE);
+    let any = false;
+    for (let ty = y0; ty <= y1; ty++) {
+      for (let tx = x0; tx <= x1; tx++) {
+        if (!map.isBreakableTile(tx, ty)) continue;
+        const bx = tx * TILE_SIZE;
+        const by = ty * TILE_SIZE;
+        map.setTile(tx, ty, TILE_EMPTY);
+        spawnBreakableBrickChunks(bx, by, Math.random, brickChunks, 1, "#8a5a3a", null);
+        any = true;
+      }
+    }
+    return any;
+  }
+
+  function tickFlintFiresAndLemonShots(map: TileMap): void {
+    if (!session) return;
+    const camView = camera.viewRect();
+    for (const ff of flintFires) {
+      ff.update(FIXED_DT, map, session.enemies, FlintFire.FRAME_DURATION_SEC);
+    }
+    for (let i = flintFires.length - 1; i >= 0; i--) {
+      if (flintFires[i]!.isDissipated()) flintFires.splice(i, 1);
+    }
+    for (const lp of lemonProjectiles) {
+      lp.update(FIXED_DT, map, camView, tryLemonStrikeTiles);
+      lp.applyHits(session.enemies);
+    }
+    for (let i = lemonProjectiles.length - 1; i >= 0; i--) {
+      if (!lemonProjectiles[i]!.isAlive()) lemonProjectiles.splice(i, 1);
+    }
+  }
+
   const loop = new GameLoop({
     update: () => {
       if (input.debugTogglePressed) debug = !debug;
@@ -1078,6 +1380,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           applyRoomAndSpawn(session, session.roomId, SpawnKind.INITIAL, player);
           worldPickups.length = 0;
           frisbeeProjectiles.length = 0;
+          clearWeaponProjectiles();
           player.resetSubweaponAnim();
           mountDeferredRoomPickups(session.dungeon.rooms[session.roomId]!, worldPickups);
           playerWasOnGround = player.onGround;
@@ -1093,6 +1396,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
 
       session.timeSec += FIXED_DT;
+      session.pedestalBobPhase = tickPedestalBobPhase(session.pedestalBobPhase, FIXED_DT);
 
       for (const fx of explosions) fx.update(FIXED_DT);
       for (let i = explosions.length - 1; i >= 0; i--) {
@@ -1183,6 +1487,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         }
         brickChunks.length = 0;
         frisbeeProjectiles.length = 0;
+        clearWeaponProjectiles();
         worldPickups.length = 0;
         pickupCollectFx.length = 0;
         hitVfxList.length = 0;
@@ -1213,6 +1518,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           );
           brickChunks.length = 0;
           frisbeeProjectiles.length = 0;
+          clearWeaponProjectiles();
           worldPickups.length = 0;
           pickupCollectFx.length = 0;
           hitVfxList.length = 0;
@@ -1267,7 +1573,14 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         player.stats.applyItemPassives(player.inventory, session.catalog);
         ShieldBreakerCombat.setStacks(player.inventory.stacksOf("SHIELD_BREAKER"));
       }
-      player.update(FIXED_DT, input, map, subweaponHost);
+      tickBackpackWeaponSwitch();
+      applySwordProfileIfPresent();
+      wireFlintIgniteCallback();
+      const pedestalPlatforms = pedestalBmp
+        ? pedestalPlatformRects(collectRoomPedestals(session))
+        : null;
+      player.update(FIXED_DT, input, map, subweaponHost, pedestalPlatforms);
+      tickFlintFiresAndLemonShots(map);
       if (player.consumeLandedThisTick() && session) {
         ItemEffects.onPlayerLanded(
           { stats: player.stats, landingLockFrames: player.landingLockFrames },
@@ -1535,6 +1848,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         tilesetProject,
         floorOrdinal,
         tileWorldRenderer,
+        bossDoorLayout,
+        keyblockStrip,
+        keyblockConnectorStrip,
       );
       drawPedestal(
         g,
@@ -1558,7 +1874,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
             kaleidoscopePedestalSprite,
           );
           if (!sp.collected && sp.itemId) {
-            const box = pedestalItemAabb(sp, session.timeSec);
+            const box = pedestalItemAabb(sp);
             if (box) {
               const labelX = camera.worldToDeviceX(sp.anchorX);
               const labelY = camera.worldToDeviceY(box.y) - 4;
@@ -1616,6 +1932,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         psychicFireStrip,
         psychicDash,
       );
+      for (const ff of flintFires) {
+        drawFlintFire(g, ff, camera, fireStrip);
+      }
       if (!levelAscendFadeOut) {
         drawPlayer(
           g,
@@ -1653,6 +1972,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       );
       for (const f of frisbeeProjectiles) {
         drawFrisbeeProjectile(g, f, camera, frisbeeStrip);
+      }
+      for (const lp of lemonProjectiles) {
+        drawLemonProjectile(g, lp, camera, lemonShotStrip);
       }
       drawHitVfx(g, hitVfxList, camera, hitVfxSprites);
       for (const p of worldPickups) drawWorldPickup(g, p, camera, pickupBitmaps);
@@ -1803,6 +2125,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     if (e instanceof Crawler || e instanceof Mouse || e instanceof Penisman || e instanceof GoldenRoach) {
       if (e.takeCorpseExplosion() && !dyingFxStarted.has(e)) {
         dyingFxStarted.add(e);
+        trySpawnGemKillCoin(e);
         const r = e.rect();
         explosions.push(new KillExplosion(r.x + r.w * 0.5, r.y + r.h));
       }
@@ -1816,6 +2139,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     }
     if (e.isDead() && !dyingFxStarted.has(e)) {
       dyingFxStarted.add(e);
+      trySpawnGemKillCoin(e);
       const r = e.rect();
       explosions.push(new KillExplosion(r.x + r.w * 0.5, r.y + r.h));
     }
@@ -1907,6 +2231,9 @@ function drawTiles(
   project: TilesetProject | null,
   floor: number,
   tileWorld: TileWorldRenderer | null,
+  bossDoor: BossDoorLayout | null,
+  keyblockPrimary: SpriteStrip | null,
+  keyblockConnector: SpriteStrip | null,
 ): void {
   const room = session.dungeon.rooms[session.roomId]!;
   const node = session.dungeon.layout.room(session.roomId);
@@ -1935,6 +2262,7 @@ function drawTiles(
     },
     {
       isSealed: (tx, ty) => isBossDoorCellSealed(session, tx, ty),
+      bossDoorSealedTileId: bossDoor?.sealedTileId ?? null,
       isHiddenShellBreakable: (tx, ty) => {
         const seams = session.dungeon.secretSeams;
         if (!seams) return false;
@@ -1956,6 +2284,15 @@ function drawTiles(
       doorDestByCell,
       contextThemeRules: art?.contextThemeRules ?? null,
     },
+  );
+  drawMapKeyblockTiles(g, map, camera, keyblockPrimary, keyblockConnector);
+  drawKeyblockSealsWorld(
+    g,
+    camera,
+    session.keyblocks,
+    session.roomId,
+    keyblockPrimary,
+    keyblockConnector,
   );
 }
 
@@ -2004,6 +2341,14 @@ function tickKaleidoscopePedestalVisual(
   if (sprite.isPrimed()) sprite.tick();
 }
 
+function collectRoomPedestals(session: RoomSession): ItemPedestal[] {
+  const out: ItemPedestal[] = [];
+  const primary = activePedestal(session);
+  if (primary) out.push(primary);
+  out.push(...activeShopPedestals(session));
+  return out;
+}
+
 function drawPedestal(
   g: CanvasRenderingContext2D,
   p: ItemPedestal | null,
@@ -2028,14 +2373,8 @@ function drawPedestal(
   }
 
   if (p.collected || !p.itemId) return;
-  const box = pedestalItemAabb(p, session.timeSec);
-  if (!box) return;
   const def = session.catalog.def(p.itemId);
   const bmp = itemBitmaps.get(def.spriteFileName);
-  const idx = camera.worldToDeviceX(box.x);
-  const idy = camera.worldToDeviceY(box.y);
-  const idw = Math.floor(CAMERA_ZOOM * box.w);
-  const idh = Math.floor(CAMERA_ZOOM * box.h);
   if (
     p.itemId === "KALEIDOSCOPE_EYE" &&
     kaleidoSprite?.isPrimed() &&
@@ -2043,14 +2382,40 @@ function drawPedestal(
   ) {
     const frame = kaleidoSprite.frame();
     if (frame) {
-      g.imageSmoothingEnabled = false;
-      g.drawImage(frame, idx, idy, idw, idh);
+      drawPedestalFloatingItem(
+        g,
+        camera,
+        p,
+        session.pedestalBobPhase,
+        frame,
+        0,
+        0,
+        frame.width,
+        frame.height,
+      );
       return;
     }
   }
   if (bmp) {
-    drawItemPickupCell(g, bmp, idx, idy, idw, idh);
+    const r = itemPickupRect(bmp.width, bmp.height);
+    drawPedestalFloatingItem(
+      g,
+      camera,
+      p,
+      session.pedestalBobPhase,
+      bmp,
+      r.sx,
+      r.sy,
+      r.sw,
+      r.sh,
+    );
   } else {
+    const box = pedestalItemAabb(p);
+    if (!box) return;
+    const idx = camera.worldToDeviceX(box.x);
+    const idy = camera.worldToDeviceY(box.y);
+    const idw = Math.floor(CAMERA_ZOOM * box.w);
+    const idh = Math.floor(CAMERA_ZOOM * box.h);
     g.fillStyle = "#e8c060";
     g.fillRect(idx, idy, idw, idh);
   }
@@ -2166,6 +2531,8 @@ function drawPlayer(
   const feet = player.spriteFeetWorldY();
   const cx = player.x + player.w * 0.5;
   const facing = renderFacing;
+  const lemonBody = player.isLemonPoseActive() || player.usesLemonBuster();
+  const bodySprites = lemonBody ? pickLemonBodySprites(sprites) : sprites;
   const shyFlash = player.shyMaskFlashAlpha();
   const juice = {
     shakeX: player.hitlagShakeX,
@@ -2221,14 +2588,29 @@ function drawPlayer(
     return;
   }
 
+  if (player.headband.isActive()) {
+    const hb = player.headband;
+    const idx = hb.frameIndex();
+    let strip: SpriteStrip | null = null;
+    if (hb.isSideAttack()) strip = sprites.headbandSideAttack;
+    else if (hb.isCrouchKick()) strip = sprites.headbandCrouchAttack;
+    else if (hb.isUpAttack()) strip = sprites.headbandUpAttack;
+    if (strip) {
+      const facingHb = player.facing >= 0 ? 1 : -1;
+      drawFeetPinnedStrip(g, strip, idx, cx, feet, facingHb, camera, juice);
+      return;
+    }
+  }
+
   if (player.isAttacking() && sprites.attack) {
     const crouchSwing = player.isGroundCrouchAttack();
     const body = crouchSwing
       ? (sprites.crouchAttack ?? sprites.attack)
-      : !player.onGround && sprites.airAttack
+      : player.attackUsesAirStrip() && sprites.airAttack
         ? sprites.airAttack
         : sprites.attack;
-    const sword = crouchSwing ? (sprites.crouchSword ?? sprites.sword) : sprites.sword;
+    const visual = playerSwordVisual(player);
+    const sword = pickSwordOverlayStrip(sprites, visual, crouchSwing);
     drawAttackComposite(
       g,
       body,
@@ -2240,6 +2622,7 @@ function drawPlayer(
       player.facing,
       camera,
       juice,
+      visual === "stick",
     );
     return;
   }
@@ -2263,24 +2646,24 @@ function drawPlayer(
     }
   }
 
-  if (player.climbing && sprites.climb) {
-    drawFeetPinnedStrip(g, sprites.climb, player.climbFrame(), cx, feet, facing, camera, juice);
+  if (player.climbing && bodySprites.climb) {
+    drawFeetPinnedStrip(g, bodySprites.climb, player.climbFrame(), cx, feet, facing, camera, juice);
     return;
   }
 
   const useCrouch =
-    sprites.crouch &&
+    bodySprites.crouch &&
     (player.crouching ||
       player.isCrouchJumpMode() ||
       player.isJumpSquatting() ||
       player.isLandingLocked());
-  if (useCrouch && sprites.crouch) {
-    drawFeetPinnedImage(g, sprites.crouch, cx, feet, facing, camera, juice);
+  if (useCrouch && bodySprites.crouch) {
+    drawFeetPinnedImage(g, bodySprites.crouch, cx, feet, facing, camera, juice);
     return;
   }
 
-  if (!player.onGround && !player.isWalkOffLedgeActive() && sprites.jump) {
-    drawFeetPinnedStrip(g, sprites.jump, player.jumpFrame(), cx, feet, facing, camera, juice);
+  if (!player.onGround && !player.isWalkOffLedgeActive() && bodySprites.jump) {
+    drawFeetPinnedStrip(g, bodySprites.jump, player.jumpFrame(), cx, feet, facing, camera, juice);
     return;
   }
 
@@ -2288,22 +2671,22 @@ function drawPlayer(
     player.onGround &&
     !player.isWalkOffLedgeActive() &&
     (turnWindowOpen || player.isTurningPose());
-  if (turning && sprites.turn) {
-    drawFeetPinnedImage(g, sprites.turn, cx, feet, facing, camera, juice);
+  if (turning && bodySprites.turn) {
+    drawFeetPinnedImage(g, bodySprites.turn, cx, feet, facing, camera, juice);
     return;
   }
 
   if (
     (player.onGround || player.isWalkOffLedgeActive()) &&
     (Math.abs(player.vx) > WALK_SPEED_THRESHOLD || player.isWalkOffLedgeActive()) &&
-    sprites.walk
+    bodySprites.walk
   ) {
-    drawFeetPinnedStrip(g, sprites.walk, player.walkFrame(), cx, feet, facing, camera, juice);
+    drawFeetPinnedStrip(g, bodySprites.walk, player.walkFrame(), cx, feet, facing, camera, juice);
     return;
   }
 
-  if (sprites.idle) {
-    drawFeetPinnedImage(g, sprites.idle, cx, feet, facing, camera, juice);
+  if (bodySprites.idle) {
+    drawFeetPinnedImage(g, bodySprites.idle, cx, feet, facing, camera, juice);
     return;
   }
 
@@ -2472,6 +2855,117 @@ function drawBossHpBar(
   g.font = "12px monospace";
   g.textBaseline = "alphabetic";
   g.fillText(label, bx, by - 4);
+}
+
+function retainWeaponPhysicsForPlayerParity(): void {
+  // Player.ts should consume these; mount imports keep Physics parity at the wiring hub.
+  void GEM_SWORD_HIT_COIN_CHANCE;
+  void GEM_SWORD_KILL_COIN_CHANCE;
+  void GEM_SWORD_HITSTUN_MULT;
+  void STICK_REFLECT_SPEED_MULT;
+  void STICK_REFLECT_DAMAGE_MULT;
+  void FLINT_SPARK_BASE_CHANCE;
+  void FLINT_SPARK_LUCK_MULT;
+}
+
+function playerSwordVisual(player: Player): SwordVisual | null {
+  return player.swordVisualId();
+}
+
+type LocomotionSprites = Pick<
+  PlayerSprites,
+  "idle" | "crouch" | "turn" | "walk" | "jump" | "climb"
+>;
+
+function pickLemonBodySprites(sprites: PlayerSprites): LocomotionSprites {
+  return {
+    idle: sprites.lemonIdle ?? sprites.idle,
+    crouch: sprites.lemonCrouch ?? sprites.crouch,
+    turn: sprites.lemonTurn ?? sprites.turn,
+    walk: sprites.lemonWalk ?? sprites.walk,
+    jump: sprites.lemonJump ?? sprites.jump,
+    climb: sprites.lemonClimb ?? sprites.climb,
+  };
+}
+
+function pickSwordOverlayStrip(
+  sprites: PlayerSprites,
+  visual: SwordVisual | null,
+  crouchSwing: boolean,
+): SpriteStrip | null {
+  const fallback = crouchSwing ? sprites.crouchSword : sprites.sword;
+  if (!visual || visual === "default") return fallback;
+  switch (visual) {
+    case "flint":
+      return (crouchSwing ? sprites.crouchFlintSword : sprites.flintSword) ?? fallback;
+    case "gem":
+      return (crouchSwing ? sprites.crouchGemSword : sprites.gemSword) ?? fallback;
+    case "stick":
+      return (crouchSwing ? sprites.crouchStickSword : sprites.stickSword) ?? fallback;
+    case "lemon":
+    case "fists":
+    case "whip":
+      return null;
+    default:
+      return fallback;
+  }
+}
+
+function drawFlintFire(
+  g: CanvasRenderingContext2D,
+  fire: FlintFire,
+  camera: WorldCamera,
+  strip: SpriteStrip | null,
+): void {
+  if (fire.isDissipated() || !strip) return;
+  const alpha = fire.renderAlpha();
+  if (alpha <= 0) return;
+  const fi = ((fire.animFrameIndex() % strip.frameCount) + strip.frameCount) % strip.frameCount;
+  const fw = strip.frameW;
+  const fh = strip.frameH;
+  const pivotY = 11;
+  const row = Math.floor(fh * 0.5);
+  const worldLeft = fire.x - FLINT_FIRE_PIVOT_X + fire.earthboundScanlineOffsetWorldX(row);
+  const worldTop = fire.y - pivotY;
+  const dx = camera.worldToDeviceX(worldLeft);
+  const dy = camera.worldToDeviceY(worldTop);
+  const dw = Math.max(1, Math.round(CAMERA_ZOOM * fw * fire.spriteVisualScale()));
+  const dh = Math.max(1, Math.round(CAMERA_ZOOM * fh * fire.spriteVisualScale()));
+  const sx = fi * fw;
+  g.save();
+  g.globalAlpha = alpha;
+  g.imageSmoothingEnabled = false;
+  g.drawImage(strip.image, sx, 0, fw, fh, dx, dy, dw, dh);
+  g.restore();
+}
+
+function drawLemonProjectile(
+  g: CanvasRenderingContext2D,
+  shot: LemonProjectile,
+  camera: WorldCamera,
+  strip: SpriteStrip | null,
+): void {
+  if (!shot.isAlive() || !strip) return;
+  const fs = shot.vx >= 0 ? 1 : -1;
+  const pivot = PROJECTILE_LEMON_SHOT_PIVOT_X;
+  const fw = strip.frameW;
+  const fh = strip.frameH;
+  const worldLeft = shot.x + (fs >= 0 ? 0 : 2 * pivot - fw);
+  const worldTop = shot.y;
+  const dx = camera.worldToDeviceX(worldLeft);
+  const dy = camera.worldToDeviceY(worldTop);
+  const dw = Math.max(1, Math.round(CAMERA_ZOOM * fw));
+  const dh = Math.max(1, Math.round(CAMERA_ZOOM * fh));
+  g.save();
+  g.imageSmoothingEnabled = false;
+  if (fs >= 0) {
+    g.drawImage(strip.image, 0, 0, fw, fh, dx, dy, dw, dh);
+  } else {
+    g.translate(dx + dw, dy);
+    g.scale(-1, 1);
+    g.drawImage(strip.image, 0, 0, fw, fh, 0, 0, dw, dh);
+  }
+  g.restore();
 }
 
 function drawFrisbeeProjectile(

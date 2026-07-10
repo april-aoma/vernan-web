@@ -1,6 +1,7 @@
 import {
   aabbOverlap,
   knockbackFor,
+  knockbackForFlintFirePull,
   knockbackForFrisbee,
   knockbackForPsychicDebris,
   type Aabb,
@@ -320,7 +321,17 @@ export class Mouse implements PeerWalkingEnemy {
     if (this.hp <= 0 || this.hitstun > 0) return false;
     this.hp = Math.max(0, this.hp - strike.damage);
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
-    if (strike.knockKind === "psychic_debris") {
+    if (strike.knockKind === "flint_fire_pull") {
+      const r = this.rect();
+      const kb = knockbackForFlintFirePull(
+        r.x + r.w * 0.5,
+        r.y + r.h * 0.5,
+        strike.debrisCenterWorldX ?? r.x,
+        strike.debrisCenterWorldY ?? r.y,
+      );
+      this.vx = kb.vx;
+      this.vy = kb.vy;
+    } else if (strike.knockKind === "psychic_debris") {
       const r = this.rect();
       const kb = knockbackForPsychicDebris(
         r.x + r.w * 0.5,

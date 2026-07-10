@@ -122,7 +122,7 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 
 - Loads `tileset/tileset.json` + floor sheets (`main` / `sheet_2` / `sheet_3` by floor ordinal)
 - Shell blit: SOLID 4-neighbor nine-slice; fixed ladder `main_5_2`, platform mid/end, door top/bottom
-- Color fill remains as fallback; sealed boss doors stay purple placeholder
+- Color fill remains as fallback; sealed boss doors draw `main_r12c12` from tileset (`BossDoorSpec`)
 - Superseded for terrain by Phase C+ when tileset loads; thin resolve kept as fallback
 
 ### Phase 1 notes
@@ -148,7 +148,7 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - NORMAL/SECRET spawns via `EnemySpawnBudget` + `EnemyChallengeRegistry` (Crawler + Mouse + Penisman + Golden Roach; equal weight normal, Mouse-favored secret); budget from `contentSeed ^ 0x5DEECE66D`
 - **Mouse** (`Mouse.ts`): dormant half-speed ledge patrol → vision wake → full/damaged speed (64/80), falls off ledges when chasing; contact only when activated; HP **2**; art faces left (`mouse.png` / `mouse hurt.png`, 4 frames)
 - **Penisman** (`Penisman.ts`): floor patrol shooter; turns at walls/ledges; shoots arcing bullets when Vernan is ahead within ±192px and on-screen; HP **4**; walk speed **28**; art faces left (`penisman.png`, 4 frames; `penis bullet.png` + die strip)
-- **Golden Roach** (`GoldenRoach.ts`): ambient deco cluster walker / flier; 8-dir skitter on blobs, idle/chase takeoff with swoop pass; contact only while flying; **0.1×** frisbee damage; LOS vision at **0.75×** see radius; HP **1**; spawns on ambient clusters (`golden roach2.png` / `golden roach2 fly.png`, 2 frames each); `AmbientClusterMap` for locomotion + spawn
+- **Golden Roach** (`GoldenRoach.ts`): ambient deco cluster walker / flier; 8-dir skitter on blobs, idle/chase takeoff with swoop pass; contact only while flying; **0.1×** frisbee damage; LOS vision at **0.75×** see radius; HP **1**; spawns on ambient clusters; center-anchored rotated draw (`golden roach2.png` 8×8 walk / `golden roach2 fly.png` 16×16 fly frames with padded art); `AmbientClusterMap` for locomotion + spawn
 - **Peer platforms + separation** (`EnemyPeerPlatforms`, `EnemyPeerSeparation`, `EnemyPeerTick`): enemies stand on each other's hull tops (moving decks), crawlers `ride_deck` on carriers, horizontal bump pushes + patrol flip, vertical stack snap; Possessed + Golden Roach excluded
 - Stubbed: Jack Blue / etc., bosses beyond Possessed, other subweapons, heavy attacks
 
@@ -194,9 +194,11 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
   - Climb uses layered `sprites/vernan/climb {base,arm,hair}.png` composite (legacy flat strip fallback)
 - Crawler strip + Possessed body frame (full rig later)
 - **Attack buffer** (~0.14 s): X during recover / landing lock / hitlag chains into next swing
+- **Unique primary weapons** (`SwordProfile` / `SwordVisual`): **FLINT** (0.5× swing timing, spark proc → `FlintFire` patches; hybrid overlay with GEM); **GEM_SWORD** (2× hitstun, 5% hit / 33% kill coin procs with tiered values); **STICK** (centered overlay + stick hitboxes); **HEADBAND** / `fists` (`HeadbandCombat` crouch-kick / up / side spin; layered `crouchattack1` / `upattack0` / `sideattack0` draw); **LEMON** (horizontal buster shot + lemon body pose sheets)
+- **BACKPACK**: Shift+X cycles owned primaries (+ vanilla sword); Shift+C cycles owned subweapons; queues until not attacking / subweapon anim / lemon pose; clears psychic telekinesis on subweapon swap; HUD weapon slot shows active weapon pickup icon
 - Jump buffer already existed; presses also latch during hitlag
 - **Browser input machine** (Java `Input` parity): press edges survive key-up; lag-stash when sim skips a frame; `primeLagInputBuffers` during timestop; window capture listeners
-- Stubbed: layered body/costumes (climb+hurt use base/hair composites), turn/hurt/airdodge full costume routes
+- Stubbed: layered body/costumes (climb+hurt use base/hair composites), turn/hurt/airdodge full costume routes, **WHIP**, stick arcing-bullet reflect, heavy attacks, backpack HUD preview ghosts
   - Room terrain art: Phase C++ (object-based bridge + MemberGraph + full-object deco + step breakables)
 
 ### Phase 5b-thin notes
@@ -271,7 +273,8 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **Ground scatter**: `preferAboveWeight` thins with keepProb `1 - weight` (Java `passesPreferAboveRoll`); enrich order clusters → props → apply → scatter; prefer-above matches deco below, placed props, **and terrain-bridge display tiles** (logs/stumps live in `terrainBridgePool` — Java `placedPropsByRoomKind` is empty in SoT)
 - **Deco rules import**: full `DecoPlacementRule` parse (`preferAbove` tile resolve, `preferAdjacent*`, despawn/crumble flags) from `decoTilePlacementRules`; spawn flags from objects (`canSpawnOnGround` / `canSpawnInAir` / `canHangFromCeiling` / `canClingToWall`); runtime `DecoSupportLoss` on breakable destroy
 - **Safety / connectivity**: `LadderSafetyPlatforms` + `TerrainSolidConnectivity` in generate + `applyPostDungeonPasses` / final shaft `enforceOnMap`
-- Still stubbed: keyblock sprite strips, placed props, `start.json`
+- Still stubbed: placed props, `start.json`
+- **Keyblock sprites**: `keyblock.png` / `keyblock connector.png` 7-frame strips; static map draw + animated unlock overlay (`drawKeyblockSealsWorld`)
 
 ### Phase art-parity notes
 

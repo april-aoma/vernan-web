@@ -221,6 +221,9 @@ export class Input {
   get subweapon(): boolean {
     return this.isDown("KeyC");
   }
+  get shiftHeld(): boolean {
+    return this.isDown("ShiftLeft") || this.isDown("ShiftRight");
+  }
   get jumpPressed(): boolean {
     return this.wasPressed("KeyZ") || this.wasPressed("Space");
   }
@@ -241,6 +244,22 @@ export class Input {
   }
   get subweaponPressed(): boolean {
     return this.wasPressed("KeyC");
+  }
+  /** Backpack primary cycle: Shift+X (Java). */
+  get backpackPrimarySwitchPressed(): boolean {
+    return this.shiftHeld && this.attackPressed;
+  }
+  /** Backpack subweapon cycle: Shift+C (Java). */
+  get backpackSubweaponSwitchPressed(): boolean {
+    return this.shiftHeld && this.subweaponPressed;
+  }
+  consumeBackpackPrimarySwitch(): void {
+    if (!this.shiftHeld) return;
+    this.consumePress("KeyX");
+  }
+  consumeBackpackSubweaponSwitch(): void {
+    if (!this.shiftHeld) return;
+    this.consumePress("KeyC");
   }
   get debugTogglePressed(): boolean {
     return this.wasPressed("F3") || this.wasPressed("Backquote");
@@ -264,6 +283,8 @@ function shouldPrevent(code: string): boolean {
     code === "KeyZ" ||
     code === "KeyX" ||
     code === "KeyC" ||
+    code === "ShiftLeft" ||
+    code === "ShiftRight" ||
     code === "KeyW" ||
     code === "KeyA" ||
     code === "KeyS" ||

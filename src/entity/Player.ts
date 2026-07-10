@@ -1,9 +1,10 @@
 import {
   freezeFrames,
-  placePolygonAabb,
   type Aabb,
   type WeaponStrike,
 } from "../combat/CombatMath";
+import type { SwordProfile } from "../combat/SwordProfile";
+import type { SwordVisual } from "../combat/SwordVisual";
 import { Health } from "../combat/Health";
 import {
   ATTACK_BUFFER,
@@ -13,12 +14,6 @@ import {
   CROUCH_ATTACK_RECOVER_EARLY_FRAMES_DELTA,
   CROUCH_ATTACK_RECOVER_LATE_FRAMES_DELTA,
   CROUCH_ATTACK_WINDUP_FRAMES_DELTA,
-  SWORD_ATTACK_ACTIVE_LOCAL,
-  SWORD_ATTACK_ACTIVE_PIVOT_X,
-  SWORD_BODY_H,
-  SWORD_BODY_W,
-  SWORD_CROUCH_ATTACK_ACTIVE_LOCAL,
-  SWORD_CROUCH_ATTACK_ACTIVE_PIVOT_X,
 } from "../config/CombatStats";
 import {
   AIR_STEER_FRAC,
@@ -40,6 +35,7 @@ import {
   WALK_SPEED_THRESHOLD,
 } from "../config/AnimStats";
 import { HitboxPose } from "../collision/HitboxPose";
+import * as StandSurfaceQuery from "../collision/StandSurfaceQuery";
 import { clipVelocityDelta, clipWorldDelta } from "../combat/KnockbackCollision";
 import {
   PLAYER_JUMP_HITBOX_H,
@@ -74,6 +70,9 @@ import {
   SHY_MASK_SUPER_JUMP_STRETCH_Y,
   SHY_MASK_SUPER_JUMP_VEL,
   TILE_SEPARATION_ITERATIONS,
+  FLINT_SPARK_BASE_CHANCE,
+  FLINT_SPARK_LUCK_MULT,
+  GEM_SWORD_HITSTUN_MULT,
 } from "../config/Physics";
 import type { ItemCatalog } from "../item/ItemCatalog";
 import { PlayerItemInventory } from "../item/PlayerItemInventory";
@@ -91,6 +90,9 @@ import { ShyMaskChargeState } from "../item/effect/shymask/ShyMaskChargeState";
 import type { Input } from "../input/Input";
 import { TileMap } from "../world/TileMap";
 import type { CombatEnemy } from "./CombatEnemy";
+import { HeadbandCombat } from "./HeadbandCombat";
+import type { LemonShotHost } from "./LemonShotHost";
+import { swordKnockbackKind, swordMeleeHitbox } from "./SwordHitbox";
 import { FrisbeeAimSnapshot } from "./FrisbeeAimSnapshot";
 import { PlayerStats } from "./PlayerStats";
 import type { SubweaponHost } from "./SubweaponHost";
@@ -121,6 +123,9 @@ export class Player {
   readonly stats = new PlayerStats();
   readonly squash = new SquashStretch();
   private readonly shyMaskCharge = new ShyMaskChargeState();
+  /** Per-tick pedestal one-way deck rects (Java tickPedestalOneWayPlatforms). */
+  private tickPedestalPlatforms: Aabb[] | null = null;
+  private tickStandSegments: StandSurfaceQuery.Segment[] = [];
   /** Down held this tick (for shy-mask charge squash draw). */
   private duckHeld = false;
 
@@ -146,6 +151,19 @@ export class Player {
   private static readonly SUBWEAPON_SPECIAL_FRAME_TICKS = [6, 6, 4, 10, 10];
   private static readonly SUBWEAPON_SPAWN_OFF_X = 3;
   private static readonly SUBWEAPON_SPAWN_OFF_Y = 5;
+  private static readonly LEMON_SPAWN_OFF_Y_CROUCH = -7;
+  private static readonly LEMON_SPAWN_OFF_Y_STAND = -7;
+
+  readonly headband = new HeadbandCombat();
+  swordVisual: SwordVisual = "default";
+  private swordDamageMult = 1;
+  private swordTimingScale = 1;
+  gemSwordStacks = 0;
+  attackStickFrameW = 48;
+  private flintIgniteCallback: ((enemy: CombatEnemy) => void) | null = null;
+  private gemSwordHitCallback: ((enemy: CombatEnemy) => void) | null = null;
+  lemonPoseSecondsRemaining = 0;
+  private lemonRefireCooldown = 0;
 
   /** Jump started from crouch — keep crouch hull in air (Java crouchJumpMode). */
   crouchJumpMode = false;
@@ -427,7 +445,14 @@ export class Player {
     if (input.attackPressed) this.attackBufferTimer = ATTACK_BUFFER;
   }
 
-  update(dt: number, input: Input, map: TileMap, subweaponHost: SubweaponHost | null = null): void {
+  update(
+    dt: number,
+    input: Input,
+    map: TileMap,
+    subweaponHost: SubweaponHost | null = null,
+    pedestalPlatforms: Aabb[] | null = null,
+  ): void {
+    this.tickPedestalPlatforms = pedestalPlatforms;
     this.health.update(dt);
     this.tickHurtTint(dt);
     this.squash.tick(dt);
@@ -513,6 +538,9 @@ export class Player {
     this.duckHeld = downRaw;
 
     this.updateAttack(dt, input);
+    this.headband.tryBeginFromInput(input, this.headbandHost());
+    this.headband.update(dt, input, this.headbandHost());
+    this.updateLemonShot(dt, input, subweaponHost);
     this.updateSubweaponAnim(dt, input, subweaponHost);
 
     // Ladder jump-off before movement (Java): immediate exit, no jumpsquat.
@@ -716,6 +744,11 @@ export class Player {
     return this.groundCrouchAttack;
   }
 
+  /** Air / rising attack strip (Java: not ground-only swing, or airborne after jumpsquat X). */
+  attackUsesAirStrip(): boolean {
+    return this.isAttacking() && (!this.attackStartedOnGround || !this.onGround);
+  }
+
   walkFrame(): number {
     return this.walkOffLedgeActive ? this.walkOffFrozenFrame : this.walkAnimFrame;
   }
@@ -765,7 +798,93 @@ export class Player {
   }
 
   isAttacking(): boolean {
-    return this.attackPhase !== 0;
+    return this.attackPhase !== 0 || this.headband.isActive();
+  }
+
+  isLemonPoseActive(): boolean {
+    return this.lemonPoseSecondsRemaining > 0;
+  }
+
+  usesLemonBuster(): boolean {
+    return this.swordVisual === "lemon";
+  }
+
+  applySwordProfile(profile: SwordProfile, gemStacks: number): void {
+    this.swordVisual = profile.visual;
+    this.swordDamageMult = profile.damageMult;
+    this.swordTimingScale = profile.timingScale;
+    this.gemSwordStacks = Math.max(0, gemStacks);
+  }
+
+  swordVisualId(): SwordVisual {
+    return this.swordVisual;
+  }
+
+  attackTimingScale(): number {
+    return this.swordTimingScale;
+  }
+
+  outgoingDamageMultiplier(): number {
+    return this.swordDamageMult + this.stats.damageMultiplierBonus;
+  }
+
+  effectiveOutgoingDamage(base: number): number {
+    return base * this.outgoingDamageMultiplier();
+  }
+
+  setFlintIgniteCallback(cb: ((enemy: CombatEnemy) => void) | null): void {
+    this.flintIgniteCallback = cb;
+  }
+
+  setGemSwordHitCallback(cb: ((enemy: CombatEnemy) => void) | null): void {
+    this.gemSwordHitCallback = cb;
+  }
+
+  get offensiveHitlagRemaining(): number {
+    return this.hitlagFrames / 60;
+  }
+
+  private headbandHost(): import("./HeadbandCombat").HeadbandCombatHost {
+    return {
+      onGround: this.onGround,
+      crouching: this.crouching,
+      facing: this.facing,
+      x: this.x,
+      y: this.y,
+      w: this.w,
+      h: this.h,
+      landingLockFrames: this.landingLockFrames,
+      getupLockFrames: this.getupLockFrames,
+      climbing: this.climbing,
+      attackPhase: this.attackPhase,
+      stats: this.stats,
+      attackTimingScale: () => this.attackTimingScale(),
+      isSubweaponAnimating: () => this.isSubweaponAnimating(),
+      swordVisual: this.swordVisual,
+      inventory: this.inventory,
+      offensiveHitlagRemaining: this.offensiveHitlagRemaining,
+    };
+  }
+
+  private applySwordHitItemProcs(enemy: CombatEnemy): void {
+    if (this.flintIgniteCallback) {
+      const sparkChance = Math.min(
+        1,
+        Math.max(0, FLINT_SPARK_BASE_CHANCE + this.stats.luck * FLINT_SPARK_LUCK_MULT),
+      );
+      if (Math.random() < sparkChance) {
+        this.flintIgniteCallback(enemy);
+      }
+    }
+    this.gemSwordHitCallback?.(enemy);
+  }
+
+  private scaleOutgoingHitstun(frames: number): number {
+    let f = frames;
+    if (this.gemSwordStacks > 0) {
+      f = Math.ceil(f * GEM_SWORD_HITSTUN_MULT);
+    }
+    return f;
   }
 
   isWalkOffLedgeActive(): boolean {
@@ -783,18 +902,21 @@ export class Player {
     return this.vx * this.facing < 0;
   }
 
-  /** Sword active AABB, or null when not swinging. */
+  /** Sword / headband active AABB, or null when not swinging. */
   attackHitbox(): Aabb | null {
-    if (this.attackPhase !== 2) return null;
-    const bodyLeft = this.x + this.w * 0.5 - SWORD_BODY_W * 0.5;
-    const bodyTop = this.y + this.h - SWORD_BODY_H;
-    const local = this.groundCrouchAttack
-      ? SWORD_CROUCH_ATTACK_ACTIVE_LOCAL
-      : SWORD_ATTACK_ACTIVE_LOCAL;
-    const pivot = this.groundCrouchAttack
-      ? SWORD_CROUCH_ATTACK_ACTIVE_PIVOT_X
-      : SWORD_ATTACK_ACTIVE_PIVOT_X;
-    return placePolygonAabb(local, pivot, bodyLeft, bodyTop, this.facing);
+    const hb = this.headband.attackHitbox(this.headbandHost());
+    if (hb) return hb;
+    if (this.attackPhase !== 2 || this.usesLemonBuster()) return null;
+    return swordMeleeHitbox({
+      visual: this.swordVisual,
+      x: this.x,
+      y: this.y,
+      w: this.w,
+      h: this.h,
+      facing: this.facing,
+      groundCrouchAttack: this.groundCrouchAttack,
+      stickFrameW: this.attackStickFrameW,
+    });
   }
 
   /**
@@ -822,6 +944,9 @@ export class Player {
     const def = catalog.def(id);
     if (def.subweapon) {
       this.inventory.setEquippedSubweapon(id);
+      if (this.inventory.hasBackpack()) {
+        this.inventory.registerBackpackSubweapon(id);
+      }
     }
     this.stats.applyItemPassives(this.inventory, catalog);
     // Java syncHealthCapFromItems: raise/lower red cap without auto-heal.
@@ -857,12 +982,16 @@ export class Player {
       vfx: "slash" | "shield_break",
     ) => void,
   ): number {
+    if (this.headband.isActive()) {
+      return this.headband.applyHits(this.headbandHost(), enemies, onHit);
+    }
     const sword = this.attackHitbox();
-    if (!sword || this.attackHitLanded) return 0;
+    if (!sword || this.attackHitLanded || this.usesLemonBuster()) return 0;
+    const baseDmg = this.stats.outgoingDamage();
     const dmg =
-      this.stats.outgoingDamage() *
+      this.effectiveOutgoingDamage(baseDmg) *
       (this.groundCrouchAttack ? CROUCH_ATTACK_DAMAGE_MULT : 1);
-    const knockKind = this.groundCrouchAttack ? "sword_crouch" : "sword_stand";
+    const knockKind = swordKnockbackKind(this.swordVisual, this.groundCrouchAttack);
     let any = false;
     let maxFreeze = 0;
     for (const e of enemies) {
@@ -882,10 +1011,11 @@ export class Player {
         );
         if (pen >= 0) {
           any = true;
-          maxFreeze = Math.max(maxFreeze, pen);
+          const ff = this.scaleOutgoingHitstun(pen);
+          maxFreeze = Math.max(maxFreeze, ff);
           const strike: WeaponStrike = {
             damage: ShieldBreakerCombat.scaleShieldContactDamage(dmg),
-            freezeFrames: pen,
+            freezeFrames: ff,
             attackerX: this.x,
             attackerW: this.w,
             facing: this.facing,
@@ -895,9 +1025,10 @@ export class Player {
           };
           AutismCombat.notifyPlayerDamageDealt(e, strike.damage);
           KaleidoscopeEyeCombat.notifyEnemyHpLoss(e, strike.damage);
+          this.applySwordHitItemProcs(e);
           onHit?.(e, strike, sword, "shield_break");
         } else {
-          const ff = freezeFrames(dmg);
+          const ff = this.scaleOutgoingHitstun(freezeFrames(dmg));
           e.applyShieldBlockStrike({
             damage: 0,
             freezeFrames: ff,
@@ -912,7 +1043,7 @@ export class Player {
         continue;
       }
       if (!e.intersectsAttack(sword)) continue;
-      const ff = freezeFrames(dmg);
+      const ff = this.scaleOutgoingHitstun(freezeFrames(dmg));
       const strike: WeaponStrike = {
         damage: dmg,
         freezeFrames: ff,
@@ -927,6 +1058,7 @@ export class Player {
         maxFreeze = Math.max(maxFreeze, ff);
         AutismCombat.notifyPlayerDamageDealt(e, dmg);
         KaleidoscopeEyeCombat.notifyEnemyHpLoss(e, dmg);
+        this.applySwordHitItemProcs(e);
         onHit?.(e, strike, sword, "slash");
       }
     }
@@ -1168,7 +1300,7 @@ export class Player {
     const frames = this.groundCrouchAttack
       ? base + CROUCH_ATTACK_WINDUP_FRAMES_DELTA
       : base;
-    return Math.max(1, frames);
+    return Math.max(1, Math.round(frames * this.swordTimingScale));
   }
 
   private attackRecoverEarlyFramesThisSwing(): number {
@@ -1176,7 +1308,7 @@ export class Player {
     const frames = this.groundCrouchAttack
       ? base + CROUCH_ATTACK_RECOVER_EARLY_FRAMES_DELTA
       : base;
-    return Math.max(1, frames);
+    return Math.max(1, Math.round(frames * this.swordTimingScale));
   }
 
   private attackRecoverLateFramesThisSwing(): number {
@@ -1184,7 +1316,7 @@ export class Player {
     const frames = this.groundCrouchAttack
       ? base + CROUCH_ATTACK_RECOVER_LATE_FRAMES_DELTA
       : base;
-    return Math.max(1, frames);
+    return Math.max(1, Math.round(frames * this.swordTimingScale));
   }
 
   private attackRecoverFramesThisSwing(): number {
@@ -1193,18 +1325,60 @@ export class Player {
 
   private tryBeginAttackFromBuffer(downHeld: boolean): void {
     if (this.attackPhase !== 0) return;
+    if (this.headband.isActive()) return;
     if (this.isSubweaponAnimating()) return;
+    if (this.usesLemonBuster()) return;
+    if (this.swordVisual === "fists") return;
     if (this.attackBufferTimer <= 0) return;
     if (this.landingLockFrames > 0 || this.climbing) return;
     this.attackBufferTimer = 0;
     this.attackPhase = 1;
     this.attackHitLanded = false;
     this.attackStartedOnGround = this.onGround;
-    // Java: crouch on ground, or air Down (not crouch-jump). Fists never use crouch variant (web: sword only).
     this.groundCrouchAttack =
       (this.onGround && this.crouching) ||
       (!this.onGround && !this.crouchJumpMode && downHeld);
     this.attackTimer = this.attackWindupFramesThisSwing() / 60;
+  }
+
+  private updateLemonShot(dt: number, input: Input, host: LemonShotHost | null): void {
+    this.lemonPoseSecondsRemaining = Math.max(0, this.lemonPoseSecondsRemaining - dt);
+    this.lemonRefireCooldown = Math.max(0, this.lemonRefireCooldown - dt);
+    if (!this.usesLemonBuster() || !host?.hasLemonShooter()) return;
+    if (this.hurtLocked || this.landingLockFrames > 0 || this.getupLockFrames > 0) return;
+    if (this.isSubweaponAnimating() || this.climbing) return;
+    const attackEdge = input.attackPressed;
+    const attackHeld = input.attack;
+    if (attackHeld || attackEdge) {
+      this.lemonPoseSecondsRemaining = Math.max(
+        this.lemonPoseSecondsRemaining,
+        host.lemonShotRefireSeconds(),
+      );
+    }
+    if (!attackEdge && !attackHeld) return;
+    const eligible =
+      this.onGround ||
+      this.isWalkOffLedgeActive() ||
+      this.usesJumpCollisionHull() ||
+      this.crouching ||
+      this.isCrouchJumpMode() ||
+      this.isLandingLocked();
+    if (!eligible) return;
+    if (host.lemonShotsOnScreen() >= 3) return;
+    const fireNow = attackEdge || (attackHeld && this.lemonRefireCooldown <= 0);
+    if (!fireNow) return;
+    const crouchMuzzle =
+      this.isJumpSquatting() ||
+      this.crouching ||
+      this.isCrouchJumpMode() ||
+      this.isLandingLocked() ||
+      this.isGroundCrouchAttack();
+    const sx =
+      this.x + this.w * 0.5 + this.facing * Player.SUBWEAPON_SPAWN_OFF_X - 4;
+    let sy = this.y + (crouchMuzzle ? Player.LEMON_SPAWN_OFF_Y_CROUCH : Player.LEMON_SPAWN_OFF_Y_STAND);
+    sy = Math.min(sy, this.y + this.h - 6);
+    host.spawnLemonShot(sx, sy, this.facing, host.lemonShotDamage());
+    this.lemonRefireCooldown = host.lemonShotRefireSeconds();
   }
 
   private updateAttack(dt: number, input: Input): void {
@@ -1341,8 +1515,9 @@ export class Player {
       this.normalJumpAirborne = false;
     }
 
-    // Air-started attack cancels on land with fixed lock (Java ATTACK_LANDING_LOCK_FRAMES).
-    if (this.attackPhase !== 0 && !this.attackStartedOnGround) {
+    // Any in-progress swing landing from air cancels with fixed lock (Java ATTACK_LANDING_LOCK_FRAMES).
+    // Includes true air swings and jumpsquat X rising attacks (ground-latched but airborne).
+    if (this.attackPhase !== 0) {
       this.cancelAttack();
       this.landingLockFrames = ATTACK_LANDING_LOCK_FRAMES;
       this.extendedFallFrames = 0;
@@ -2284,6 +2459,37 @@ export class Player {
     );
   }
 
+  private rebuildStandSegments(): void {
+    this.tickStandSegments = StandSurfaceQuery.collectPedestalSegments(this.tickPedestalPlatforms);
+  }
+
+  /** Snap feet down along pedestal exit feathers while grounded (Java followPedestalDeckWhileGrounded). */
+  private followPedestalDeckWhileGrounded(): void {
+    if (!this.onGround || this.climbing || this.vy < -1e-3 || !this.tickPedestalPlatforms) return;
+    const feet = this.poseForFeetSupport().bounds();
+    if (
+      !StandSurfaceQuery.feetOverlapPedestalHull(
+        feet.x,
+        feet.x + feet.w,
+        this.tickPedestalPlatforms,
+      )
+    ) {
+      return;
+    }
+    this.rebuildStandSegments();
+    const footY = this.collisionFootWorldY();
+    const deck = StandSurfaceQuery.floorYUnderFeet(
+      feet.x,
+      feet.x + feet.w,
+      footY,
+      this.tickStandSegments,
+      this.tickPedestalPlatforms,
+    );
+    if (!StandSurfaceQuery.footNearDeck(footY, deck)) return;
+    if (footY < deck - 1e-3) return;
+    this.snapFootToFloorY(deck);
+  }
+
   private moveAndCollide(dt: number, map: TileMap): void {
     const poseBefore = this.hitboxPose();
     const prevFootY = this.collisionFootWorldY(poseBefore);
@@ -2305,6 +2511,7 @@ export class Player {
     if (!this.onGround) {
       this.onGround = this.isGrounded(map);
     }
+    this.followPedestalDeckWhileGrounded();
     // Java moveAndCollide post-step: floor depenetration while climbing down, then shaft center.
     this.correctClimbingFloorPenetration(map);
     if (this.climbing && this.getupLockFrames === 0) {
@@ -2419,12 +2626,31 @@ export class Player {
       const tyHi = Math.max(prevFootTile, nextFootTile);
       const platScanLo = leftTile - 1;
       const platScanHi = rightTile + 1;
+      const feetSpan = this.poseForFeetSupport().bounds();
+      const onPedestalHull = StandSurfaceQuery.feetOverlapPedestalHull(
+        feetSpan.x,
+        feetSpan.x + feetSpan.w,
+        this.tickPedestalPlatforms,
+      );
+      this.rebuildStandSegments();
+      const pedestalSupportY = onPedestalHull
+        ? StandSurfaceQuery.floorYUnderFeet(
+            feetSpan.x,
+            feetSpan.x + feetSpan.w,
+            nextFootY,
+            this.tickStandSegments,
+            this.tickPedestalPlatforms,
+          )
+        : Number.NaN;
 
       for (let ty = tyLo; ty <= tyHi; ty++) {
         const floorY = ty * TILE_SIZE;
         // Feet already below this deck (Y-down): skip.
         if (prevFootY > floorY + 1e-3) continue;
         if (nextFootY < floorY - 1e-3) continue;
+        if (onPedestalHull && !Number.isNaN(pedestalSupportY) && floorY >= pedestalSupportY - 1e-3) {
+          continue;
+        }
 
         for (let tx = leftTile; tx <= rightTile; tx++) {
           if (!map.isSolidTile(tx, ty)) continue;
@@ -2436,7 +2662,7 @@ export class Player {
           }
         }
 
-        if (!this.climbing) {
+        if (!this.climbing && !onPedestalHull) {
           for (let tx = platScanLo; tx <= platScanHi; tx++) {
             if (!map.isPlatformTile(tx, ty)) continue;
             if (this.dropsThroughOneWayPlatformTile(map, tx, ty)) continue;
@@ -2453,6 +2679,18 @@ export class Player {
             }
           }
         }
+      }
+
+      const pedestalDeckY = StandSurfaceQuery.landingPedestalFloorY(
+        prevFootY,
+        nextFootY,
+        feetSpan.x,
+        feetSpan.x + feetSpan.w,
+        this.vy,
+        this.tickPedestalPlatforms,
+      );
+      if (!Number.isNaN(pedestalDeckY)) {
+        bestFloor = Math.min(bestFloor, pedestalDeckY);
       }
 
       if (Number.isFinite(bestFloor)) {
@@ -2494,6 +2732,25 @@ export class Player {
     const foot = this.collisionFootWorldY();
     const pose = this.hitboxPose();
     const b = pose.bounds();
+    const feetSpan = this.poseForFeetSupport().bounds();
+    this.rebuildStandSegments();
+    if (
+      StandSurfaceQuery.isGroundedUnderFeet(
+        feetSpan.x,
+        feetSpan.x + feetSpan.w,
+        foot,
+        this.vy,
+        this.tickStandSegments,
+        this.tickPedestalPlatforms,
+      )
+    ) {
+      return true;
+    }
+    const onPedestalHull = StandSurfaceQuery.feetOverlapPedestalHull(
+      feetSpan.x,
+      feetSpan.x + feetSpan.w,
+      this.tickPedestalPlatforms,
+    );
     const leftTile = Math.floor((b.x + 0.001) / TILE_SIZE);
     const rightTile = Math.floor((b.x + b.w - 0.001) / TILE_SIZE);
     const tyCenter = Math.floor((foot - 1e-3) / TILE_SIZE);
@@ -2507,8 +2764,8 @@ export class Player {
         const tile = { x: tx * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
         if (pose.intersectsRect(tile)) return true;
       }
-      // Platforms ignored while climbing (Java); solids can still ground.
-      if (!this.climbing) {
+      // Platforms ignored while climbing or standing on pedestal hull (Java).
+      if (!this.climbing && !onPedestalHull) {
         for (let tx = scanLo; tx <= scanHi; tx++) {
           if (!map.isPlatformTile(tx, ty)) continue;
           if (this.dropsThroughOneWayPlatformTile(map, tx, ty)) continue;

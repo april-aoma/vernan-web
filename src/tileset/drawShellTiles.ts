@@ -3,7 +3,7 @@ import { CAMERA_ZOOM, TILE_SIZE } from "../specs";
 import type { RoomKind } from "../world/DungeonTypes";
 import type { PlacedRoomObject } from "../world/PlacedRoomObject";
 import type { TileMap } from "../world/TileMap";
-import { TILE_BREAKABLE, TILE_DOOR, TILE_SOLID } from "../world/TileMap";
+import { TILE_BREAKABLE, TILE_DOOR, TILE_KEYBLOCK, TILE_KEYBLOCK_CONNECTOR, TILE_SOLID } from "../world/TileMap";
 import { packCell } from "../world/BossDoorSealAnim";
 import type { SheetAtlas } from "./SheetAtlas";
 import { isFloatingGroundOnlyDeco, type DecoStamp } from "./placeAmbientDeco";
@@ -29,8 +29,10 @@ import type { TilesetProject } from "./TilesetProject";
 import type { TileWorldRenderer } from "./TileWorldRenderer";
 
 export type ShellDrawExtras = {
-  /** When true for (tx,ty), draw sealed boss door placeholder instead of door art. */
+  /** When true for (tx,ty), draw sealed boss door tile instead of open door art. */
   isSealed?: (tx: number, ty: number) => boolean;
+  /** Sealed boss door tile id (Java BossDoorSpec.Layout.sealedTileId). */
+  bossDoorSealedTileId?: string | null;
   /** Secret-seam shell B cells — draw as inward SOLID art (Java drawHiddenShellBreakable). */
   isHiddenShellBreakable?: (tx: number, ty: number) => boolean;
   /** Floor ordinal for sheet remap (1–2 forest, 3–4 underground, 5+ la). */
@@ -131,6 +133,7 @@ export function drawShellTiles(
       const sealed = extras.isSealed?.(tx, ty) ?? false;
       const terrain = map.tileAt(tx, ty);
       if (terrain === 0 && !sealed) continue;
+      if (terrain === TILE_KEYBLOCK || terrain === TILE_KEYBLOCK_CONNECTOR) continue;
 
       const wx = tx * TILE_SIZE;
       const wy = ty * TILE_SIZE;
@@ -140,6 +143,26 @@ export function drawShellTiles(
       const dh = Math.floor(CAMERA_ZOOM * TILE_SIZE);
 
       if (sealed) {
+        const sealedId = extras.bossDoorSealedTileId;
+        if (sealedId && atlas) {
+          if (
+            project &&
+            tileWorld?.drawTileIfAnimated(
+              g,
+              project,
+              sealedId,
+              simTick,
+              dx,
+              dy,
+              CAMERA_ZOOM,
+              wx,
+              wy,
+            )
+          ) {
+            continue;
+          }
+          if (atlas.drawTileId(g, sealedId, dx, dy, dw, dh, sheetOverride)) continue;
+        }
         g.fillStyle = "#5a4060";
         g.fillRect(dx, dy, dw, dh);
         g.fillStyle = "#2a1830";

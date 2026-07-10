@@ -1,6 +1,7 @@
 import {
   aabbOverlap,
   knockbackFor,
+  knockbackForFlintFirePull,
   knockbackForFrisbee,
   knockbackForPsychicDebris,
   type Aabb,
@@ -285,6 +286,16 @@ export class Crawler implements PeerWalkingEnemy {
         strike.projectileVelX,
         strike.projectileVelY ?? 0,
         strike.damage,
+      );
+      this.vx = kb.vx;
+      this.vy = kb.vy;
+    } else if (strike.knockKind === "flint_fire_pull") {
+      const r = this.rect();
+      const kb = knockbackForFlintFirePull(
+        r.x + r.w * 0.5,
+        r.y + r.h * 0.5,
+        strike.debrisCenterWorldX ?? r.x,
+        strike.debrisCenterWorldY ?? r.y,
       );
       this.vx = kb.vx;
       this.vy = kb.vy;

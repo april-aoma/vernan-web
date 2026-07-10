@@ -1,8 +1,17 @@
 import type { Aabb } from "../combat/CombatMath";
+import { PEDESTAL_DECK_ABOVE_GROUND_PX } from "../collision/StandSurfaceQuery";
 import { TILE_SIZE } from "../specs";
 
 export const PEDESTAL_BOB_AMP = 3;
 export const PEDESTAL_BOB_OMEGA = 2.4 * Math.PI;
+/** Slows phase advance near bob peaks (Java PEDESTAL_BOB_PEAK_DWELL). */
+export const PEDESTAL_BOB_PEAK_DWELL = 0.42;
+/** Volume-ish squash on bob peaks (Java PEDESTAL_SQUASH_Y). */
+export const PEDESTAL_SQUASH_Y = 0.13;
+export const PEDESTAL_STRETCH_X = 0.065;
+export const PEDESTAL_ITEM_OUTLINE_ALPHA = 64;
+export const PEDESTAL_ITEM_OUTLINE_ALPHA_THRESHOLD = 8;
+
 /** Approximate item pickup cell (16×16) above pedestal top. */
 export const ITEM_PICKUP_W = 16;
 export const ITEM_PICKUP_H = 16;
@@ -30,16 +39,34 @@ export function makeItemPedestal(
   return { itemId, anchorX, groundTop, collected: false, priceCoins };
 }
 
-/** Bobbing item AABB for touch pickup. */
-export function pedestalItemAabb(p: ItemPedestal, timeSec: number): Aabb | null {
+/** Advance accumulated bob phase (Java updateSimStep pedestalBobPhase). */
+export function tickPedestalBobPhase(phase: number, dtSec: number): number {
+  const s = Math.sin(phase);
+  const sinSq = s * s;
+  return phase + PEDESTAL_BOB_OMEGA * dtSec * (1.0 - PEDESTAL_BOB_PEAK_DWELL * sinSq);
+}
+
+/** Thin one-way deck rects for pedestal walk surfaces (Java itemPedestalPlatformWorldRects). */
+export function pedestalPlatformRects(pedestals: ItemPedestal[]): Aabb[] {
+  return pedestals.map((p) => ({
+    x: p.anchorX - PEDESTAL_DRAW_W * 0.5,
+    y: p.groundTop - PEDESTAL_DECK_ABOVE_GROUND_PX,
+    w: PEDESTAL_DRAW_W,
+    h: PEDESTAL_DECK_ABOVE_GROUND_PX,
+  }));
+}
+
+/** Tight AABB on the bobbing item sprite only (Java itemPedestalPickupWorldRect). */
+export function pedestalItemAabb(p: ItemPedestal): Aabb | null {
   if (p.collected || !p.itemId) return null;
-  const bob = Math.sin(timeSec * PEDESTAL_BOB_OMEGA) * PEDESTAL_BOB_AMP;
-  const top = p.groundTop - PEDESTAL_DRAW_H - ITEM_PICKUP_H + bob;
+  const pedestalTop = p.groundTop - PEDESTAL_DRAW_H;
+  const bobAmp = PEDESTAL_BOB_AMP;
+  const iyMin = pedestalTop - ITEM_PICKUP_H + 4.0 - bobAmp;
   return {
-    x: p.anchorX - ITEM_PICKUP_W * 0.5,
-    y: top,
-    w: ITEM_PICKUP_W,
-    h: ITEM_PICKUP_H,
+    x: p.anchorX - ITEM_PICKUP_W * 0.5 + 1,
+    y: iyMin + 1,
+    w: ITEM_PICKUP_W - 2,
+    h: ITEM_PICKUP_H + 2 * bobAmp - 2,
   };
 }
 

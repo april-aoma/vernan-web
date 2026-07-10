@@ -101,6 +101,14 @@ export function rollCoinKind(rnd: () => number): PickupKind {
   return PickupKind.COIN_10;
 }
 
+/** Room clear / gem kill coin weights 5% / 10% / 85% (Java rollRoomClearCoinKind). */
+export function rollRoomClearCoinKind(rnd: () => number): PickupKind {
+  const d = rnd();
+  if (d < 0.05) return PickupKind.COIN_10;
+  if (d < 0.15) return PickupKind.COIN_5;
+  return PickupKind.COIN_1;
+}
+
 function mulberry(seed: number): () => number {
   let state = seed | 0;
   return () => {

@@ -4,7 +4,23 @@ export function freezeFrames(damage: number, multiplier = 1): number {
   return Math.max(1, Math.ceil(raw));
 }
 
-export type KnockbackKind = "sword_stand" | "sword_crouch" | "hurt" | "frisbee" | "psychic_debris";
+export type KnockbackKind =
+  | "sword_stand"
+  | "sword_crouch"
+  | "flint_sword"
+  | "sword_gem"
+  | "sword_stick"
+  | "sword_stick_crouch"
+  | "sword_fists"
+  | "headband_crouch_kick"
+  | "headband_up_attack"
+  | "headband_side_attack"
+  | "headband_side_attack_setup"
+  | "flint_fire_pull"
+  | "lemon_shot"
+  | "hurt"
+  | "frisbee"
+  | "psychic_debris";
 
 const BASE_KX = 74;
 const BASE_KY = -98;
@@ -18,16 +34,56 @@ const PSYCHIC_DEBRIS_BASE_MAG = 22;
 /** Knock vectors (Java KnockbackVectors / Player hurt). */
 export function knockbackFor(kind: KnockbackKind, facingAwaySign: number): { vx: number; vy: number } {
   const sign = Math.sign(facingAwaySign || 1);
-  if (kind === "sword_crouch") {
-    const mag = Math.hypot(BASE_KX, BASE_KY) * CROUCH_MAG_SCALE;
-    const theta = (80 * Math.PI) / 180;
+  const polar = (magScale: number, angleDeg: number) => {
+    const mag = Math.hypot(BASE_KX, BASE_KY) * magScale;
+    const theta = (angleDeg * Math.PI) / 180;
     return { vx: sign * mag * Math.cos(theta), vy: -mag * Math.sin(theta) };
+  };
+  switch (kind) {
+    case "sword_crouch":
+      return polar(CROUCH_MAG_SCALE, 80);
+    case "flint_sword":
+      return polar(0.55, 80);
+    case "sword_gem":
+      return polar(0.9, 65);
+    case "sword_stick":
+      return polar(2.0, 28);
+    case "sword_stick_crouch":
+      return polar(2.0, 80);
+    case "sword_fists":
+      return polar(0.85, 45);
+    case "headband_crouch_kick":
+      return polar(1.0, 80);
+    case "headband_up_attack":
+      return polar(1.25, 80);
+    case "headband_side_attack":
+      return polar(0.55, 12);
+    case "headband_side_attack_setup":
+      return { vx: sign * 44, vy: 0 };
+    case "flint_fire_pull":
+      return { vx: 0, vy: 0 };
+    case "lemon_shot":
+      return polar(0.45, 10);
+    case "frisbee":
+      return knockbackForFrisbee(sign);
+    default:
+      return { vx: sign * BASE_KX, vy: BASE_KY };
   }
-  if (kind === "frisbee") {
-    return knockbackForFrisbee(sign);
-  }
-  // SWORD_STAND and hurt share the baseline vector.
-  return { vx: sign * BASE_KX, vy: BASE_KY };
+}
+
+/** Pull knock toward fire center (Java FLINT_FIRE_PULL). */
+export function knockbackForFlintFirePull(
+  enemyCx: number,
+  enemyCy: number,
+  fireCx: number,
+  fireCy: number,
+): { vx: number; vy: number } {
+  let dx = fireCx - enemyCx;
+  let dy = fireCy - enemyCy;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-4) return { vx: 0, vy: 0 };
+  const speed = 52;
+  return { vx: (dx / len) * speed, vy: (dy / len) * speed };
 }
 
 /**

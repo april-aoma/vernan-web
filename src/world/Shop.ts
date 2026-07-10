@@ -125,7 +125,7 @@ export function tryBuyShopPedestal(
 
   for (const p of peds) {
     if (p.collected || !p.itemId) continue;
-    const itemBox = pedestalItemAabb(p, session.timeSec);
+    const itemBox = pedestalItemAabb(p);
     if (!itemBox) continue;
     if (!aabbOverlap(player.hurtbox(), itemBox)) continue;
 

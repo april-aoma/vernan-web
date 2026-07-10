@@ -108,6 +108,8 @@ export type RoomSession = {
   keyblocks: KeyblockTickState;
   /** Sim time for pedestal bob. */
   timeSec: number;
+  /** Accumulated pedestal item bob phase (rad). */
+  pedestalBobPhase: number;
   lastPickupName: string | null;
   lastPickupTimer: number;
   /** Per-room brick debris persistence (Java roomPersistedBrickChunks). */
@@ -137,6 +139,7 @@ export function createSession(
     transition: createRoomTransitionState(),
     keyblocks: createKeyblockTickState(dungeon.roomKeyblockSeals, n),
     timeSec: 0,
+    pedestalBobPhase: 0,
     lastPickupName: null,
     lastPickupTimer: 0,
     roomPersistedBrickChunks: new Array(n).fill(null),
@@ -444,7 +447,7 @@ export function tryCollectPedestal(
 ): string | null {
   const p = activePedestal(session);
   if (!p || p.collected || !p.itemId) return null;
-  const itemBox = pedestalItemAabb(p, session.timeSec);
+  const itemBox = pedestalItemAabb(p);
   if (!itemBox) return null;
   if (!aabbOverlap(player.hurtbox(), itemBox)) return null;
 

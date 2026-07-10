@@ -26,4 +26,6 @@ export interface CombatEnemy {
   attackBlockedByShield(attack: Aabb): boolean;
   /** Shield block feedback — hitstun without HP loss. */
   applyShieldBlockStrike(strike: WeaponStrike): void;
+  /** Flint fire loop tick (bosses / regular enemies). */
+  applyFlintFireLoopDamage?(amount: number, fireCx: number, fireCy: number): boolean;
 }
