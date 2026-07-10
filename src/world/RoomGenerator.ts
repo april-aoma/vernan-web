@@ -1,4 +1,5 @@
 import { TILE_SIZE } from "../specs";
+import { BossKind, pickBossForFloor } from "../boss/BossRegistry";
 import { JavaRandom } from "../util/JavaRandom";
 import { placeStepBreakables } from "../tileset/placeStepBreakables";
 import { PickupKind } from "./BreakableLootRoll";
@@ -37,7 +38,10 @@ import { shouldExpandWest } from "./SecretRoomLayoutPlanner";
 import { TILE_SOLID, TileMap } from "./TileMap";
 import type { TerrainTileBridge } from "../tileset/TerrainTileBridge";
 import type { ContextThemeRule } from "../tileset/ContextThemeSubstitution";
-import { resolvedLadderRunwayRowAt } from "./VerticalSeamGeometry";
+import {
+  resolvedLadderMouthRowAt,
+  resolvedLadderRunwayRowAt,
+} from "./VerticalSeamGeometry";
 import type { PlacedRoomObject } from "./PlacedRoomObject";
 import { WorldPickup } from "./WorldPickup";
 
@@ -282,8 +286,8 @@ export function generateRoomShell(
   let dungeonLadderTx = conn.ladderColumnTx;
   if (dungeonLadderTx >= 0) dungeonLadderTx = Math.max(3, Math.min(dungeonLadderTx, w - 4));
   const placeRandomLadders = kind === RoomKind.NORMAL;
-  // Web only has Possessed boss — treat BOSS as possessed arena (GEN-PLATFORM-BOSS).
-  const possessedBossArena = kind === RoomKind.BOSS;
+  const bossEntry = kind === RoomKind.BOSS ? pickBossForFloor(1, seed) : null;
+  const possessedBossArena = kind === RoomKind.BOSS && bossEntry?.kind === BossKind.POSSESSED;
   const placeRandomPlatforms = kind === RoomKind.NORMAL || possessedBossArena;
   const dungeonVerticalLink =
     dungeonLadderTx >= 0 && (conn.ladderNorth || conn.ladderSouth);
@@ -406,7 +410,10 @@ export function generateRoomShell(
     );
   }
 
-  const secretWillFinish = !!(finishOpts?.secretSeams || finishOpts?.neighborFaces);
+  // Java: only skip mouth platforms when secret seam edges are non-empty (not mere neighborFaces).
+  const secretWillFinish = !!(
+    finishOpts?.secretSeams && finishOpts.secretSeams.edges.length > 0
+  );
   applyLadderSafetyPlatforms(
     map,
     secretWillFinish,
@@ -537,14 +544,16 @@ export function generateRoomShell(
       maxReach,
       seed,
     );
-    // Post-finish safety: skip mouth platforms; shaft-only when vertical link.
-    applyLadderSafetyPlatforms(
-      room.map,
-      true,
-      ladderTx >= 0 ? ladderTx : -1,
-      dungeonLadderFloorRow,
-      true,
-    );
+    // Post-finish safety: gap-fill / top caps only — mouth deck from reconcile.
+    const vertLink = conn.ladderNorth || conn.ladderSouth;
+    const lCol = room.ladderColumnTx;
+    const liveMouth = lCol >= 0 ? resolvedLadderMouthRowAt(room.map, lCol) : -1;
+    applyLadderSafetyPlatforms(room.map, true, lCol, liveMouth, vertLink);
+    if (vertLink && lCol >= 0) {
+      stripSpuriousLaddersFromMap(room.map, lCol, resolvedLadderMouthRowAt(room.map, lCol));
+    } else if (kind === RoomKind.NORMAL || kind === RoomKind.BOSS) {
+      stripSpuriousLaddersFromMap(room.map, -1);
+    }
     stripPlatformsOnRow(room.map, 1);
     enforceOnMap(room.map);
   }

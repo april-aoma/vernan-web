@@ -230,6 +230,18 @@ export class Input {
   get downPressed(): boolean {
     return this.wasPressed("ArrowDown") || this.wasPressed("KeyS");
   }
+  get upPressed(): boolean {
+    return this.wasPressed("ArrowUp") || this.wasPressed("KeyW");
+  }
+  get leftPressed(): boolean {
+    return this.wasPressed("ArrowLeft") || this.wasPressed("KeyA");
+  }
+  get rightPressed(): boolean {
+    return this.wasPressed("ArrowRight") || this.wasPressed("KeyD");
+  }
+  get subweaponPressed(): boolean {
+    return this.wasPressed("KeyC");
+  }
   get debugTogglePressed(): boolean {
     return this.wasPressed("F3") || this.wasPressed("Backquote");
   }

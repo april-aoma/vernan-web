@@ -33,8 +33,10 @@ export type JuiceDrawOpts = {
   scaleY?: number;
   /** Solid red SrcAtop (defensive hitstun). */
   solidRed?: boolean;
-  /** Fade hurt tint alpha 0–255. */
+  /** Fade hurt tint alpha 0–255 (red unless tintRgb set). */
   hurtTintAlpha?: number;
+  /** Optional 0xRRGGBB for colored SrcAtop (nova absorb flash). */
+  tintRgb?: number;
 };
 
 /**
@@ -95,7 +97,15 @@ export function drawJuicedImage(
     tc.globalAlpha = 1;
     tc.fillRect(0, 0, sw, sh);
   } else {
-    tc.fillStyle = "#ff0000";
+    const rgb = juice.tintRgb;
+    if (rgb != null) {
+      const r = (rgb >> 16) & 0xff;
+      const gch = (rgb >> 8) & 0xff;
+      const b = rgb & 0xff;
+      tc.fillStyle = `rgb(${r},${gch},${b})`;
+    } else {
+      tc.fillStyle = "#ff0000";
+    }
     tc.globalAlpha = Math.min(1, tintA / 255);
     tc.fillRect(0, 0, sw, sh);
   }

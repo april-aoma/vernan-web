@@ -10,6 +10,7 @@ export class ItemCatalog {
   private itemRoomPool: string[] = [];
   private bossClearPool: string[] = [];
   private shopPool: string[] = [];
+  private secretPool: string[] = [];
 
   static async load(assets: AssetLoader): Promise<ItemCatalog> {
     const raw = await assets.loadJson<{ items?: unknown[] }>("data/items.json");
@@ -23,6 +24,7 @@ export class ItemCatalog {
     this.itemRoomPool = [];
     this.bossClearPool = [];
     this.shopPool = [];
+    this.secretPool = [];
     let fallback: string | null = null;
     const items = root.items;
     if (!Array.isArray(items)) throw new Error("items.json missing items array");
@@ -35,6 +37,7 @@ export class ItemCatalog {
       if (def.spawnItemRoom && !def.subweapon) this.itemRoomPool.push(def.id);
       if (def.spawnBossClear && !def.subweapon) this.bossClearPool.push(def.id);
       if (def.spawnShop && !def.subweapon) this.shopPool.push(def.id);
+      if (def.spawnSecret && !def.subweapon) this.secretPool.push(def.id);
     }
     if (fallback) this.fallbackId = fallback;
   }
@@ -66,6 +69,11 @@ export class ItemCatalog {
   /** Eligible SHOP pool (non-subweapon). */
   shopEligible(): string[] {
     return this.shopPool.slice();
+  }
+
+  /** Eligible SECRET pedestal pool (non-subweapon). */
+  secretEligible(): string[] {
+    return this.secretPool.slice();
   }
 
   allIds(): string[] {

@@ -20,4 +20,4 @@
 3. ~~Boss floor-ascend cinematic~~ — fade → `LEVEL_LOAD_BLACK` climb + `leveltransition` strip → next floor mid-blackout → fade in
 4. ~~Collision polish~~ — horizontal deck exemption + mouth-only drop-through + `poseForFeetSupport`
 5. ~~Possessed full combat + follow-up~~ — attacks/rig; shiny; Lil/Head drops; Head melee; knock-loose; bullet die; death debris (Lil familiar still stubbed)
-6. **Next:** (open — Lil familiar, Mouse enemy, air dodge, or costumes)
+6. **Next:** (open — Lil familiar, Penisman / next floor enemy, air dodge, or costumes)

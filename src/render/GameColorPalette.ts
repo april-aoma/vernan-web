@@ -22,6 +22,11 @@ export class GameColorPalette {
     return this.grid.length >= 3 && this.identitySnapLut != null && this.exactSourceColorKeys.size > 0;
   }
 
+  /** Deep copy of palette grid for kaleidoscope scratch (Java copyPaletteGrid). */
+  copyPaletteGrid(): number[][] {
+    return this.grid.map((col) => col.slice());
+  }
+
   static async load(assets: {
     loadImage(path: string): Promise<ImageBitmap>;
     loadJson?<T>(path: string): Promise<T>;

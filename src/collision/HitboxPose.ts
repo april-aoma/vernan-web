@@ -53,6 +53,16 @@ export class HitboxPose {
     return polygonIntersectsAabb(this.worldVertices(), r);
   }
 
+  /** World-space polygon already in world coords (debris / psychic spoon). */
+  static fromWorldPolygon(worldVerts: number[]): HitboxPose {
+    const b = polygonBounds(worldVerts);
+    const local: number[] = [];
+    for (let i = 0; i < worldVerts.length; i += 2) {
+      local.push(worldVerts[i]! - b.x, worldVerts[i + 1]! - b.y);
+    }
+    return new HitboxPose(local, b.x, b.y, 1, 0, 1);
+  }
+
   /** Max world Y of listed local vertices (feet probes for jump hull). */
   maxLocalYWorld(...localYs: number[]): number {
     let best = -Infinity;

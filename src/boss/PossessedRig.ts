@@ -1,6 +1,7 @@
 /**
- * Thin loader for possessed.rig.json — part layout, poses, bob, draw order.
+ * Thin loader for possessed.rig.json — part layout, poses, bob, hulls, draw order.
  * Pose offsets are world px relative to the assembly anchor in art-faces-left space.
+ * Hull polygons are texture-local flat x0,y0,x1,y1,... (Java PossessedRig).
  */
 
 export type PoseEntry = { dx: number; dy: number; angleDeg: number };
@@ -8,14 +9,25 @@ export type PoseEntry = { dx: number; dy: number; angleDeg: number };
 /** Axis-aligned bounds of a hurt/collision hull in texture-local frame coords. */
 export type HullAabb = { minX: number; minY: number; maxX: number; maxY: number };
 
+/** Flat polygon x0,y0,x1,y1,... (texture-local). */
+export type FlatPolygon = number[];
+
 export type PossessedPartDef = {
   name: string;
   frame: number;
   pivotX: number;
   pivotY: number;
   bobScale: number;
-  /** Hurt hull AABB from polygon bounds (texture-local). */
+  /** Per-part multiplier on scanline-warp amplitude (1.0 = full). */
+  scanlineScale: number;
+  /** Hurt hull AABB from polygon bounds (texture-local) — convenience. */
   hurtAabb: HullAabb | null;
+  /** Raw hurt polygon flat coords (texture-local); empty if missing. */
+  hurt: FlatPolygon;
+  /** Raw hit (contact damage) polygon; empty if missing. */
+  hit: FlatPolygon;
+  /** Raw collision polygon flat coords (texture-local); empty if missing. */
+  collision: FlatPolygon;
 };
 
 export type PossessedRigData = {
@@ -25,6 +37,8 @@ export type PossessedRigData = {
   frameH: number;
   bobAmpPx: number;
   bobSpeedRadPerSec: number;
+  /** Global scanline warp amplitude (px); multiplied by part.scanlineScale. */
+  scanlineAmpPx: number;
   poses: Record<string, Record<string, PoseEntry>>;
   sequences: Record<string, string[]>;
   sheet: string;
@@ -41,18 +55,36 @@ function num(v: unknown, def: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : def;
 }
 
-/** AABB from a polygon of [x,y] points (texture-local). */
-export function hullPolygonAabb(points: unknown): HullAabb | null {
-  if (!Array.isArray(points) || points.length === 0) return null;
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
+/** Flatten [[x,y],...] → [x0,y0,x1,y1,...]; requires ≥3 points. */
+export function flatPolygon(points: unknown): FlatPolygon {
+  if (!Array.isArray(points) || points.length === 0) return [];
+  const out: number[] = [];
   for (const pt of points) {
     if (!Array.isArray(pt) || pt.length < 2) continue;
     const x = num(pt[0], NaN);
     const y = num(pt[1], NaN);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    out.push(x, y);
+  }
+  return out.length >= 6 ? out : [];
+}
+
+/** AABB from a flat polygon or [[x,y],...] points (texture-local). */
+export function hullPolygonAabb(points: unknown): HullAabb | null {
+  let flat: FlatPolygon;
+  if (Array.isArray(points) && points.length > 0 && typeof points[0] === "number") {
+    flat = points as number[];
+  } else {
+    flat = flatPolygon(points);
+  }
+  if (flat.length < 6) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < flat.length; i += 2) {
+    const x = flat[i]!;
+    const y = flat[i + 1]!;
     minX = Math.min(minX, x);
     minY = Math.min(minY, y);
     maxX = Math.max(maxX, x);
@@ -62,10 +94,28 @@ export function hullPolygonAabb(points: unknown): HullAabb | null {
   return { minX, minY, maxX, maxY };
 }
 
-function parsePartHulls(pm: Record<string, unknown>): HullAabb | null {
-  if (!pm.hulls || typeof pm.hulls !== "object") return null;
-  const hulls = pm.hulls as Record<string, unknown>;
-  return hullPolygonAabb(hulls.hurt) ?? hullPolygonAabb(hulls.collision);
+/** AABB of a flat polygon. */
+export function flatPolygonAabb(flat: ReadonlyArray<number>): HullAabb | null {
+  return hullPolygonAabb(flat);
+}
+
+function parsePartHulls(pm: Record<string, unknown>): {
+  hurt: FlatPolygon;
+  hit: FlatPolygon;
+  collision: FlatPolygon;
+  hurtAabb: HullAabb | null;
+} {
+  let hurt: FlatPolygon = [];
+  let hit: FlatPolygon = [];
+  let collision: FlatPolygon = [];
+  if (pm.hulls && typeof pm.hulls === "object") {
+    const hulls = pm.hulls as Record<string, unknown>;
+    hurt = flatPolygon(hulls.hurt);
+    hit = flatPolygon(hulls.hit);
+    collision = flatPolygon(hulls.collision);
+  }
+  const hurtAabb = hullPolygonAabb(hurt) ?? hullPolygonAabb(collision);
+  return { hurt, hit, collision, hurtAabb };
 }
 
 function fallbackRig(): PossessedRigData {
@@ -75,19 +125,65 @@ function fallbackRig(): PossessedRigData {
     handL: { dx: -12, dy: 0, angleDeg: 0 },
     handR: { dx: 12, dy: 0, angleDeg: 0 },
   };
-  const full: HullAabb = { minX: 2, minY: 2, maxX: 14, maxY: 14 };
+  const box16: FlatPolygon = [3, 2, 13, 2, 13, 13, 3, 13];
+  const full = hullPolygonAabb(box16)!;
   return {
     parts: [
-      { name: "head", frame: 0, pivotX: 8, pivotY: 8, bobScale: 0.5, hurtAabb: full },
-      { name: "body", frame: 1, pivotX: 8, pivotY: 8, bobScale: 1, hurtAabb: full },
-      { name: "handL", frame: 2, pivotX: 8, pivotY: 8, bobScale: 1, hurtAabb: full },
-      { name: "handR", frame: 3, pivotX: 8, pivotY: 8, bobScale: 1, hurtAabb: full },
+      {
+        name: "head",
+        frame: 0,
+        pivotX: 8,
+        pivotY: 8,
+        bobScale: 0.5,
+        scanlineScale: 1,
+        hurtAabb: full,
+        hurt: box16.slice(),
+        hit: box16.slice(),
+        collision: box16.slice(),
+      },
+      {
+        name: "body",
+        frame: 1,
+        pivotX: 8,
+        pivotY: 8,
+        bobScale: 1,
+        scanlineScale: 1,
+        hurtAabb: full,
+        hurt: box16.slice(),
+        hit: box16.slice(),
+        collision: box16.slice(),
+      },
+      {
+        name: "handL",
+        frame: 2,
+        pivotX: 8,
+        pivotY: 8,
+        bobScale: 1,
+        scanlineScale: 1,
+        hurtAabb: full,
+        hurt: box16.slice(),
+        hit: box16.slice(),
+        collision: box16.slice(),
+      },
+      {
+        name: "handR",
+        frame: 3,
+        pivotX: 8,
+        pivotY: 8,
+        bobScale: 1,
+        scanlineScale: 1,
+        hurtAabb: full,
+        hurt: box16.slice(),
+        hit: box16.slice(),
+        collision: box16.slice(),
+      },
     ],
     drawOrder: ["handL", "handR", "body", "head"],
     frameW: 16,
     frameH: 16,
     bobAmpPx: 1.5,
     bobSpeedRadPerSec: 2.4,
+    scanlineAmpPx: 1.0,
     poses: { idle, telegraph: idle, hurt: idle, windup: idle, nova: idle, dash: idle, dash_windup: idle },
     sequences: { idle: ["idle"], dash_windup: ["dash_windup"], dash: ["dash"] },
     sheet: "possessed.png",
@@ -120,13 +216,18 @@ function parseRig(raw: Record<string, unknown>): PossessedRigData {
         pivotX = num(pm.pivot[0], pivotX);
         pivotY = num(pm.pivot[1], pivotY);
       }
+      const { hurt, hit, collision, hurtAabb } = parsePartHulls(pm);
       parts.push({
         name,
         frame: Math.floor(num(pm.frame, 0)),
         pivotX,
         pivotY,
         bobScale: num(pm.bobScale, 1),
-        hurtAabb: parsePartHulls(pm),
+        scanlineScale: num(pm.scanlineScale, 1),
+        hurtAabb,
+        hurt,
+        hit,
+        collision,
       });
     }
   }
@@ -140,10 +241,12 @@ function parseRig(raw: Record<string, unknown>): PossessedRigData {
 
   let bobAmpPx = 1.5;
   let bobSpeedRadPerSec = 2.4;
+  let scanlineAmpPx = 1.0;
   if (raw.bob && typeof raw.bob === "object") {
     const bob = raw.bob as Record<string, unknown>;
     bobAmpPx = num(bob.ampPx, 1.5);
     bobSpeedRadPerSec = num(bob.speedRadPerSec, 2.4);
+    scanlineAmpPx = num(bob.scanlineAmpPx, 1.0);
   }
 
   const poses: Record<string, Record<string, PoseEntry>> = {};
@@ -199,6 +302,7 @@ function parseRig(raw: Record<string, unknown>): PossessedRigData {
     frameH,
     bobAmpPx,
     bobSpeedRadPerSec,
+    scanlineAmpPx,
     poses,
     sequences,
     sheet: String(raw.sheet ?? "possessed.png"),

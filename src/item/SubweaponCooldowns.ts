@@ -1,6 +1,5 @@
 /**
  * Per-item subweapon cooldown timers for HUD overlays (Java GamePanel arrays).
- * Gameplay fire is stubbed; {@link #begin} is ready when Track A wires use.
  */
 export class SubweaponCooldowns {
   private remaining = new Map<string, number>();

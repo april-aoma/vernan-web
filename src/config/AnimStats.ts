@@ -46,6 +46,29 @@ export const SWORD_ATTACK_FRAMES = 4;
 export const CRAWLER_SPRITE_W = 16;
 export const CRAWLER_SPRITE_H = 16;
 export const CRAWLER_FRAMES = 2;
+/** Mouse walk strip: 64×16 → 4 frames (also `mouse hurt.png`). */
+export const MOUSE_SPRITE_W = 16;
+export const MOUSE_SPRITE_H = 16;
+export const MOUSE_FRAMES = 4;
+/** Penisman walk strip: 64×16 → 4 frames (faces left like mouse). */
+export const PENISMAN_SPRITE_W = 16;
+export const PENISMAN_SPRITE_H = 16;
+export const PENISMAN_FRAMES = 4;
+/** `penis bullet.png` / die — 16×8 → 2 frames. */
+export const PENIS_BULLET_FRAMES = 2;
+export const PENIS_BULLET_SPRITE_W = 8;
+export const PENIS_BULLET_SPRITE_H = 8;
+export const PENIS_BULLET_FLIGHT_ANIM_FRAME_SEC = 0.09;
+export const PENIS_BULLET_DIE_FRAME_SEC = PENIS_BULLET_FLIGHT_ANIM_FRAME_SEC * 2;
+export const PENIS_BULLET_DIE_FRAME_COUNT = 2;
+/** Golden roach walk `golden roach2.png` — 16×8 → 2 frames of 8×8. */
+export const GOLDEN_ROACH_WALK_FRAMES = 2;
+export const GOLDEN_ROACH_WALK_SPRITE_W = 8;
+export const GOLDEN_ROACH_WALK_SPRITE_H = 8;
+/** Golden roach fly `golden roach2 fly.png` — 32×16 → 2 frames of 16×8. */
+export const GOLDEN_ROACH_FLY_FRAMES = 2;
+export const GOLDEN_ROACH_FLY_SPRITE_W = 16;
+export const GOLDEN_ROACH_FLY_SPRITE_H = 8;
 export const POSSESSED_PART_W = 16;
 export const POSSESSED_PART_H = 16;
 /** Body part frame index on possessed.png (0 head, 1 body, …). */

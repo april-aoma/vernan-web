@@ -1,7 +1,8 @@
+import type { HitboxPose } from "../collision/HitboxPose";
 import {
   aabbOverlap,
-  knockbackFor,
   type Aabb,
+  type ProjectileStrike,
   type WeaponStrike,
 } from "../combat/CombatMath";
 import { isPossessedShiny, VARIANT_NORMAL } from "../combat/EnemyVariantRegistry";
@@ -14,18 +15,51 @@ import {
   type PlayerCombatSnapshot,
   type WorldRect,
 } from "../combat/EnemyVision";
-import { getPossessedRig, poseOffset } from "../boss/PossessedRig";
-import { BrickChunk } from "../fx/BrickChunk";
+import {
+  DEFAULT_SHAKE_AMPLITUDE_PX,
+  HURT_TINT_PEAK_ALPHA,
+  HURT_TINT_SECONDS,
+  sampleShake,
+} from "../combat/HitlagState";
+import {
+  getPossessedRig,
+  poseFromSequence,
+  poseOffset,
+  type PossessedPartDef,
+  type PossessedRigData,
+} from "../boss/PossessedRig";
+import { polygonBounds, polygonIntersectsAabb } from "../collision/polygonIntersect";
 import { TILE_SIZE } from "../specs";
 import type { TileMap } from "../world/TileMap";
 import type { CombatEnemy } from "./CombatEnemy";
 
+export type PossessedDeathChunkSpawn = {
+  frameIndex: number;
+  pivotWorldX: number;
+  pivotWorldY: number;
+  vx: number;
+  vy: number;
+  angleRad: number;
+  omega: number;
+  pivotX: number;
+  pivotY: number;
+  mirror: boolean;
+  hullLocal: number[] | null;
+};
+
+const POSSESSED_DEBRIS_LIFETIME_SEC = 8;
+const POSSESSED_DEBRIS_BLINK_START_SEC = 7;
+export { POSSESSED_DEBRIS_LIFETIME_SEC, POSSESSED_DEBRIS_BLINK_START_SEC };
 const FLOAT_SPEED = 55;
 const STANDOFF = 60;
 const STANDOFF_PAD = 26;
 const ROOM_MARGIN = 18;
 const VIEW_MARGIN = 28;
 const DEATH_REWARD_DELAY_SEC = 4.0;
+/** Parting explosion pops during early death throes (Java DEATH_EXPLOSION_INTERVAL). */
+const DEATH_EXPLOSION_INTERVAL = 0.11;
+/** Window after defeat during which the body emits parting explosion pops (Java DEATH_THROES_SEC). */
+const DEATH_THROES_SEC = 0.55;
 const BASE_AGGRESSION = 0.25;
 const ENRAGE_HP_FRAC = 0.5;
 const ORBIT_SPEED_FRAC = 0.85;
@@ -33,6 +67,15 @@ const ORBIT_FLIP_MIN = 1.4;
 const ORBIT_FLIP_MAX = 3.2;
 const WINDUP_SEC = 0.6;
 const NOVA_WINDUP_MULT = 2;
+/** Unique opaque colors from possessed.png, dark → bright (Java NOVA_SPRITE_PALETTE). */
+const NOVA_SPRITE_PALETTE = [0x5b315b, 0x76428a, 0xcbdbfc, 0xffffff] as const;
+/** Must match drawPossessedNovaRing period. */
+const NOVA_STREAK_PERIOD_SEC = 0.42;
+const NOVA_STREAK_SPOKES = 8;
+const NOVA_STREAK_RINGS = 2;
+const NOVA_ABSORB_HIT_FRAC = 0.88;
+const NOVA_ABSORB_FLASH_SEC = 0.11;
+/** Forward-thrust "release" pose duration right after firing. */
 const RELEASE_POSE_SEC = 0.12;
 const SHOOT_CD_MIN = 1.2;
 const SHOOT_CD_MAX = 2.0;
@@ -59,6 +102,8 @@ const DASH_CHANCE = 0.3;
 const JUKE_CONTACT = 0.4;
 const KNOCKBACK_CONTACT_DISABLE = 0.5;
 const HURT_POSE_SEC = 0.2;
+/** Matches Java Possessed.HURT_TINT_SEC (also HitlagState.HURT_TINT_SECONDS). */
+const HURT_TINT_SEC = HURT_TINT_SECONDS;
 const BULLET_HALF = 3;
 const PEEK_CHANCE = 0.5;
 const SETTLED_K = 220;
@@ -67,10 +112,17 @@ const LOOSE_K = 40;
 const LOOSE_C = 2 * Math.sqrt(LOOSE_K);
 const ANGLE_K = 200;
 const ANGLE_C = 2 * Math.sqrt(ANGLE_K);
+const WALL_REST = 0.7;
+const FLOOR_REST = 0.6;
 const KNOCK_SPEED = 170;
 const KNOCK_UP = 70;
 const KNOCK_SPIN_DEG = 520;
 const LOOSE_MIN_SEC = 0.22;
+/** Fraction of struck limb impulse passed to the assembly anchor (1.0 = full). */
+const ANCHOR_TRAIL_FRAC = 1.0;
+/** EarthBound-style per-row scanline warp (matches Java Possessed / GamePanel). */
+export const SCANLINE_PHASE_PER_ROW_RAD = 0.52;
+const SCANLINE_TIME_SPEED_RAD_PER_SEC = 2.8;
 const BULLET_DIE_FRAME_SEC = 0.18;
 const BULLET_DIE_MAX_AGE = BULLET_DIE_FRAME_SEC * 2;
 
@@ -94,22 +146,54 @@ export type PossessedBulletDieFx = {
   age: number;
 };
 
-/** Per-part draw offset / spin for light knock-loose (no wall bounce). */
+/** World-space PartSim (Java Possessed.PartSim). */
 export type PossessedPartSim = {
   name: string;
-  ox: number;
-  oy: number;
+  cx: number;
+  cy: number;
   vx: number;
   vy: number;
   angleDeg: number;
   angleVel: number;
   loose: boolean;
   looseTimer: number;
+  bobPhase: number;
+};
+
+/** Per-part draw info for scanline warp + pivot rotation (Java PartRender). */
+export type PossessedPartRender = {
+  name: string;
+  frame: number;
+  cx: number;
+  cy: number;
+  angleRad: number;
+  mirror: boolean;
+  pivotX: number;
+  pivotY: number;
+  scanlinePhaseBase: number;
+  scanlineAmpPx: number;
+};
+
+/** Charge-orb render info during wind-up (Java Possessed.ChargeFx). */
+export type PossessedChargeFx = {
+  cx: number;
+  cy: number;
+  scale: number;
+  animFrame: number;
+};
+
+/** Inward-sucking nova ring tell (Java Possessed.NovaChargeFx). */
+export type PossessedNovaChargeFx = {
+  cx: number;
+  cy: number;
+  progress: number;
+  t: number;
+  chargeRgb: number;
 };
 
 /**
  * Phase 5b Possessed — Java combat parity (aimed/volley/fan/nova/dash, kite, dodge+counter).
- * Light knock-loose limbs + shiny AI; full PartSim wall bounce / scanline still stubbed.
+ * Full PartSim (world springs + wall bounce) + scanline warp via partRenders().
  */
 export class Possessed implements CombatEnemy {
   x: number;
@@ -126,12 +210,17 @@ export class Possessed implements CombatEnemy {
   private wanderTx = 0;
   private wanderTy = 0;
   private peeking = false;
+  /** Defensive freeze remaining (seconds); Java hitstunFrames. */
   private hitstun = 0;
   private deathTimer = -1;
-  private flash = 0;
   private hurtPoseTimer = 0;
+  private hurtTintRemaining = 0;
   private knockbackContactTimer = 0;
   private contactActiveTimer = 0;
+  /** Solid-red hitstun flash (not electrocute). */
+  hitlagSolidRed = false;
+  hitlagShakeX = 0;
+  hitlagShakeY = 0;
   private dodgeCooldown = 0;
   private mapW = 256;
   private mapH = 256;
@@ -164,9 +253,17 @@ export class Possessed implements CombatEnemy {
   private readonly bulletDieFx: PossessedBulletDieFx[] = [];
   private readonly partSims: PossessedPartSim[] = [];
   private deathDebrisSpawned = false;
-  private pendingDeathChunks: BrickChunk[] | null = null;
+  private deathExplosionAccum = 0;
+  private readonly explosionRequests: Array<[number, number]> = [];
+  private readonly pendingDeathChunkSpawns: PossessedDeathChunkSpawn[] = [];
   /** Last sword AABB that overlapped (from intersectsAttack) for knock-loose targeting. */
   private lastSwordProbe: Aabb | null = null;
+  /** Per-channel latch so each inward streak triggers one absorb flash (spokes + rings). */
+  private readonly novaStreakAbsorbFired = new Array<boolean>(
+    NOVA_STREAK_SPOKES + NOVA_STREAK_RINGS,
+  ).fill(false);
+  private novaAbsorbFlashTimer = 0;
+  private novaAbsorbFlashColor: number = NOVA_SPRITE_PALETTE[0];
 
   constructor(
     centerX: number,
@@ -200,28 +297,98 @@ export class Possessed implements CombatEnemy {
     return this.partSims;
   }
 
-  /** Drain death BrickChunks once (mount pushes into brickChunks[]). */
-  takeDeathDebris(): BrickChunk[] | null {
-    const chunks = this.pendingDeathChunks;
-    this.pendingDeathChunks = null;
-    return chunks;
+  /**
+   * Per-part render info for drawPossessed. Empty while dying (debris owns limbs).
+   * Matches Java partRenders (no interp alpha — web draws at sim state).
+   */
+  partRenders(): PossessedPartRender[] {
+    if (this.deathTimer >= 0) return [];
+    const rig = getPossessedRig();
+    if (!rig || this.partSims.length === 0) return [];
+    this.ensureSims(rig);
+    const out: PossessedPartRender[] = [];
+    const mirror = this.facingRight;
+    for (const name of rig.drawOrder) {
+      const def = rig.parts.find((p) => p.name === name);
+      const p = this.partSims.find((s) => s.name === name);
+      if (!def || !p) continue;
+      let ang = (p.angleDeg * Math.PI) / 180;
+      ang = snapAngleToPixels(ang, rig.frameW, rig.frameH, def.pivotX, def.pivotY);
+      const scanPhase = this.bobTime * SCANLINE_TIME_SPEED_RAD_PER_SEC + p.bobPhase;
+      const scanAmp = rig.scanlineAmpPx * def.scanlineScale;
+      out.push({
+        name: def.name,
+        frame: def.frame,
+        cx: p.cx,
+        cy: p.cy,
+        angleRad: ang,
+        mirror,
+        pivotX: def.pivotX,
+        pivotY: def.pivotY,
+        scanlinePhaseBase: scanPhase,
+        scanlineAmpPx: scanAmp,
+      });
+    }
+    return out;
   }
 
-  private initPartSims(): void {
-    const rig = getPossessedRig();
-    const names = rig?.parts.map((p) => p.name) ?? ["head", "body", "handL", "handR"];
+  /** Drain death chunk spawns once (mount builds pivot-anchored BrickChunks). */
+  drainDeathChunkSpawns(): PossessedDeathChunkSpawn[] {
+    if (this.pendingDeathChunkSpawns.length === 0) return [];
+    const out = [...this.pendingDeathChunkSpawns];
+    this.pendingDeathChunkSpawns.length = 0;
+    return out;
+  }
+
+  /** World-space points for kill-explosion pops this tick (Java drainExplosionRequests). */
+  drainExplosionRequests(): Array<[number, number]> {
+    if (this.explosionRequests.length === 0) return [];
+    const out = [...this.explosionRequests];
+    this.explosionRequests.length = 0;
+    return out;
+  }
+
+  /** Skip generic cull explosion — we emit death-throe pops + limb debris (Java suppressDeathExplosion). */
+  suppressDeathExplosion(): boolean {
+    return true;
+  }
+
+  private ensureSims(rig: PossessedRigData): void {
+    const same =
+      this.partSims.length === rig.parts.length &&
+      this.partSims.every((s, i) => s.name === rig.parts[i]!.name);
+    if (same) return;
+    this.initPartSims(rig);
+  }
+
+  private initPartSims(rig?: PossessedRigData | null): void {
+    const r = rig ?? getPossessedRig();
+    const parts = r?.parts ?? [
+      { name: "head", pivotX: 8, pivotY: 8 },
+      { name: "body", pivotX: 8, pivotY: 8 },
+      { name: "handL", pivotX: 8, pivotY: 8 },
+      { name: "handR", pivotX: 8, pivotY: 8 },
+    ];
+    const ax = this.x + this.w * 0.5;
+    const ay = this.y + this.h * 0.5;
+    const m = this.facingRight ? -1 : 1;
     this.partSims.length = 0;
-    for (const name of names) {
+    for (let i = 0; i < parts.length; i++) {
+      const def = parts[i]!;
+      const pe = r ? poseOffset(r, "idle", def.name) : { dx: 0, dy: 0, angleDeg: 0 };
+      const cx = ax + m * pe.dx;
+      const cy = ay + pe.dy;
       this.partSims.push({
-        name,
-        ox: 0,
-        oy: 0,
+        name: def.name,
+        cx,
+        cy,
         vx: 0,
         vy: 0,
-        angleDeg: 0,
+        angleDeg: pe.angleDeg,
         angleVel: 0,
         loose: false,
         looseTimer: 0,
+        bobPhase: i * 1.7,
       });
     }
   }
@@ -240,8 +407,9 @@ export class Possessed implements CombatEnemy {
     this.playerCy = player.cy;
     this.playerVx = player.vx;
     this.playerVy = player.vy;
-    const cx = this.x + this.w * 0.5;
-    const cy = this.y + this.h * 0.5;
+    const body = this.partSims.find((p) => p.name === "body");
+    const cx = body?.cx ?? this.x + this.w * 0.5;
+    const cy = body?.cy ?? this.y + this.h * 0.5;
     this.seesPlayer = seesPlayerAt(cx, cy, player.cx, player.cy, seeRadius);
   }
 
@@ -279,6 +447,87 @@ export class Possessed implements CombatEnemy {
     return this.firing && this.pendingAttack === "NOVA";
   }
 
+  /**
+   * Charge-orb during directional wind-up (null for nova/dash).
+   * Orb grows from the body toward the aim (Java chargeFx).
+   */
+  chargeFx(): PossessedChargeFx | null {
+    if (
+      !this.firing ||
+      this.pendingAttack === "NOVA" ||
+      this.pendingAttack === "DASH" ||
+      this.partSims.length === 0
+    ) {
+      return null;
+    }
+    const p =
+      this.windupDuration <= 0
+        ? 1
+        : Math.max(0, Math.min(1, 1 - this.windupTimer / this.windupDuration));
+    const body = this.bodySim();
+    const dist = 4 + 3 * p;
+    const scale = 0.25 + 0.85 * p + 0.12 * Math.sin(this.bobTime * 18);
+    const frame = Math.floor(this.bobTime / 0.08) % 2;
+    return {
+      cx: body.cx + this.aimDx * dist,
+      cy: body.cy + this.aimDy * dist,
+      scale: Math.max(0.05, scale),
+      animFrame: frame,
+    };
+  }
+
+  /**
+   * Inward-sucking ring tell while charging the 8-way nova (null otherwise).
+   * progress 0..1; chargeRgb steps through NOVA_SPRITE_PALETTE (Java novaChargeFx).
+   */
+  novaChargeFx(): PossessedNovaChargeFx | null {
+    if (!this.firing || this.pendingAttack !== "NOVA" || this.partSims.length === 0) {
+      return null;
+    }
+    const p =
+      this.windupDuration <= 0
+        ? 1
+        : Math.max(0, Math.min(1, 1 - this.windupTimer / this.windupDuration));
+    const body = this.bodySim();
+    return {
+      cx: body.cx,
+      cy: body.cy,
+      progress: p,
+      t: this.bobTime,
+      chargeRgb: novaChargePaletteRgb(p),
+    };
+  }
+
+  /** Brief full-body tint alpha 0–255 when an energy streak merges into the core. */
+  novaAbsorbFlashAlpha(): number {
+    if (this.novaAbsorbFlashTimer <= 0) return 0;
+    const t = this.novaAbsorbFlashTimer / NOVA_ABSORB_FLASH_SEC;
+    return Math.round(255 * t);
+  }
+
+  novaAbsorbFlashRgb(): number {
+    return this.novaAbsorbFlashColor;
+  }
+
+  private bodySim(): PossessedPartSim {
+    const body = this.partSims.find((p) => p.name === "body");
+    if (body) return body;
+    return (
+      this.partSims[0] ?? {
+        name: "body",
+        cx: this.x + this.w * 0.5,
+        cy: this.y + this.h * 0.5,
+        vx: 0,
+        vy: 0,
+        angleDeg: 0,
+        angleVel: 0,
+        loose: false,
+        looseTimer: 0,
+        bobPhase: 0,
+      }
+    );
+  }
+
   /** Pose name for multi-part draw (idle / windup / nova / dash_windup / dash / hurt / telegraph). */
   currentPoseName(): string {
     if (this.hurtPoseTimer > 0) return "hurt";
@@ -304,18 +553,22 @@ export class Possessed implements CombatEnemy {
     return this.bobTime;
   }
 
-  update(dt: number, map: TileMap, _playerX: number): void {
+  update(dt: number, map: TileMap, _playerX: number, _roomEnemies?: readonly CombatEnemy[]): void {
+    const rig = getPossessedRig();
+    if (rig) this.ensureSims(rig);
+
     this.bobTime += dt;
     this.hurtPoseTimer = Math.max(0, this.hurtPoseTimer - dt);
+    this.hurtTintRemaining = Math.max(0, this.hurtTintRemaining - dt);
     this.knockbackContactTimer = Math.max(0, this.knockbackContactTimer - dt);
     this.dodgeCooldown = Math.max(0, this.dodgeCooldown - dt);
     this.contactActiveTimer = Math.max(0, this.contactActiveTimer - dt);
-    this.tickPartSims(dt);
     this.tickBulletDieFx(dt);
 
     if (this.deathTimer >= 0) {
       this.deathTimer += dt;
       this.maybeQueueDeathDebris();
+      this.tickDeath(dt);
       this.tickBullets(dt, map);
       return;
     }
@@ -324,23 +577,62 @@ export class Possessed implements CombatEnemy {
       this.tickBullets(dt, map);
       return;
     }
-    if (this.flash > 0) this.flash = Math.max(0, this.flash - dt);
+
+    // Java: full freeze while hitstunFrames > 0 (shake + red; no move / parts / bullets).
     if (this.hitstun > 0) {
+      this.hitlagSolidRed = true;
+      this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
+      this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
       this.hitstun = Math.max(0, this.hitstun - dt);
-      this.x += this.vx * dt;
-      this.y += this.vy * dt;
-      this.clampAnchor();
-      this.tickBullets(dt, map);
-      return;
+      if (this.hitstun > 0) {
+        return;
+      }
+      this.hitlagSolidRed = false;
+      this.hitlagShakeX = 0;
+      this.hitlagShakeY = 0;
+    } else {
+      this.hitlagSolidRed = false;
+      this.hitlagShakeX = 0;
+      this.hitlagShakeY = 0;
     }
 
     this.tickMovement(dt);
     this.tickShooting(dt);
+    this.tickNovaAbsorbFlashes(dt);
+    this.integrateParts(dt, map);
     this.tickBullets(dt, map);
+  }
+
+  /** Latch brief body tint when inward nova streaks reach the core (Java tickNovaAbsorbFlashes). */
+  private tickNovaAbsorbFlashes(dt: number): void {
+    this.novaAbsorbFlashTimer = Math.max(0, this.novaAbsorbFlashTimer - dt);
+    if (!this.firing || this.pendingAttack !== "NOVA") {
+      this.novaStreakAbsorbFired.fill(false);
+      return;
+    }
+    const progress =
+      this.windupDuration <= 0
+        ? 1
+        : Math.max(0, Math.min(1, 1 - this.windupTimer / this.windupDuration));
+    const chargeRgb = novaChargePaletteRgb(progress);
+    for (let i = 0; i < this.novaStreakAbsorbFired.length; i++) {
+      const divisor = i < NOVA_STREAK_SPOKES ? NOVA_STREAK_SPOKES : NOVA_STREAK_RINGS;
+      const slot = i < NOVA_STREAK_SPOKES ? i : i - NOVA_STREAK_SPOKES;
+      const frac = ((this.bobTime / NOVA_STREAK_PERIOD_SEC) + slot / divisor) % 1;
+      if (frac < 0.1) {
+        this.novaStreakAbsorbFired[i] = false;
+      }
+      if (!this.novaStreakAbsorbFired[i] && frac >= NOVA_ABSORB_HIT_FRAC) {
+        this.novaStreakAbsorbFired[i] = true;
+        this.novaAbsorbFlashTimer = NOVA_ABSORB_FLASH_SEC;
+        this.novaAbsorbFlashColor = chargeRgb;
+      }
+    }
   }
 
   private beginDeath(): void {
     this.deathTimer = 0;
+    this.deathExplosionAccum = 0;
     this.firing = false;
     this.dashing = false;
     this.contactActiveTimer = 0;
@@ -348,46 +640,69 @@ export class Possessed implements CombatEnemy {
     this.maybeQueueDeathDebris();
   }
 
+  /** Parting explosion pops during early throes (Java tickDeath). */
+  private tickDeath(dt: number): void {
+    this.deathExplosionAccum += dt;
+    if (this.deathExplosionAccum >= DEATH_EXPLOSION_INTERVAL && this.deathTimer < DEATH_THROES_SEC) {
+      this.deathExplosionAccum = 0;
+      const ex = this.x + (Math.random() - 0.5) * 28;
+      const ey = this.y + (Math.random() - 0.5) * 28;
+      this.explosionRequests.push([ex, ey]);
+    }
+  }
+
   private maybeQueueDeathDebris(): void {
     if (this.deathDebrisSpawned) return;
     this.deathDebrisSpawned = true;
     const rig = getPossessedRig();
-    const cx = this.x + this.w * 0.5;
-    const cy = this.y + this.h * 0.5;
-    const mirrorX = this.facingSign() < 0 ? -1 : 1;
-    const poseName = this.currentPoseName();
-    const chunks: BrickChunk[] = [];
-    const parts = rig?.parts ?? [
-      { name: "head", pivotX: 8, pivotY: 8 },
-      { name: "body", pivotX: 8, pivotY: 8 },
-      { name: "handL", pivotX: 8, pivotY: 8 },
-      { name: "handR", pivotX: 8, pivotY: 8 },
-    ];
-    const colors = ["#c8a0e8", "#a070c8", "#e0c0ff", "#9070b0"];
-    for (let i = 0; i < Math.min(4, parts.length); i++) {
-      const part = parts[i]!;
-      const pe = rig ? poseOffset(rig, poseName, part.name) : { dx: 0, dy: 0, angleDeg: 0 };
-      const sim = this.partSims.find((p) => p.name === part.name);
-      const px = cx + mirrorX * pe.dx + (sim?.ox ?? 0);
-      const py = cy + pe.dy + (sim?.oy ?? 0);
+    if (!rig || this.partSims.length === 0) {
+      const cx = this.x + this.w * 0.5;
+      const cy = this.y + this.h * 0.5;
+      for (let i = 0; i < 4; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const pop = 90 + Math.random() * 70;
+        this.pendingDeathChunkSpawns.push({
+          frameIndex: i,
+          pivotWorldX: cx,
+          pivotWorldY: cy,
+          vx: Math.cos(ang) * pop,
+          vy: Math.sin(ang) * pop - 60,
+          angleRad: 0,
+          omega: (Math.random() - 0.5) * 12,
+          pivotX: 8,
+          pivotY: 8,
+          mirror: this.facingRight,
+          hullLocal: null,
+        });
+      }
+      return;
+    }
+    for (let i = 0; i < this.partSims.length; i++) {
+      const def = rig.parts[i];
+      const sim = this.partSims[i]!;
+      if (!def) continue;
       const ang = Math.random() * Math.PI * 2;
       const pop = 90 + Math.random() * 70;
-      const chunkVx = (sim?.vx ?? 0) + Math.cos(ang) * pop;
-      const chunkVy = (sim?.vy ?? 0) + Math.sin(ang) * pop - 60;
-      chunks.push(
-        new BrickChunk(
-          px - 4,
-          py - 4,
-          chunkVx,
-          chunkVy,
-          ((sim?.angleDeg ?? 0) * Math.PI) / 180,
-          ((sim?.angleVel ?? 0) * Math.PI) / 180 + (Math.random() - 0.5) * 12,
-          colors[i % colors.length]!,
-          null,
-        ),
-      );
+      const hull =
+        def.collision.length >= 6
+          ? def.collision.slice()
+          : def.hurt.length >= 6
+            ? def.hurt.slice()
+            : null;
+      this.pendingDeathChunkSpawns.push({
+        frameIndex: def.frame,
+        pivotWorldX: sim.cx,
+        pivotWorldY: sim.cy,
+        vx: sim.vx + Math.cos(ang) * pop,
+        vy: sim.vy + Math.sin(ang) * pop - 60,
+        angleRad: (sim.angleDeg * Math.PI) / 180,
+        omega: (sim.angleVel * Math.PI) / 180 + (Math.random() - 0.5) * 12,
+        pivotX: def.pivotX,
+        pivotY: def.pivotY,
+        mirror: this.facingRight,
+        hullLocal: hull,
+      });
     }
-    this.pendingDeathChunks = chunks;
   }
 
   private hpFrac(): number {
@@ -848,26 +1163,116 @@ export class Possessed implements CombatEnemy {
     }
   }
 
-  private tickPartSims(dt: number): void {
-    for (const p of this.partSims) {
-      if (p.looseTimer > 0) p.looseTimer = Math.max(0, p.looseTimer - dt);
+  private integrateParts(dt: number, map: TileMap | null): void {
+    const rig = getPossessedRig();
+    if (!rig || this.partSims.length === 0) return;
+    this.ensureSims(rig);
+
+    let poseName = this.currentPoseName();
+    if (poseName === "dash_windup" || poseName === "dash") {
+      poseName = poseFromSequence(rig, poseName, this.poseAnimProgress());
+    }
+
+    const ax = this.x + this.w * 0.5;
+    const ay = this.y + this.h * 0.5;
+    const m = this.facingRight ? -1 : 1;
+
+    for (let i = 0; i < this.partSims.length; i++) {
+      const def = rig.parts[i];
+      const p = this.partSims[i]!;
+      if (!def || def.name !== p.name) continue;
+
+      const pe = poseOffset(rig, poseName, def.name);
+      const bobAmp = rig.bobAmpPx * def.bobScale;
+      const bx = bobAmp * Math.sin(this.bobTime * rig.bobSpeedRadPerSec + p.bobPhase);
+      const by = bobAmp * Math.sin(this.bobTime * rig.bobSpeedRadPerSec * 1.3 + p.bobPhase * 1.7);
+      const targetX = ax + m * pe.dx + bx;
+      const targetY = ay + pe.dy + by;
+      const targetA = pe.angleDeg;
+
       const k = p.loose ? LOOSE_K : SETTLED_K;
       const c = p.loose ? LOOSE_C : SETTLED_C;
-      p.vx += (-p.ox * k - p.vx * c) * dt;
-      p.vy += (-p.oy * k - p.vy * c) * dt;
-      p.ox += p.vx * dt;
-      p.oy += p.vy * dt;
-      p.angleVel += (-p.angleDeg * ANGLE_K - p.angleVel * ANGLE_C) * dt;
+      p.vx += ((targetX - p.cx) * k - p.vx * c) * dt;
+      p.vy += ((targetY - p.cy) * k - p.vy * c) * dt;
+      p.angleVel += ((targetA - p.angleDeg) * ANGLE_K - p.angleVel * ANGLE_C) * dt;
       p.angleDeg += p.angleVel * dt;
-      if (
-        p.loose &&
-        p.looseTimer <= 0 &&
-        Math.hypot(p.ox, p.oy) < 6 &&
-        Math.hypot(p.vx, p.vy) < 24
-      ) {
-        p.loose = false;
+
+      if (p.loose) {
+        this.moveLooseWithBounce(rig, i, p, def, dt, map);
+        if (p.looseTimer > 0) p.looseTimer -= dt;
+        const dist = Math.hypot(targetX - p.cx, targetY - p.cy);
+        const sp = Math.hypot(p.vx, p.vy);
+        if (p.looseTimer <= 0 && dist < 6 && sp < 24) {
+          p.loose = false;
+        }
+      } else {
+        p.cx += p.vx * dt;
+        p.cy += p.vy * dt;
       }
     }
+  }
+
+  private moveLooseWithBounce(
+    rig: PossessedRigData,
+    index: number,
+    p: PossessedPartSim,
+    _def: PossessedPartDef,
+    dt: number,
+    map: TileMap | null,
+  ): void {
+    if (!map) {
+      p.cx += p.vx * dt;
+      p.cy += p.vy * dt;
+      return;
+    }
+    // Already embedded in solid (boss phases through terrain) → free drift until clear.
+    if (this.collisionHullHitsSolid(rig, index, p.cx, p.cy, p.angleDeg, map)) {
+      p.cx += p.vx * dt;
+      p.cy += p.vy * dt;
+      return;
+    }
+    const nx = p.cx + p.vx * dt;
+    if (this.collisionHullHitsSolid(rig, index, nx, p.cy, p.angleDeg, map)) {
+      p.vx = -p.vx * WALL_REST;
+    } else {
+      p.cx = nx;
+    }
+    const ny = p.cy + p.vy * dt;
+    if (this.collisionHullHitsSolid(rig, index, p.cx, ny, p.angleDeg, map)) {
+      p.vy = -p.vy * FLOOR_REST;
+    } else {
+      p.cy = ny;
+    }
+  }
+
+  private collisionHullHitsSolid(
+    rig: PossessedRigData,
+    index: number,
+    cx: number,
+    cy: number,
+    angleDeg: number,
+    map: TileMap,
+  ): boolean {
+    const def = rig.parts[index];
+    if (!def) return false;
+    const local = def.collision.length >= 6 ? def.collision : def.hurt;
+    if (local.length < 6) return false;
+    const m = this.facingRight ? -1 : 1;
+    const world = transformHull(local, def.pivotX, def.pivotY, cx, cy, angleDeg, m);
+    const b = polygonBounds(world);
+    const ts = TILE_SIZE;
+    const minTx = Math.floor(b.x / ts);
+    const maxTx = Math.floor((b.x + b.w - 1e-9) / ts);
+    const minTy = Math.floor(b.y / ts);
+    const maxTy = Math.floor((b.y + b.h - 1e-9) / ts);
+    for (let ty = minTy; ty <= maxTy; ty++) {
+      for (let tx = minTx; tx <= maxTx; tx++) {
+        if (!map.isSolidTile(tx, ty)) continue;
+        const tile: Aabb = { x: tx * ts, y: ty * ts, w: ts, h: ts };
+        if (polygonIntersectsAabb(world, tile)) return true;
+      }
+    }
+    return false;
   }
 
   applyBulletHits(playerHurt: Aabb, onHit: (damage: number, bulletCx: number) => void): void {
@@ -891,6 +1296,8 @@ export class Possessed implements CombatEnemy {
   }
 
   contactDamagePose(): Aabb {
+    const hit = this.bodyHitAabb();
+    if (hit) return hit;
     return this.rect();
   }
 
@@ -911,92 +1318,134 @@ export class Possessed implements CombatEnemy {
     if (this.hp <= 0 || this.deathTimer >= 0) return false;
     const struck = this.collectStruckParts(strike);
     this.hp = Math.max(0, this.hp - strike.damage);
-    this.hitstun = Math.max(0.15, strike.freezeFrames / 60);
-    this.flash = 0.12;
-    this.hurtPoseTimer = HURT_POSE_SEC;
-    this.knockbackContactTimer = Math.max(this.knockbackContactTimer, KNOCKBACK_CONTACT_DISABLE);
-    this.firing = false;
-    this.volleyRemaining = 0;
-    this.counterShot = false;
-    if (this.dashing) {
-      this.dashing = false;
-      this.dashTimer = 0;
-    }
+    this.onDamaged(strike.freezeFrames);
     const away =
       this.x + this.w * 0.5 >= strike.attackerX + strike.attackerW * 0.5 ? 1 : -1;
-    const kb = knockbackFor(strike.knockKind, away);
-    this.vx = kb.vx * 0.45;
-    this.vy = kb.vy * 0.35;
-    this.knockStruckParts(away, strike.damage, struck);
+    // Java: only knockStruckParts (limb impulse + ANCHOR_TRAIL_FRAC to anchor) — no separate body KB.
+    // Impulses latch immediately; integrate after hitstun freeze ends.
+    const attackerCx = strike.attackerX + strike.attackerW * 0.5;
+    this.knockStruckParts(attackerCx, away, strike.damage, struck);
     if (this.hp <= 0) {
       this.beginDeath();
     }
     return true;
   }
 
+  intersectsProjectile(projectile: HitboxPose): boolean {
+    if (this.isDead()) return false;
+    return projectile.intersectsRect(this.damageReceivePose());
+  }
+
+  applyProjectileStrike(strike: ProjectileStrike): boolean {
+    if (this.hp <= 0 || this.deathTimer >= 0) return false;
+    this.hp = Math.max(0, this.hp - strike.damage);
+    this.onDamaged(strike.freezeFrames);
+    const facing = strike.projectileVelX >= 0 ? 1 : -1;
+    const attackerCx =
+      strike.debrisCenterWorldX != null && Number.isFinite(strike.debrisCenterWorldX)
+        ? strike.debrisCenterWorldX
+        : facing >= 0
+          ? -1e9
+          : 1e9;
+    const fakeStrike: WeaponStrike = {
+      damage: strike.damage,
+      freezeFrames: strike.freezeFrames,
+      attackerX: attackerCx - 8,
+      attackerW: 16,
+      facing,
+      knockKind: strike.knockKind,
+      contactWorldX: strike.contactWorldX,
+      contactWorldY: strike.contactWorldY,
+    };
+    const struck = this.collectStruckParts(fakeStrike);
+    this.knockStruckParts(attackerCx, facing, strike.damage, struck);
+    if (this.hp <= 0) {
+      this.beginDeath();
+    }
+    return true;
+  }
+
+  /** Java onDamaged: freeze frames + hurt pose/tint + contact-disable window. */
+  private onDamaged(freezeFrames: number): void {
+    const stunSec = Math.max(0, freezeFrames) / 60;
+    this.hitstun = Math.max(this.hitstun, stunSec);
+    this.hitlagSolidRed = true;
+    this.hurtTintRemaining = Math.max(this.hurtTintRemaining, HURT_TINT_SEC);
+    this.hurtPoseTimer = HURT_POSE_SEC;
+    this.knockbackContactTimer = Math.max(this.knockbackContactTimer, KNOCKBACK_CONTACT_DISABLE);
+  }
+
+  /** Body-part hit hull (Java contactDamagePose → partRolePose body "hit"). */
+  private bodyHitAabb(): Aabb | null {
+    const rig = getPossessedRig();
+    if (!rig || this.partSims.length === 0) return null;
+    this.ensureSims(rig);
+    const bodyIdx = this.partSims.findIndex((p) => p.name === "body");
+    const index = bodyIdx >= 0 ? bodyIdx : 0;
+    return this.partWorldRoleAabb(rig, index, "hit") ?? this.partWorldRoleAabb(rig, index, "collision");
+  }
+
   private unionHurtAabb(): Aabb | null {
     const rig = getPossessedRig();
     if (!rig || this.partSims.length === 0) return null;
-    const cx = this.x + this.w * 0.5;
-    const cy = this.y + this.h * 0.5;
-    const mirrorX = this.facingSign() < 0 ? -1 : 1;
-    const poseName = this.currentPoseName();
+    this.ensureSims(rig);
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
     let any = false;
-    for (const part of rig.parts) {
-      const hull = part.hurtAabb;
-      if (!hull) continue;
-      const pe = poseOffset(rig, poseName, part.name);
-      const sim = this.partSims.find((p) => p.name === part.name);
-      const partCx = cx + mirrorX * pe.dx + (sim?.ox ?? 0);
-      const partCy = cy + pe.dy + (sim?.oy ?? 0);
-      const left = partCx - part.pivotX;
-      const top = partCy - part.pivotY;
-      // Hull is texture-local; when mirrored, flip X around pivot.
-      let hx0 = hull.minX;
-      let hx1 = hull.maxX;
-      if (mirrorX < 0) {
-        hx0 = 2 * part.pivotX - hull.maxX;
-        hx1 = 2 * part.pivotX - hull.minX;
-      }
-      const a = left + Math.min(hx0, hx1);
-      const b = left + Math.max(hx0, hx1);
-      const c = top + hull.minY;
-      const d = top + hull.maxY;
-      minX = Math.min(minX, a);
-      maxX = Math.max(maxX, b);
-      minY = Math.min(minY, c);
-      maxY = Math.max(maxY, d);
+    for (let i = 0; i < this.partSims.length; i++) {
+      const box = this.partWorldHurtAabb(rig, i);
+      if (!box) continue;
+      minX = Math.min(minX, box.x);
+      maxX = Math.max(maxX, box.x + box.w);
+      minY = Math.min(minY, box.y);
+      maxY = Math.max(maxY, box.y + box.h);
       any = true;
     }
     if (!any) return null;
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   }
 
-  private partWorldHurtAabb(
-    rig: NonNullable<ReturnType<typeof getPossessedRig>>,
-    partName: string,
+  private partWorldHurtAabb(rig: PossessedRigData, index: number): Aabb | null {
+    return this.partWorldRoleAabb(rig, index, "hurt");
+  }
+
+  private partWorldRoleAabb(
+    rig: PossessedRigData,
+    index: number,
+    role: "hurt" | "hit" | "collision",
   ): Aabb | null {
-    const part = rig.parts.find((p) => p.name === partName);
-    if (!part?.hurtAabb) return null;
-    const cx = this.x + this.w * 0.5;
-    const cy = this.y + this.h * 0.5;
-    const mirrorX = this.facingSign() < 0 ? -1 : 1;
-    const pe = poseOffset(rig, this.currentPoseName(), partName);
-    const sim = this.partSims.find((p) => p.name === partName);
-    const partCx = cx + mirrorX * pe.dx + (sim?.ox ?? 0);
-    const partCy = cy + pe.dy + (sim?.oy ?? 0);
-    const left = partCx - part.pivotX;
-    const top = partCy - part.pivotY;
-    const hull = part.hurtAabb;
+    const def = rig.parts[index];
+    const sim = this.partSims[index];
+    if (!def || !sim) return null;
+    let local: ReadonlyArray<number>;
+    if (role === "hurt") {
+      local = def.hurt.length >= 6 ? def.hurt : def.collision;
+    } else if (role === "hit") {
+      local = def.hit.length >= 6 ? def.hit : def.collision;
+    } else {
+      local = def.collision.length >= 6 ? def.collision : def.hurt;
+    }
+    if (local.length < 6) {
+      if (role === "hurt" && def.hurtAabb) return this.aabbFromHurtAabb(def, sim);
+      return null;
+    }
+    const m = this.facingRight ? -1 : 1;
+    const world = transformHull(local, def.pivotX, def.pivotY, sim.cx, sim.cy, sim.angleDeg, m);
+    return polygonBounds(world);
+  }
+
+  private aabbFromHurtAabb(def: PossessedPartDef, sim: PossessedPartSim): Aabb {
+    const hull = def.hurtAabb!;
+    const m = this.facingRight ? -1 : 1;
+    const left = sim.cx - def.pivotX;
+    const top = sim.cy - def.pivotY;
     let hx0 = hull.minX;
     let hx1 = hull.maxX;
-    if (mirrorX < 0) {
-      hx0 = 2 * part.pivotX - hull.maxX;
-      hx1 = 2 * part.pivotX - hull.minX;
+    if (m < 0) {
+      hx0 = 2 * def.pivotX - hull.maxX;
+      hx1 = 2 * def.pivotX - hull.minX;
     }
     const x0 = left + Math.min(hx0, hx1);
     const x1 = left + Math.max(hx0, hx1);
@@ -1024,9 +1473,9 @@ export class Possessed implements CombatEnemy {
     }
     const struck: number[] = [];
     if (rig) {
+      this.ensureSims(rig);
       for (let i = 0; i < this.partSims.length; i++) {
-        const sim = this.partSims[i]!;
-        const box = this.partWorldHurtAabb(rig, sim.name);
+        const box = this.partWorldHurtAabb(rig, i);
         if (box && aabbOverlap(sword, box)) struck.push(i);
       }
     }
@@ -1037,16 +1486,34 @@ export class Possessed implements CombatEnemy {
     return struck;
   }
 
-  private knockStruckParts(dir: number, dmg: number, struck: number[]): void {
-    const scale = 0.8 + 0.4 * Math.min(2, dmg);
+  private knockStruckParts(attackerCx: number, facing: number, dmg: number, struck: number[]): void {
+    let impx = 0;
+    let impy = 0;
+    let cnt = 0;
     for (const i of struck) {
       const p = this.partSims[i];
       if (!p) continue;
-      p.vx += dir * KNOCK_SPEED * scale;
-      p.vy += -KNOCK_UP;
+      let dir: number;
+      if (Math.abs(attackerCx) < 1e8) {
+        dir = Math.sign(p.cx - attackerCx);
+      } else {
+        dir = facing >= 0 ? 1 : -1;
+      }
+      if (dir === 0) dir = facing >= 0 ? 1 : -1;
+      const kx = dir * KNOCK_SPEED * (0.8 + 0.4 * Math.min(2, dmg));
+      const ky = -KNOCK_UP;
+      p.vx += kx;
+      p.vy += ky;
       p.angleVel += (Math.random() - 0.5) * KNOCK_SPIN_DEG;
       p.loose = true;
       p.looseTimer = LOOSE_MIN_SEC;
+      impx += kx;
+      impy += ky;
+      cnt++;
+    }
+    if (cnt > 0) {
+      this.vx += (ANCHOR_TRAIL_FRAC * impx) / cnt;
+      this.vy += (ANCHOR_TRAIL_FRAC * impy) / cnt;
     }
   }
 
@@ -1065,6 +1532,10 @@ export class Possessed implements CombatEnemy {
     return Math.max(0, this.hp);
   }
 
+  getMaxHealth(): number {
+    return this.maxHp;
+  }
+
   isDead(): boolean {
     return this.deathTimer >= DEATH_REWARD_DELAY_SEC;
   }
@@ -1078,6 +1549,7 @@ export class Possessed implements CombatEnemy {
   }
 
   isInCombatHitstun(): boolean {
+    // Java: whole reeling window (hitstun + knockback contact disable).
     return this.hitstun > 0 || this.knockbackContactTimer > 0;
   }
 
@@ -1086,16 +1558,89 @@ export class Possessed implements CombatEnemy {
     return this.facingRight ? -1 : 1;
   }
 
-  flashVisible(): boolean {
-    if (this.hitstun > 0) return false;
-    return this.flash > 0 && Math.floor(this.flash * 30) % 2 === 0;
+  /** Remaining hurt-fade tint seconds (Java getHurtTint). */
+  getHurtTint(): number {
+    return this.hurtTintRemaining;
   }
 
-  hitlagSolidRed(): boolean {
-    return this.hitstun > 0 && this.hp > 0;
+  hurtTintAlpha(): number {
+    if (this.hurtTintRemaining <= 0) return 0;
+    return Math.round(HURT_TINT_PEAK_ALPHA * (this.hurtTintRemaining / HURT_TINT_SEC));
+  }
+
+  /** True while freeze frames remain (Java hitstunSolidRed). */
+  hitstunSolidRed(): boolean {
+    return this.hitlagSolidRed && this.hitstun > 0 && this.hp > 0;
   }
 
   blocksRoomClear(): boolean {
     return !this.isDead();
   }
+
+  attackBlockedByShield(_attack: Aabb): boolean {
+    return false;
+  }
+
+  applyShieldBlockStrike(_strike: WeaponStrike): void {}
+}
+
+/** Palette index 0..3 from wind-up progress (ends on white right before the nova fires). */
+function novaChargePaletteIndex(progress: number): number {
+  if (progress >= 0.92) return NOVA_SPRITE_PALETTE.length - 1;
+  return Math.min(
+    NOVA_SPRITE_PALETTE.length - 1,
+    Math.floor(progress * NOVA_SPRITE_PALETTE.length),
+  );
+}
+
+function novaChargePaletteRgb(progress: number): number {
+  return NOVA_SPRITE_PALETTE[novaChargePaletteIndex(progress)]!;
+}
+
+/** Mirror + rotate texture-local hull about pivot into world (Java transformHull). */
+function transformHull(
+  local: ReadonlyArray<number>,
+  pivotX: number,
+  pivotY: number,
+  cx: number,
+  cy: number,
+  angleDeg: number,
+  m: number,
+): number[] {
+  const a = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  const out: number[] = new Array(local.length);
+  for (let i = 0; i < local.length; i += 2) {
+    const lx = (local[i]! - pivotX) * m;
+    const ly = local[i + 1]! - pivotY;
+    const rx = lx * cos - ly * sin;
+    const ry = lx * sin + ly * cos;
+    out[i] = cx + rx;
+    out[i + 1] = cy + ry;
+  }
+  return out;
+}
+
+/** Quantize angle so farthest pixel advances in whole-world-pixel steps (Java snapAngleToPixels). */
+function snapAngleToPixels(
+  angleRad: number,
+  frameW: number,
+  frameH: number,
+  pivotX: number,
+  pivotY: number,
+): number {
+  let r = 0;
+  const corners: Array<[number, number]> = [
+    [0, 0],
+    [frameW, 0],
+    [0, frameH],
+    [frameW, frameH],
+  ];
+  for (const c of corners) {
+    r = Math.max(r, Math.hypot(c[0] - pivotX, c[1] - pivotY));
+  }
+  if (r < 1e-6) return angleRad;
+  const step = 1 / r;
+  return Math.round(angleRad / step) * step;
 }

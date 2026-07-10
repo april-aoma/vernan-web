@@ -9,6 +9,7 @@ import {
 } from "../entity/ShopKeeper";
 import type { WorldCamera } from "../camera/WorldCamera";
 import { aabbOverlap } from "../combat/CombatMath";
+import type { ItemPickupHost } from "../item/effect/ItemPickupHost";
 import { JavaRandom } from "../util/JavaRandom";
 import { javaShuffle } from "../util/javaCollections";
 import { CAMERA_ZOOM, TILE_SIZE } from "../specs";
@@ -112,6 +113,7 @@ export function tryBuyShopPedestal(
   session: RoomSession,
   player: Player,
   upPressed: boolean,
+  host: ItemPickupHost,
 ): ShopBuyResult | null {
   if (!upPressed) return null;
   const node = session.dungeon.layout.room(session.roomId);
@@ -132,7 +134,7 @@ export function tryBuyShopPedestal(
 
     player.stats.money -= price;
     const id = p.itemId;
-    player.collectItem(id, session.catalog);
+    player.collectItem(id, session.catalog, host);
     session.decks.markAcquired(id);
     p.collected = true;
     return { itemId: id, price };

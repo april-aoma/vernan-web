@@ -1,5 +1,7 @@
 import type { ItemCatalog } from "../item/ItemCatalog";
 import type { PlayerItemInventory } from "../item/PlayerItemInventory";
+import { ItemEffects } from "../item/effect/ItemEffects";
+import { KaleidoscopeEyeState } from "../item/effect/kaleidoscope/KaleidoscopeEyeState";
 import {
   ATTACK_ACTIVE_FRAMES,
   ATTACK_DAMAGE,
@@ -22,6 +24,15 @@ import {
 } from "../config/Physics";
 import { FIXED_STEP_HZ } from "../specs";
 
+/** Rolled once when MYSTERY_GIFT is picked up (Java PlayerStats.MysteryGiftRoll). */
+export enum MysteryGiftRoll {
+  NONE = 0,
+  DAMAGE = 1,
+  WINDUP = 2,
+  JUMPSQUAT = 3,
+  LUCK = 4,
+}
+
 /**
  * Mutable Vernan stats (Java PlayerStats subset + applyItemPassives).
  */
@@ -43,10 +54,28 @@ export class PlayerStats {
   attackRecoverEarlyFrames = ATTACK_RECOVER_EARLY_FRAMES;
   attackRecoverLateFrames = ATTACK_RECOVER_LATE_FRAMES;
   damageMultiplierBonus = 0;
+  luck = 0;
   /** Coins (Java PlayerStats.money). Stub start value set at run boot until coin drops exist. */
   money = 0;
   /** Keys (Java PlayerStats.keys). */
   keys = 0;
+
+  mysteryGiftRoll = MysteryGiftRoll.NONE;
+  /** PLUG: temporary damage bonus after landing. */
+  plugDamageBonus = 0;
+  plugBonusFramesRemaining = 0;
+  /** LEOTARD: cumulative damage bonus from taking hits. */
+  leotardDamageBonus = 0;
+  /** SKIRT: averaged ground accel/brake/friction baseline set at pickup (0 = unset). */
+  skirtGroundTraction = 0;
+  /** IRON_LUNG: room clears toward the next bonus soul heart. */
+  ironLungRoomsCleared = 0;
+  /** KALEIDOSCOPE_EYE: 1.0 = default gravity; lower = weaker fall. */
+  kaleidoscopeGravityMult = 1;
+  /** SHY_MASK: 1.0 = default gravity; higher = heavier fall. */
+  shyMaskGravityMult = 1;
+  shyMaskStacks = 0;
+  readonly kaleidoscopeEye = new KaleidoscopeEyeState();
 
   get attackRecoverFrames(): number {
     return this.attackRecoverEarlyFrames + this.attackRecoverLateFrames;
@@ -69,6 +98,10 @@ export class PlayerStats {
     this.attackRecoverEarlyFrames = ATTACK_RECOVER_EARLY_FRAMES;
     this.attackRecoverLateFrames = ATTACK_RECOVER_LATE_FRAMES;
     this.damageMultiplierBonus = 0;
+    this.luck = 0;
+    this.kaleidoscopeGravityMult = 1;
+    this.shyMaskGravityMult = 1;
+    this.shyMaskStacks = 0;
 
     let groundFrictionFramesBonus = 0;
     let groundAccelFramesBonus = 0;
@@ -80,6 +113,7 @@ export class PlayerStats {
       if (def.subweapon) continue;
       const s = inv.stacksOf(id);
       this.attackDamage += s * def.damageBonusPerStack;
+      this.luck += s * def.luckPerStack;
       this.maxGroundSpeed += s * def.groundSpeedBonusPerStack;
       this.maxAirSpeed += s * def.airSpeedBonusPerStack;
       this.climbSpeed += s * def.climbSpeedBonusPerStack;
@@ -106,17 +140,26 @@ export class PlayerStats {
     // Heart containers: +2 HP units per redMaxBonus stack (Java syncHealthCapFromItems).
     this.maxHealth = MAX_HEALTH + redMaxBonus * 2;
 
-    const baseFrictionFrames = (MAX_GROUND_SPEED * FIXED_STEP_HZ) / GROUND_FRICTION;
-    const baseAccelFrames = (MAX_GROUND_SPEED * FIXED_STEP_HZ) / GROUND_ACCEL;
-    const baseBrakeFrames = (MAX_GROUND_SPEED * FIXED_STEP_HZ) / GROUND_BRAKE;
+    let groundFrictionBaseFrames = (MAX_GROUND_SPEED * FIXED_STEP_HZ) / GROUND_FRICTION;
+    let groundAccelBaseFrames = (MAX_GROUND_SPEED * FIXED_STEP_HZ) / GROUND_ACCEL;
+    let groundBrakeBaseFrames = (MAX_GROUND_SPEED * FIXED_STEP_HZ) / GROUND_BRAKE;
+    if (inv.stacksOf("SKIRT") > 0 && this.skirtGroundTraction > 0) {
+      const skirtBaseFrames =
+        (this.maxGroundSpeed * FIXED_STEP_HZ) / this.skirtGroundTraction;
+      groundFrictionBaseFrames = skirtBaseFrames;
+      groundAccelBaseFrames = skirtBaseFrames;
+      groundBrakeBaseFrames = skirtBaseFrames;
+    }
     this.groundFriction =
       (this.maxGroundSpeed * FIXED_STEP_HZ) /
-      Math.max(1, baseFrictionFrames + groundFrictionFramesBonus);
+      Math.max(1, groundFrictionBaseFrames + groundFrictionFramesBonus);
     this.groundAccel =
       (this.maxGroundSpeed * FIXED_STEP_HZ) /
-      Math.max(1, baseAccelFrames + groundAccelFramesBonus);
+      Math.max(1, groundAccelBaseFrames + groundAccelFramesBonus);
     this.groundBrake =
       (this.maxGroundSpeed * FIXED_STEP_HZ) /
-      Math.max(1, baseBrakeFrames + groundBrakeFramesBonus);
+      Math.max(1, groundBrakeBaseFrames + groundBrakeFramesBonus);
+
+    ItemEffects.contributeStats(inv, this);
   }
 }

@@ -36,7 +36,7 @@ export function drawStripFrame(
   const dy = camera.worldToDeviceY(worldTop);
   const dw = Math.floor(CAMERA_ZOOM * strip.frameW);
   const dh = Math.floor(CAMERA_ZOOM * strip.frameH);
-  if (juice && (juice.solidRed || (juice.hurtTintAlpha ?? 0) > 0 || juice.shakeX || juice.shakeY || (juice.scaleX ?? 1) !== 1 || (juice.scaleY ?? 1) !== 1)) {
+  if (juice && (juice.solidRed || (juice.hurtTintAlpha ?? 0) > 0 || juice.tintRgb != null || juice.shakeX || juice.shakeY || (juice.scaleX ?? 1) !== 1 || (juice.scaleY ?? 1) !== 1)) {
     drawJuicedImage(
       g,
       strip.image,
@@ -128,7 +128,7 @@ export function drawFeetPinnedImage(
   const dy = camera.worldToDeviceY(top);
   const dw = Math.floor(CAMERA_ZOOM * image.width);
   const dh = Math.floor(CAMERA_ZOOM * image.height);
-  if (juice && (juice.solidRed || (juice.hurtTintAlpha ?? 0) > 0 || juice.shakeX || juice.shakeY || (juice.scaleX ?? 1) !== 1 || (juice.scaleY ?? 1) !== 1)) {
+  if (juice && (juice.solidRed || (juice.hurtTintAlpha ?? 0) > 0 || juice.tintRgb != null || juice.shakeX || juice.shakeY || (juice.scaleX ?? 1) !== 1 || (juice.scaleY ?? 1) !== 1)) {
     drawJuicedImage(
       g,
       image,

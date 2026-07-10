@@ -378,7 +378,7 @@ export function syncGroundYAlongRunway(
 }
 
 /**
- * Bottom-up play-floor row per column (Java RoomGenerator.groundYFromMap subset:
+ * Bottom-up play-floor row per column (Java RoomGenerator.groundYFromMap:
  * SOLID / PLATFORM with empty-ish above).
  */
 export function groundYFromMap(map: TileMap): number[] {
@@ -397,6 +397,42 @@ export function groundYFromMap(map: TileMap): number[] {
   return groundY;
 }
 
+/**
+ * Topmost walkable floor in column tx (mesa lip / arena deck).
+ * Used to strip H in pits below the lip — not groundYFromMap bottom-up (pit floor).
+ */
+export function arenaLipRowAt(map: TileMap, tx: number): number {
+  const w = map.getWidth();
+  const h = map.getHeight();
+  const x = Math.max(1, Math.min(tx, w - 2));
+  for (let y = 1; y < h - 1; y++) {
+    if (isFloorSurface(map, x, y)) return y;
+  }
+  const groundY = groundYFromMap(map);
+  return flankPlayFloorRowFromGroundY(groundY, x);
+}
+
+/** Grid-phase counterpart to arenaLipRowAt. */
+export function arenaLipRowOnGrid(
+  grid: string[][],
+  w: number,
+  h: number,
+  tx: number,
+  groundY: number[],
+): number {
+  const x = Math.max(1, Math.min(tx, w - 2));
+  for (let y = 1; y < h - 1; y++) {
+    if (isFloorSurfaceOnGrid(grid, h, x, y)) return y;
+  }
+  return flankPlayFloorRowFromGroundY(groundY, x);
+}
+
+function flankPlayFloorRowFromGroundY(groundY: number[], flankTx: number): number {
+  if (groundY.length === 0) return 1;
+  const col = Math.max(1, Math.min(flankTx, groundY.length - 2));
+  return groundY[col]!;
+}
+
 function isFloorSurface(map: TileMap, x: number, y: number): boolean {
   const t = map.tileAt(x, y);
   if (t !== TILE_SOLID && t !== TILE_PLATFORM) return false;
@@ -404,16 +440,37 @@ function isFloorSurface(map: TileMap, x: number, y: number): boolean {
   const above = map.tileAt(x, y - 1);
   return (
     above === TILE_EMPTY ||
-    above === TILE_LADDER ||
     above === TILE_DOOR ||
-    above === TILE_BREAKABLE
+    above === TILE_LADDER ||
+    above === TILE_BREAKABLE ||
+    above === TILE_PLATFORM
   );
+}
+
+function isFloorSurfaceOnGrid(grid: string[][], h: number, x: number, y: number): boolean {
+  if (y < 1 || y >= h - 1) return false;
+  const c = grid[y]![x];
+  if (c !== "#" && c !== "-") return false;
+  if (c === "-" && hasArenaFloorBelowOnGrid(grid, h, x, y)) return false;
+  const above = grid[y - 1]![x];
+  return above === "." || above === "D" || above === "H" || above === "B" || above === "-";
 }
 
 function hasArenaFloorBelow(map: TileMap, x: number, y: number): boolean {
   const h = map.getHeight();
-  for (let yy = y + 1; yy < h - 1; yy++) {
-    if (map.tileAt(x, yy) === TILE_SOLID) return true;
+  for (let below = y + 1; below < h - 1; below++) {
+    const bt = map.tileAt(x, below);
+    if (bt === TILE_SOLID || bt === TILE_BREAKABLE) return true;
+    if (bt !== TILE_EMPTY && bt !== TILE_LADDER) return false;
+  }
+  return false;
+}
+
+function hasArenaFloorBelowOnGrid(grid: string[][], h: number, x: number, y: number): boolean {
+  for (let below = y + 1; below < h - 1; below++) {
+    const bt = grid[below]![x];
+    if (bt === "#" || bt === "B") return true;
+    if (bt !== "." && bt !== "H") return false;
   }
   return false;
 }

@@ -24,9 +24,9 @@ export function pickBossForFloor(_floor: number, contentSeed: bigint): BossEntry
   return ENTRIES[i] ?? ENTRIES[0]!;
 }
 
-/** Phase 5a: always Possessed until other bosses are ported. */
-export function pickBossPhase5a(_floor: number, _contentSeed: bigint): BossEntry {
-  return ENTRIES[0]!;
+/** @deprecated Use pickBossForFloor — delegates for legacy call sites. */
+export function pickBossPhase5a(floor: number, contentSeed: bigint): BossEntry {
+  return pickBossForFloor(floor, contentSeed);
 }
 
 export function bossKindLabel(kind: BossKind): string {

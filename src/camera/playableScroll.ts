@@ -77,12 +77,16 @@ export function resolveCameraScrollBounds(
         mapW,
       );
 
-  // Java cameraAnchorMinY/MaxY: edge buffer on both sides of map scroll Y.
-  let minAy = halfViewH + edge + edge;
-  let maxAy = Math.max(halfViewH + edge, mapH - halfViewH - edge) - edge;
+  // Java cameraScrollBounds + cameraAnchorMinY/MaxY:
+  // raw scroll = [halfViewH, mapH - halfViewH], then ± EDGE_BUFFER.
+  // At minY the visible top is EDGE_BUFFER (8px) — half of the north barrier tile.
+  const rawMinAy = halfViewH;
+  const rawMaxAy = Math.max(halfViewH, mapH - halfViewH);
+  let minAy = rawMinAy + edge;
+  let maxAy = rawMaxAy - edge;
   if (minAy > maxAy) {
-    minAy = halfViewH + edge;
-    maxAy = Math.max(halfViewH + edge, mapH - halfViewH - edge);
+    minAy = rawMinAy;
+    maxAy = rawMaxAy;
   }
 
   return {

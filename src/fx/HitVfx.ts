@@ -9,9 +9,11 @@ export const HIT_VFX_FADE_FRAMES = 20;
 export const HIT_VFX_DRAW_SCALE = 1.2;
 export const HIT_VFX_FADE_ROTATION_RAD = Math.PI * 0.5;
 
-/** On-hit spark kinds we ship for Phase 3 sword (Java HitVfxKind subset). */
+/** On-hit spark kinds we ship for Phase 3+ sword (Java HitVfxKind subset). */
 export enum HitVfxKind {
   SLASH = "slash",
+  ELECTRIC = "electric",
+  SHIELD_BREAK = "shield_break",
   FALLBACK = "fallback",
 }
 
@@ -19,6 +21,10 @@ export function hitVfxSpriteFile(kind: HitVfxKind): string {
   switch (kind) {
     case HitVfxKind.SLASH:
       return "hit slash.png";
+    case HitVfxKind.ELECTRIC:
+      return "hit electric.png";
+    case HitVfxKind.SHIELD_BREAK:
+      return "hit shield break.png";
     case HitVfxKind.FALLBACK:
       return "hit fallback.png";
   }

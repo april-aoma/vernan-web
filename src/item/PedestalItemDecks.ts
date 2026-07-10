@@ -5,6 +5,7 @@ import type { ItemCatalog } from "./ItemCatalog";
 const SALT_ITEM_ROOM = 0x1743505314dan;
 const SALT_BOSS_CLEAR = 0x8055c1ea4n;
 const SALT_SHOP = 0x51040ac7beef5babn;
+const SALT_SECRET = 0x5ec401d00d5n;
 
 /**
  * Seeded no-repeat decks (Java PedestalItemDecks subset).
@@ -13,9 +14,11 @@ export class PedestalItemDecks {
   private readonly itemRng: JavaRandom;
   private readonly bossRng: JavaRandom;
   private readonly shopRng: JavaRandom;
+  private readonly secretRng: JavaRandom;
   private itemQueue: string[] = [];
   private bossQueue: string[] = [];
   private shopQueue: string[] = [];
+  private secretQueue: string[] = [];
   private readonly acquired = new Set<string>();
   private readonly placedThisLevel = new Set<string>();
 
@@ -26,9 +29,11 @@ export class PedestalItemDecks {
     this.itemRng = new JavaRandom(runSeed ^ SALT_ITEM_ROOM);
     this.bossRng = new JavaRandom(runSeed ^ SALT_BOSS_CLEAR);
     this.shopRng = new JavaRandom(runSeed ^ SALT_SHOP);
+    this.secretRng = new JavaRandom(runSeed ^ SALT_SECRET);
     this.rebuildItemQueue();
     this.rebuildBossQueue();
     this.rebuildShopQueue();
+    this.rebuildSecretQueue();
   }
 
   markAcquired(id: string): void {
@@ -37,6 +42,7 @@ export class PedestalItemDecks {
     this.itemQueue = this.itemQueue.filter((x) => x !== id);
     this.bossQueue = this.bossQueue.filter((x) => x !== id);
     this.shopQueue = this.shopQueue.filter((x) => x !== id);
+    this.secretQueue = this.secretQueue.filter((x) => x !== id);
   }
 
   /**
@@ -53,6 +59,7 @@ export class PedestalItemDecks {
     this.rebuildItemQueue();
     this.rebuildBossQueue();
     this.rebuildShopQueue();
+    this.rebuildSecretQueue();
   }
 
   drawItemRoom(): string {
@@ -65,6 +72,10 @@ export class PedestalItemDecks {
 
   drawShop(): string {
     return this.drawFrom(this.shopQueue, () => this.rebuildShopQueue());
+  }
+
+  drawSecret(): string {
+    return this.drawFrom(this.secretQueue, () => this.rebuildSecretQueue());
   }
 
   private drawFrom(queue: string[], rebuild: () => void): string {
@@ -100,5 +111,11 @@ export class PedestalItemDecks {
     const pool = this.catalog.shopEligible().filter((id) => !this.acquired.has(id));
     javaShuffle(pool, this.shopRng);
     this.shopQueue = pool;
+  }
+
+  private rebuildSecretQueue(): void {
+    const pool = this.catalog.secretEligible().filter((id) => !this.acquired.has(id));
+    javaShuffle(pool, this.secretRng);
+    this.secretQueue = pool;
   }
 }

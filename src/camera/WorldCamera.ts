@@ -109,13 +109,21 @@ export class WorldCamera {
     const mapW = map.getWidth() * 16;
     const mapH = map.getHeight() * 16;
     const edge = CAMERA_EDGE_BUFFER_WORLD;
+    const rawMinAy = halfViewH;
+    const rawMaxAy = Math.max(halfViewH, mapH - halfViewH);
+    let minAy = rawMinAy + edge;
+    let maxAy = rawMaxAy - edge;
+    if (minAy > maxAy) {
+      minAy = rawMinAy;
+      maxAy = rawMaxAy;
+    }
     return {
       halfViewW,
       halfViewH,
       minAnchorX: halfViewW,
       maxAnchorX: Math.max(halfViewW, mapW - halfViewW),
-      minAnchorY: halfViewH + edge,
-      maxAnchorY: Math.max(halfViewH + edge, mapH - halfViewH - edge),
+      minAnchorY: minAy,
+      maxAnchorY: maxAy,
       edgeBufferWorld: edge,
     };
   }

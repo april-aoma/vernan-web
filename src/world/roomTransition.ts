@@ -1,16 +1,24 @@
 import type { Player } from "../entity/Player";
 import type { Input } from "../input/Input";
 import { Crawler } from "../entity/Crawler";
+import { GoldenRoach } from "../entity/GoldenRoach";
+import { Mouse } from "../entity/Mouse";
+import { Penisman } from "../entity/Penisman";
 import { Possessed } from "../entity/Possessed";
+import { Nephilim } from "../entity/Nephilim";
 import type { CombatEnemy } from "../entity/CombatEnemy";
 import type { ShopKeeper } from "../entity/ShopKeeper";
 import { aabbOverlap } from "../combat/CombatMath";
 import { CLIMB_ANIM_FPS, VERNAN_CLIMB_FRAMES } from "../config/AnimStats";
 import type { ItemCatalog } from "../item/ItemCatalog";
 import type { PedestalItemDecks } from "../item/PedestalItemDecks";
+import { ItemEffects } from "../item/effect/ItemEffects";
+import type { ItemPickupHost } from "../item/effect/ItemPickupHost";
+import type { BrickChunk } from "../fx/BrickChunk";
 import { CAMERA_ZOOM, FIXED_DT, HUD_HEIGHT, INTERNAL_HEIGHT, TILE_SIZE } from "../specs";
 import type { WorldCamera } from "../camera/WorldCamera";
 import { buildDungeon, type BuiltDungeon } from "./buildDungeon";
+import { clustersForRoom } from "./EnemySpawnBudget";
 import {
   makeItemPedestal,
   pedestalItemAabb,
@@ -60,6 +68,7 @@ import {
   type KeyblockTickState,
 } from "./KeyblockTick";
 import { onRoomEntered } from "./SecretEntrancePlacer";
+import { resolvedLadderRunwayRowAt } from "./VerticalSeamGeometry";
 
 export enum SpawnKind {
   INITIAL = 0,
@@ -101,6 +110,8 @@ export type RoomSession = {
   timeSec: number;
   lastPickupName: string | null;
   lastPickupTimer: number;
+  /** Per-room brick debris persistence (Java roomPersistedBrickChunks). */
+  roomPersistedBrickChunks: (BrickChunk[] | null)[];
 };
 
 export function createSession(
@@ -128,7 +139,23 @@ export function createSession(
     timeSec: 0,
     lastPickupName: null,
     lastPickupTimer: 0,
+    roomPersistedBrickChunks: new Array(n).fill(null),
   };
+}
+
+export function persistRoomBrickChunks(
+  session: RoomSession,
+  fromRoomId: number,
+  chunks: BrickChunk[],
+): void {
+  if (fromRoomId < 0 || fromRoomId >= session.roomPersistedBrickChunks.length) return;
+  session.roomPersistedBrickChunks[fromRoomId] = [...chunks];
+}
+
+export function loadRoomBrickChunks(session: RoomSession, roomId: number): BrickChunk[] {
+  if (roomId < 0 || roomId >= session.roomPersistedBrickChunks.length) return [];
+  const saved = session.roomPersistedBrickChunks[roomId];
+  return saved ? [...saved] : [];
 }
 
 /** Rebuild session arrays for a new floor dungeon (keeps decks / catalog). */
@@ -148,6 +175,7 @@ export function rebindSessionToDungeon(session: RoomSession, dungeon: BuiltDunge
   session.transition = createRoomTransitionState();
   session.keyblocks = createKeyblockTickState(dungeon.roomKeyblockSeals, n);
   session.decks.beginDungeonLevel();
+  session.roomPersistedBrickChunks = new Array(n).fill(null);
 }
 
 export function applyRoomAndSpawn(
@@ -200,7 +228,11 @@ function resolvePedestal(
   const p = g.itemPedestal;
   if (!p || p.collected) return;
   if (p.itemId == null) {
-    p.itemId = session.decks.drawItemRoom();
+    const kind = session.dungeon.layout.room(session.roomId).kind;
+    p.itemId =
+      kind === RoomKind.SECRET || kind === RoomKind.SUPER_SECRET
+        ? session.decks.drawSecret()
+        : session.decks.drawItemRoom();
   }
 }
 
@@ -211,13 +243,25 @@ function spawnEnemiesForRoom(session: RoomSession): CombatEnemy[] {
     return [];
   }
   const g = session.dungeon.rooms[roomId]!;
+  const node = session.dungeon.layout.room(roomId);
+  const clusters = clustersForRoom(g, node.contentSeed);
   const out: CombatEnemy[] = [];
   for (const s of g.enemySpawns) {
     if (s.countsForRoomClear) session.roomSpawnEnemyCount++;
     if (s.kind === "crawler") {
       out.push(new Crawler(s.xPx, s.yPx, s.maxHealth));
+    } else if (s.kind === "mouse") {
+      out.push(new Mouse(s.xPx, s.yPx, s.maxHealth));
+    } else if (s.kind === "penisman") {
+      out.push(new Penisman(s.xPx, s.yPx, s.maxHealth));
+    } else if (s.kind === "golden_roach") {
+      out.push(new GoldenRoach(s.xPx, s.yPx, s.maxHealth, clusters));
     } else if (s.kind === "possessed") {
       const boss = new Possessed(s.xPx, s.yPx, s.maxHealth, s.variantId);
+      boss.bindRoom(g.map);
+      out.push(boss);
+    } else if (s.kind === "nephilim") {
+      const boss = new Nephilim(s.xPx, s.yPx, s.maxHealth);
       boss.bindRoom(g.map);
       out.push(boss);
     }
@@ -314,6 +358,7 @@ export function tryProcessRoomClear(session: RoomSession, player: Player): void 
   }
   if (session.roomSpawnEnemyCount <= 0) return;
   session.roomCombatCleared[roomId] = true;
+  ItemEffects.onRoomCleared({ player }, player.inventory);
   tryGrantBossRoomClearLoot(session, player);
 }
 
@@ -392,7 +437,11 @@ export function activePedestal(session: RoomSession): ItemPedestal | null {
  * Touch-collect free pedestal (ITEM room or boss clear).
  * @returns collected item id, or null.
  */
-export function tryCollectPedestal(session: RoomSession, player: Player): string | null {
+export function tryCollectPedestal(
+  session: RoomSession,
+  player: Player,
+  host: ItemPickupHost,
+): string | null {
   const p = activePedestal(session);
   if (!p || p.collected || !p.itemId) return null;
   const itemBox = pedestalItemAabb(p, session.timeSec);
@@ -400,7 +449,7 @@ export function tryCollectPedestal(session: RoomSession, player: Player): string
   if (!aabbOverlap(player.hurtbox(), itemBox)) return null;
 
   const id = p.itemId;
-  player.collectItem(id, session.catalog);
+  player.collectItem(id, session.catalog, host);
   session.decks.markAcquired(id);
   p.collected = true;
   return id;
@@ -612,8 +661,9 @@ function northLadderSeamOpenAtTop(g: GeneratedRoom, L: number): boolean {
 
 function southLadderMouthAllowsTransition(g: GeneratedRoom, L: number): boolean {
   const h = g.map.getHeight();
-  const mouthRow = Math.max(1, Math.min(g.groundY[L] ?? h - 2, h - 2));
-  const t = g.map.tileAt(L, mouthRow);
+  const runwayRow = resolvedLadderRunwayRowAt(g.map, L, true);
+  if (runwayRow < 1 || runwayRow >= h - 1) return false;
+  const t = g.map.tileAt(L, runwayRow);
   return (
     t !== TILE_SOLID &&
     t !== TILE_BREAKABLE &&
