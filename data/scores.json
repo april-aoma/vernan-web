@@ -7,6 +7,7 @@
     "coins": 30,
     "enemiesKilled": 0,
     "durationSec": 1.1333333333333342,
+    "itemIds": [],
     "createdAt": "2026-07-10T18:52:30Z"
   }
 ]

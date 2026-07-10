@@ -5,6 +5,8 @@ export type RunSummary = {
   coins: number;
   enemiesKilled: number;
   durationSec: number;
+  /** Item ids obtained during the run (inventory at submit). */
+  itemIds: string[];
 };
 
 /** Persisted leaderboard row. */

@@ -1,3 +1,5 @@
+import { renderCostumeIdleIcon } from "./costumeIdleIcon";
+import { loadCostumeLayers } from "../ranking/costumeResolve";
 import {
   formatUtcTimestamp,
   listScores,
@@ -37,7 +39,7 @@ function rungHtml(): string {
   return `<div class="ladder-rung" aria-hidden="true"><span class="rail"></span><span class="bar"></span><span class="rail"></span></div>`;
 }
 
-function renderLadder(rows: ScoreEntry[]): string {
+function renderLadderSkeleton(rows: ScoreEntry[]): string {
   if (rows.length === 0) {
     return `${rungHtml()}
       <div class="ladder-bay" role="listitem">
@@ -54,7 +56,7 @@ function renderLadder(rows: ScoreEntry[]): string {
     const rank = i + 1;
     const delay = Math.min(i, 12) * 0.05;
     parts.push(`
-      <div class="ladder-bay ${placeClass(rank)}" role="listitem">
+      <div class="ladder-bay ${placeClass(rank)}" role="listitem" data-score-id="${escapeHtml(r.id)}">
         <span class="rail" aria-hidden="true"></span>
         <div class="score" style="animation-delay: ${delay}s">
           <span class="rank">#${rank}</span>
@@ -66,6 +68,9 @@ function renderLadder(rows: ScoreEntry[]): string {
             <span class="stat seed">Seed <a href="${playUrlForSeed(r.seed)}" title="Replay this seed">${r.seed}</a></span>
           </div>
           <span class="time">${escapeHtml(formatUtcTimestamp(r.createdAt))}</span>
+          <div class="costume" title="Costume">
+            <img class="costume-icon" data-costume-for="${escapeHtml(r.id)}" alt="" width="40" height="40" />
+          </div>
         </div>
         <span class="rail" aria-hidden="true"></span>
       </div>
@@ -74,6 +79,28 @@ function renderLadder(rows: ScoreEntry[]): string {
   });
 
   return parts.join("");
+}
+
+async function fillCostumeIcons(rows: ScoreEntry[]): Promise<void> {
+  if (rows.length === 0) return;
+  const layers = await loadCostumeLayers();
+
+  const titleIcon = document.querySelector<HTMLImageElement>(".title-icon");
+  if (titleIcon) {
+    titleIcon.src = await renderCostumeIdleIcon(rows[0]!.itemIds ?? [], layers, 48);
+    titleIcon.alt = `${rows[0]!.playerName} costume`;
+  }
+
+  await Promise.all(
+    rows.map(async (r) => {
+      const img = document.querySelector<HTMLImageElement>(
+        `img[data-costume-for="${CSS.escape(r.id)}"]`,
+      );
+      if (!img) return;
+      img.src = await renderCostumeIdleIcon(r.itemIds ?? [], layers, 40);
+      img.alt = r.itemIds?.length ? "Run costume" : "Default Vernan";
+    }),
+  );
 }
 
 async function main(): Promise<void> {
@@ -96,7 +123,8 @@ async function main(): Promise<void> {
 
   try {
     const rows = await listScores(50);
-    ladder.innerHTML = renderLadder(rows);
+    ladder.innerHTML = renderLadderSkeleton(rows);
+    await fillCostumeIcons(rows);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed to load scores";
     ladder.innerHTML = `${rungHtml()}

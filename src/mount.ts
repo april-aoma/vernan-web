@@ -609,6 +609,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       coins: player.stats.money,
       enemiesKilled: enemiesKilledThisRun,
       durationSec: session?.timeSec ?? 0,
+      itemIds: player.inventory.ownedIds(),
     };
   }
 

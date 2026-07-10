@@ -163,24 +163,50 @@
 
       .score {
         display: grid;
-        grid-template-columns: 2.2rem 1fr;
-        gap: 0.15rem 0.85rem;
+        grid-template-columns: 2.2rem minmax(0, 1fr) auto;
+        grid-template-areas:
+          "rank main costume"
+          "rank time costume";
+        gap: 0.1rem 0.75rem;
         align-items: center;
         padding: 0.4rem 0.75rem;
         animation: bay-in 0.4s ease-out both;
       }
 
+      .rank {
+        grid-area: rank;
+        font-weight: 700;
+        color: var(--faint);
+        font-size: 0.95rem;
+      }
+
       .score-main {
+        grid-area: main;
         display: flex;
         flex-wrap: wrap;
         gap: 0.25rem 1rem;
         align-items: baseline;
       }
 
-      .rank {
-        font-weight: 700;
+      .time {
+        grid-area: time;
+        font-size: 0.68rem;
         color: var(--faint);
-        font-size: 0.95rem;
+      }
+
+      .costume {
+        grid-area: costume;
+        display: grid;
+        place-items: center;
+        width: 40px;
+        height: 40px;
+      }
+
+      .costume-icon {
+        width: 40px;
+        height: 40px;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
       }
 
       .place-1 .rank {
@@ -217,12 +243,6 @@
 
       .seed a:hover {
         text-decoration: underline;
-      }
-
-      .time {
-        grid-column: 2;
-        font-size: 0.68rem;
-        color: var(--faint);
       }
 
       /* One thin rung between players (not the double-bar tile). */
@@ -280,13 +300,19 @@
 
       @media (max-width: 520px) {
         .score {
-          grid-template-columns: 1.8rem 1fr;
-          gap: 0.15rem 0.5rem;
+          grid-template-columns: 1.8rem minmax(0, 1fr) auto;
+          gap: 0.1rem 0.45rem;
           padding: 0.35rem 0.5rem;
         }
 
         .stat {
           font-size: 0.72rem;
+        }
+
+        .costume,
+        .costume-icon {
+          width: 32px;
+          height: 32px;
         }
 
         .ladder-bay,
@@ -315,7 +341,7 @@
     <div class="title-row">
       <img
         class="title-icon"
-        src="./assets/ui/vernan-headband.png"
+        src="./assets/sprites/vernan idle.png"
         width="48"
         height="48"
         alt=""

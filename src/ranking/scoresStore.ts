@@ -50,7 +50,7 @@ function readLocal(): ScoreEntry[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isScoreEntry);
+    return parseScoreList(parsed);
   } catch {
     return [];
   }
@@ -75,10 +75,16 @@ function isScoreEntry(v: unknown): v is ScoreEntry {
   );
 }
 
+function normalizeItemIds(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, 64);
+}
+
 function parseScoreList(data: unknown): ScoreEntry[] {
   if (!Array.isArray(data)) return [];
   return data.filter(isScoreEntry).map((e) => ({
     ...e,
+    itemIds: normalizeItemIds((e as ScoreEntry).itemIds),
     createdAt: formatUtcTimestamp(e.createdAt),
   }));
 }
@@ -148,6 +154,9 @@ function validateSummary(summary: RunSummary): void {
   if (summary.floorReached > 500 || summary.coins > 999_999 || summary.enemiesKilled > 99_999) {
     throw new Error("Score out of range");
   }
+  if (!Array.isArray(summary.itemIds) || summary.itemIds.length > 64) {
+    throw new Error("Invalid items");
+  }
 }
 
 function mergeById(...lists: ScoreEntry[][]): ScoreEntry[] {
@@ -206,6 +215,7 @@ export async function submitScore(
     coins: Math.floor(summary.coins),
     enemiesKilled: Math.floor(summary.enemiesKilled),
     durationSec: summary.durationSec,
+    itemIds: normalizeItemIds(summary.itemIds),
     createdAt: utcTimestampNow(),
   };
 
@@ -221,6 +231,7 @@ export async function submitScore(
         coins: entry.coins,
         enemiesKilled: entry.enemiesKilled,
         durationSec: entry.durationSec,
+        itemIds: entry.itemIds,
       }),
     });
     if (!res.ok) {
