@@ -4,14 +4,20 @@ import {
   applyContextThemeFlankBake,
   parseContextThemeRules,
 } from "./ContextThemeSubstitution";
+import {
+  evictDecoOverlappingPlacedProps,
+  placeProceduralPlacedProps,
+} from "./placeProceduralPlacedProps";
 import type { TilesetProject } from "./TilesetProject";
 import type { BuiltDungeon } from "../world/buildDungeon";
 import type { GeneratedRoom, RoomArtData } from "../world/RoomGenerator";
+import type { PlacedRoomObject } from "../world/PlacedRoomObject";
 
 /**
- * Attach biome + deco once tileset is loaded (and after floor ascend).
+ * Attach biome + deco + placed props once tileset is loaded (and after floor ascend).
  * Stamps after final terrain (seams/keyblocks already applied in buildDungeon).
- * Idempotent: skips re-stamp when art.decoStamps already present (regrounds only).
+ * Idempotent: skips re-stamp when art.decoStamps already present (regrounds only);
+ * still re-places props when pools are empty / missing so art stays consistent.
  */
 export function enrichDungeonArt(
   dungeon: BuiltDungeon,
@@ -50,7 +56,9 @@ export function enrichRoomArt(
       themeRules,
       tileAllowed,
     );
+    const placed = placeAndEvict(room, project, contentSeed, floorOrdinal, stamps);
     room.art.decoStamps = stamps;
+    room.art.placedRoomObjects = placed;
     room.art.biomeId = biome.biomeId;
     room.art.sheetId = biome.sheetId;
     room.art.bridge = biome.bridge;
@@ -75,13 +83,42 @@ export function enrichRoomArt(
     themeRules,
     tileAllowed,
   );
+  const placedRoomObjects = placeAndEvict(
+    room,
+    project,
+    contentSeed,
+    floorOrdinal,
+    decoStamps,
+  );
   const art: RoomArtData = {
     biomeId: biome.biomeId,
     sheetId: biome.sheetId,
     decoStamps,
+    placedRoomObjects,
     bridge: biome.bridge,
     contextThemeRules: themeRules,
   };
   room.art = art;
   return art;
+}
+
+function placeAndEvict(
+  room: GeneratedRoom,
+  project: TilesetProject,
+  contentSeed: bigint,
+  floorOrdinal: number,
+  decoStamps: Array<{ tx: number; ty: number }>,
+): PlacedRoomObject[] {
+  const placed = placeProceduralPlacedProps(
+    project,
+    room.map,
+    room.kind,
+    contentSeed,
+    room.ladderColumnTx,
+    floorOrdinal,
+  );
+  if (placed.length) {
+    evictDecoOverlappingPlacedProps(decoStamps, placed);
+  }
+  return placed;
 }
