@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.*
+
+# Runtime assets are synced from the Java pack — do not commit the full dump by default.
+public/assets/sprites/
+public/assets/data/
+public/assets/tiles/
+public/assets/tileset/
+public/assets/runtime-manifest.json
+!public/assets/.gitkeep

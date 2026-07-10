@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vernan (web)</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #0b0d10;
+        color: #d7dde5;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        gap: 16px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #9aa7b5;
+      }
+      #vernan-root {
+        outline: none;
+        touch-action: none;
+        overscroll-behavior: none;
+      }
+      #vernan-root canvas {
+        display: block;
+        touch-action: none;
+      }
+      #vernan-root:focus-visible {
+        box-shadow: 0 0 0 2px #6ec8ff;
+      }
+      .hint {
+        max-width: 40rem;
+        font-size: 0.8rem;
+        line-height: 1.45;
+        color: #7d8a98;
+        text-align: center;
+      }
+      code {
+        color: #b7c4d2;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Vernan</h1>
+    <div id="vernan-root" tabindex="0" aria-label="Vernan game"></div>
+    <p class="hint">
+      Click the canvas for keyboard focus. Move with arrows/WASD, jump Z/Space,
+      attack X, crouch Down, climb ladders with Up/Down. Stand in a door and press
+      Up/W to change rooms. F3 toggles debug. Seed via <code>?seed=12345</code>.
+    </p>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
