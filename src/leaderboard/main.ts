@@ -4,6 +4,7 @@ import {
   defaultSortDir,
   formatKills,
   itemCount,
+  KILLS_TIP,
   sortScores,
   TOTAL_SCORE_FORMULA,
   totalScore,
@@ -109,9 +110,9 @@ function renderHeader(active: SortKey, dir: SortDir): string {
         ${headerButton("rank", "#", active, dir, "col-rank")}
         ${headerButton("name", "Name", active, dir, "col-name")}
         ${headerButton("total", "Score", active, dir, "col-total", TOTAL_SCORE_FORMULA)}
-        ${headerButton("floor", "Fl", active, dir, "col-floor")}
-        ${headerButton("coins", "$", active, dir, "col-coins")}
-        ${headerButton("kills", "Kills", active, dir, "col-kills", "count / difficulty")}
+        ${headerButton("floor", "Floor", active, dir, "col-floor")}
+        ${headerButton("coins", "Coins", active, dir, "col-coins")}
+        ${headerButton("kills", "Kills", active, dir, "col-kills", KILLS_TIP)}
         ${headerButton("client", "Client", active, dir, "col-client")}
         ${headerButton("seed", "Seed", active, dir, "col-seed")}
         ${headerButton("time", "Time", active, dir, "col-time")}
@@ -139,7 +140,7 @@ function renderRow(r: ScoreEntry, rank: number, delay: number): string {
         ${cell("col-floor stat", `<strong>${r.floorReached}</strong>`, String(r.floorReached))}
         ${cell("col-coins stat", `<strong>${r.coins}</strong>`, String(r.coins))}
         ${cell("col-kills stat", `<strong>${formatKills(r)}</strong>`, formatKills(r), {
-          tipFormula: "kill count / kill difficulty",
+          tipFormula: KILLS_TIP,
         })}
         ${cell("col-client stat client", escapeHtml(client), client)}
         <span class="col-seed stat seed cell-copyable" title="${escapeHtml(seed)}" data-full="${escapeHtml(seed)}"><a href="${playUrlForSeed(r.seed)}">${escapeHtml(seed)}</a></span>

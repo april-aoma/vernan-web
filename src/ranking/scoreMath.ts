@@ -16,6 +16,9 @@ export function totalScore(
 
 export const TOTAL_SCORE_FORMULA = "(Floor×10) + (KillDiff×2) + Coins − Items";
 
+/** Hover tip for the kills column (`count/difficulty`). */
+export const KILLS_TIP = "enemies killed / total difficulty of enemies killed";
+
 /** Display kills as `count/difficulty`. */
 export function formatKills(
   e: Pick<ScoreEntry, "enemiesKilled" | "enemiesKillDifficulty">,
