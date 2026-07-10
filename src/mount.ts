@@ -72,9 +72,13 @@ import {
   type BottomHudSprites,
   type MiniMapState,
 } from "./ui/BottomHud";
-import { drawPauseMenu, drawPauseOverlay } from "./ui/PauseOverlay";
+import { drawPauseMenu, drawPauseOverlay, type PauseMenuHitRects } from "./ui/PauseOverlay";
+import { drawDeathOverlay, type DeathOverlayHitRects } from "./ui/DeathOverlay";
 import { hitTestRect } from "./ui/BottomHudLayout";
 import { HudEconomyDisplay } from "./ui/HudEconomy";
+import { openSubmitDialog } from "./ranking/SubmitDialog";
+import { submitScore } from "./ranking/scoresStore";
+import type { RunSummary } from "./ranking/types";
 import { BrickChunk } from "./fx/BrickChunk";
 import {
   drawBrickChunksFloatZBehindPlayer,
@@ -230,10 +234,14 @@ import type { SecretSeamOpenAnim } from "./world/SecretSeamOpenAnim";
 export type MountOptions = {
   assetBase?: string;
   seed?: number;
+  /** Called after a successful opt-in score submit (before navigating away). */
+  onScoreSubmitted?: (summary: RunSummary) => void;
 };
 
 export type VernanHandle = {
   readonly seed: number;
+  /** Current run snapshot (floor, coins, kills, seed). */
+  getRunSummary: () => RunSummary;
   destroy: () => void;
   focus: () => void;
 };
@@ -338,6 +346,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   const dungeon = buildDungeon(BigInt(seed), 1);
   let floorOrdinal = 1;
+  /** Mirrors Java GamePanel.enemiesKilledThisRun. */
+  let enemiesKilledThisRun = 0;
+  let submitDialogOpen = false;
+  let pauseSubmitPending = false;
+  let pauseMenuHits: PauseMenuHitRects = { submit: { x: 0, y: 0, w: 0, h: 0 } };
+  let deathMenuHits: DeathOverlayHitRects = { submit: { x: 0, y: 0, w: 0, h: 0 } };
   const player = new Player();
   player.stats.money = RUN_START_MONEY;
   const pickupOverlay = new ItemPickupOverlay();
@@ -512,6 +526,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   const itemBitmaps = new Map<string, ImageBitmap>();
 
   const onPausePointerDown = (e: PointerEvent): void => {
+    if (submitDialogOpen) return;
     const rect = fb.canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     const ix = ((e.clientX - rect.left) / rect.width) * INTERNAL_WIDTH;
@@ -520,9 +535,65 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     if (hitTestRect(ix, iy, pauseButtonRect(hudY0))) {
       e.preventDefault();
       pauseButtonTogglePending = true;
+      return;
+    }
+    if (paused && pauseMenuHits.submit.w > 0 && hitTestRect(ix, iy, pauseMenuHits.submit)) {
+      e.preventDefault();
+      pauseSubmitPending = true;
+      return;
+    }
+    if (
+      player.health.isDead &&
+      deathMenuHits.submit.w > 0 &&
+      hitTestRect(ix, iy, deathMenuHits.submit)
+    ) {
+      e.preventDefault();
+      pauseSubmitPending = true;
     }
   };
   fb.canvas.addEventListener("pointerdown", onPausePointerDown);
+
+  function currentRunSummary(): RunSummary {
+    return {
+      seed,
+      floorReached: floorOrdinal,
+      coins: player.stats.money,
+      enemiesKilled: enemiesKilledThisRun,
+      durationSec: session?.timeSec ?? 0,
+    };
+  }
+
+  async function beginSubmitAndQuit(): Promise<void> {
+    if (submitDialogOpen) return;
+    submitDialogOpen = true;
+    paused = true;
+    input.clearHardwareState();
+    try {
+      const summary = currentRunSummary();
+      const result = await openSubmitDialog(summary);
+      if (result.action !== "submit") return;
+      await submitScore(summary, result.playerName);
+      options.onScoreSubmitted?.(summary);
+      const leaderboardUrl = new URL("leaderboard.html", window.location.href);
+      // Preserve optional scoresApi query for remote boards.
+      try {
+        const api = new URLSearchParams(window.location.search).get("scoresApi");
+        if (api) leaderboardUrl.searchParams.set("scoresApi", api);
+      } catch {
+        /* ignore */
+      }
+      // Brief delay so the scores.json download is not cancelled by navigation.
+      await new Promise((r) => setTimeout(r, 400));
+      window.location.assign(leaderboardUrl.href);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Submit failed";
+      window.alert(msg);
+    } finally {
+      submitDialogOpen = false;
+      pauseSubmitPending = false;
+      input.clearHardwareState();
+    }
+  }
   let pedestalBmp: ImageBitmap | null = null;
   let shopKeeperFrames: ShopKeeperFrames | null = null;
   let killExplosionBmp: ImageBitmap | null = null;
@@ -974,6 +1045,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       // Java: Enter toggles pause (Esc web UX); HUD II button same. Clear hardware so Z/X don't stick.
       // Skip while dead or item-pickup overlay (Java !itemPickupOverlayActive).
       const wantPauseToggle =
+        !submitDialogOpen &&
         !player.health.isDead &&
         !pickupOverlay.isActive() &&
         (input.pauseTogglePressed || pauseButtonTogglePending);
@@ -983,6 +1055,16 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         input.clearHardwareState();
       }
 
+      if (
+        !submitDialogOpen &&
+        (input.submitRunPressed || pauseSubmitPending) &&
+        (paused || player.health.isDead)
+      ) {
+        pauseSubmitPending = false;
+        void beginSubmitAndQuit();
+        return;
+      }
+
       if (player.health.isDead) {
         paused = false;
       }
@@ -990,7 +1072,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       const map = currentMap(session);
 
       if (player.health.isDead) {
-        if (input.jumpPressed || input.attackPressed) {
+        if (!submitDialogOpen && (input.jumpPressed || input.attackPressed)) {
           player.health.max = player.stats.maxHealth;
           player.health.refill();
           applyRoomAndSpawn(session, session.roomId, SpawnKind.INITIAL, player);
@@ -1369,7 +1451,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       applyPossessedBulletHits(session, player);
       applyPenismanBulletHits(session, player);
       for (const e of session.enemies) maybeSpawnDeathFx(e);
-      session.enemies = session.enemies.filter((e) => !e.isDead());
+      session.enemies = session.enemies.filter((e) => {
+        if (!e.isDead()) return true;
+        enemiesKilledThisRun++;
+        return false;
+      });
       tryProcessRoomClear(session, player);
       tickTurnAnim(player);
     },
@@ -1606,7 +1692,16 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       // Java: pause overlay/menu before bottom HUD so the HUD band paints on top.
       if (paused) {
         drawPauseOverlay(g);
-        drawPauseMenu(g, player, session.catalog, itemBitmaps, hudSprites.swordPickup);
+        pauseMenuHits = drawPauseMenu(
+          g,
+          player,
+          session.catalog,
+          itemBitmaps,
+          hudSprites.swordPickup,
+          currentRunSummary(),
+        );
+      } else {
+        pauseMenuHits = { submit: { x: 0, y: 0, w: 0, h: 0 } };
       }
 
       drawBottomHud(
@@ -1634,11 +1729,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
 
       if (player.health.isDead) {
-        g.fillStyle = "rgba(0,0,0,0.45)";
-        g.fillRect(0, 0, INTERNAL_WIDTH, WORLD_VIEWPORT_H);
-        g.fillStyle = "#e8eef5";
-        g.font = "14px monospace";
-        g.fillText("YOU DIED — press Z/X to retry room", 100, WORLD_VIEWPORT_H * 0.5);
+        deathMenuHits = drawDeathOverlay(g, currentRunSummary());
+      } else {
+        deathMenuHits = { submit: { x: 0, y: 0, w: 0, h: 0 } };
       }
 
       if (pickupOverlay.isActive()) {
@@ -1768,6 +1861,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   return {
     seed,
+    getRunSummary: () => currentRunSummary(),
     destroy: () => {
       loop.stop();
       fb.canvas.removeEventListener("pointerdown", onPausePointerDown);

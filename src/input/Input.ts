@@ -250,6 +250,11 @@ export class Input {
   get pauseTogglePressed(): boolean {
     return this.wasPressed("Enter") || this.wasPressed("Escape");
   }
+
+  /** Opt-in submit & quit from the pause menu. */
+  get submitRunPressed(): boolean {
+    return this.wasPressed("KeyQ");
+  }
 }
 
 function shouldPrevent(code: string): boolean {
@@ -264,6 +269,7 @@ function shouldPrevent(code: string): boolean {
     code === "KeyS" ||
     code === "KeyD" ||
     code === "Enter" ||
-    code === "Escape"
+    code === "Escape" ||
+    code === "KeyQ"
   );
 }
