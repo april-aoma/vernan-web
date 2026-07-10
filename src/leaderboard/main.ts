@@ -1,6 +1,14 @@
 import { renderCostumeIdleIcon } from "./costumeIdleIcon";
 import { loadCostumeLayers } from "../ranking/costumeResolve";
 import {
+  defaultSortDir,
+  sortScores,
+  TOTAL_SCORE_FORMULA,
+  totalScore,
+  type SortDir,
+  type SortKey,
+} from "../ranking/scoreMath";
+import {
   formatUtcTimestamp,
   LeaderboardConnectionError,
   listScores,
@@ -57,7 +65,70 @@ function renderConnectionError(message: string): string {
   `;
 }
 
-function renderLadderSkeleton(rows: ScoreEntry[]): string {
+function sortIndicator(key: SortKey, active: SortKey, dir: SortDir): string {
+  if (key !== active) return `<span class="sort-ind" aria-hidden="true"></span>`;
+  return `<span class="sort-ind" aria-hidden="true">${dir === "asc" ? "▲" : "▼"}</span>`;
+}
+
+function headerButton(
+  key: SortKey,
+  label: string,
+  active: SortKey,
+  dir: SortDir,
+  extraClass = "",
+  title?: string,
+): string {
+  const pressed = key === active ? "true" : "false";
+  const tip = title ? ` title="${escapeHtml(title)}"` : "";
+  return `<button type="button" class="col-head ${extraClass}" data-sort="${key}" aria-pressed="${pressed}"${tip}>${escapeHtml(label)}${sortIndicator(key, active, dir)}</button>`;
+}
+
+function renderHeader(active: SortKey, dir: SortDir): string {
+  return `
+    <div class="ladder-bay ladder-header" role="row">
+      <span class="rail" aria-hidden="true"></span>
+      <div class="score score-cols score-header" role="row">
+        ${headerButton("rank", "#", active, dir, "col-rank")}
+        ${headerButton("name", "Name", active, dir, "col-name")}
+        ${headerButton("total", "Score", active, dir, "col-total", TOTAL_SCORE_FORMULA)}
+        ${headerButton("floor", "Fl", active, dir, "col-floor")}
+        ${headerButton("coins", "$", active, dir, "col-coins")}
+        ${headerButton("kills", "Kills", active, dir, "col-kills")}
+        ${headerButton("client", "Client", active, dir, "col-client")}
+        ${headerButton("seed", "Seed", active, dir, "col-seed")}
+        ${headerButton("time", "Time", active, dir, "col-time")}
+        <span class="col-costume" aria-hidden="true"></span>
+      </div>
+      <span class="rail" aria-hidden="true"></span>
+    </div>
+  `;
+}
+
+function renderRow(r: ScoreEntry, rank: number, delay: number): string {
+  const tot = totalScore(r);
+  return `
+    <div class="ladder-bay ${placeClass(rank)}" role="listitem" data-score-id="${escapeHtml(r.id)}">
+      <span class="rail" aria-hidden="true"></span>
+      <div class="score score-cols" style="animation-delay: ${delay}s">
+        <span class="col-rank rank">#${rank}</span>
+        <span class="col-name player">${escapeHtml(r.playerName)}</span>
+        <span class="col-total total-score" tabindex="0" title="${escapeHtml(TOTAL_SCORE_FORMULA)}" data-tip="${escapeHtml(TOTAL_SCORE_FORMULA)}"><strong>${tot}</strong></span>
+        <span class="col-floor stat"><strong>${r.floorReached}</strong></span>
+        <span class="col-coins stat"><strong>${r.coins}</strong></span>
+        <span class="col-kills stat"><strong>${r.enemiesKilled}</strong></span>
+        <span class="col-client stat client" title="Client">${escapeHtml(r.client || "—")}</span>
+        <span class="col-seed stat seed"><a href="${playUrlForSeed(r.seed)}" title="Replay this seed">${r.seed}</a></span>
+        <span class="col-time time">${escapeHtml(formatUtcTimestamp(r.createdAt))}</span>
+        <div class="col-costume costume" title="Costume">
+          <img class="costume-icon" data-costume-for="${escapeHtml(r.id)}" alt="" width="${rank <= 10 ? 52 : 40}" height="${rank <= 10 ? 52 : 40}" />
+        </div>
+      </div>
+      <span class="rail" aria-hidden="true"></span>
+    </div>
+  `;
+}
+
+function renderLadder(rows: ScoreEntry[], sortKey: SortKey, sortDir: SortDir): string {
   if (rows.length === 0) {
     return `${rungHtml()}
       <div class="ladder-bay" role="listitem">
@@ -68,35 +139,13 @@ function renderLadderSkeleton(rows: ScoreEntry[]): string {
       ${rungHtml()}`;
   }
 
-  const parts: string[] = [rungHtml()];
-
-  rows.forEach((r, i) => {
+  const sorted = sortScores(rows, sortKey, sortDir);
+  const parts: string[] = [rungHtml(), renderHeader(sortKey, sortDir), rungHtml()];
+  sorted.forEach((r, i) => {
     const rank = i + 1;
-    const delay = Math.min(i, 12) * 0.05;
-    parts.push(`
-      <div class="ladder-bay ${placeClass(rank)}" role="listitem" data-score-id="${escapeHtml(r.id)}">
-        <span class="rail" aria-hidden="true"></span>
-        <div class="score" style="animation-delay: ${delay}s">
-          <span class="rank">#${rank}</span>
-          <div class="score-main">
-            <span class="player">${escapeHtml(r.playerName)}</span>
-            <span class="stat">Fl <strong>${r.floorReached}</strong></span>
-            <span class="stat">$ <strong>${r.coins}</strong></span>
-            <span class="stat">Kills <strong>${r.enemiesKilled}</strong></span>
-            <span class="stat client" title="Client">${escapeHtml(r.client || "—")}</span>
-            <span class="stat seed">Seed <a href="${playUrlForSeed(r.seed)}" title="Replay this seed">${r.seed}</a></span>
-          </div>
-          <span class="time">${escapeHtml(formatUtcTimestamp(r.createdAt))}</span>
-          <div class="costume" title="Costume">
-            <img class="costume-icon" data-costume-for="${escapeHtml(r.id)}" alt="" width="${rank <= 10 ? 52 : 40}" height="${rank <= 10 ? 52 : 40}" />
-          </div>
-        </div>
-        <span class="rail" aria-hidden="true"></span>
-      </div>
-      ${rungHtml()}
-    `);
+    parts.push(renderRow(r, rank, Math.min(i, 12) * 0.05));
+    parts.push(rungHtml());
   });
-
   return parts.join("");
 }
 
@@ -106,20 +155,38 @@ async function fillCostumeIcons(rows: ScoreEntry[]): Promise<void> {
 
   const titleIcon = document.querySelector<HTMLImageElement>(".title-icon");
   if (titleIcon) {
-    titleIcon.src = await renderCostumeIdleIcon(rows[0]!.itemIds ?? [], layers, 48);
-    titleIcon.alt = `${rows[0]!.playerName} costume`;
+    const top = sortScores(rows, "total", "desc")[0];
+    if (top) {
+      titleIcon.src = await renderCostumeIdleIcon(top.itemIds ?? [], layers, 48);
+      titleIcon.alt = `${top.playerName} costume`;
+    }
   }
 
   await Promise.all(
-    rows.map(async (r, i) => {
+    rows.map(async (r) => {
       const img = document.querySelector<HTMLImageElement>(
         `img[data-costume-for="${CSS.escape(r.id)}"]`,
       );
       if (!img) return;
-      const size = i < 10 ? 52 : 40;
+      const bay = img.closest(".ladder-bay");
+      const size = bay?.classList.contains("top-ten") ? 52 : 40;
       img.src = await renderCostumeIdleIcon(r.itemIds ?? [], layers, size);
       img.alt = r.itemIds?.length ? "Run costume" : "Default Vernan";
     }),
+  );
+}
+
+function isSortKey(v: string): v is SortKey {
+  return (
+    v === "rank" ||
+    v === "name" ||
+    v === "total" ||
+    v === "floor" ||
+    v === "coins" ||
+    v === "kills" ||
+    v === "client" ||
+    v === "seed" ||
+    v === "time"
   );
 }
 
@@ -131,20 +198,42 @@ async function main(): Promise<void> {
   if (meta) {
     if (usingRemoteScores()) {
       meta.textContent =
-        "Ranked by floor, then coins, then kills. Showing the shared remote board.";
+        "Click a column to sort. Score = Floor + Kills + $. Showing the shared remote board.";
     } else if (usingRepoMirror()) {
       meta.textContent =
-        "Ranked by floor, then coins, then kills. Shared scores load from the GitHub repo; this browser may also show unpublished local submits until data/scores.json is committed.";
+        "Click a column to sort. Score = Floor + Kills + $. Shared scores load from the GitHub repo; this browser may also show unpublished local submits.";
     } else {
       meta.textContent =
-        "Ranked by floor, then coins, then kills. Scores are stored in this browser.";
+        "Click a column to sort. Score = Floor + Kills + $. Scores are stored in this browser.";
     }
   }
 
+  let allRows: ScoreEntry[] = [];
+  let sortKey: SortKey = "total";
+  let sortDir: SortDir = "desc";
+
+  const paint = async () => {
+    ladder.innerHTML = renderLadder(allRows, sortKey, sortDir);
+    await fillCostumeIcons(allRows);
+  };
+
+  ladder.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement | null)?.closest?.("button[data-sort]");
+    if (!(btn instanceof HTMLButtonElement)) return;
+    const key = btn.dataset.sort;
+    if (!key || !isSortKey(key)) return;
+    if (key === sortKey) {
+      sortDir = sortDir === "asc" ? "desc" : "asc";
+    } else {
+      sortKey = key;
+      sortDir = defaultSortDir(key);
+    }
+    void paint();
+  });
+
   try {
-    const rows = await listScores(50);
-    ladder.innerHTML = renderLadderSkeleton(rows);
-    await fillCostumeIcons(rows);
+    allRows = await listScores(50);
+    await paint();
   } catch (err) {
     const offline =
       err instanceof LeaderboardConnectionError ||
