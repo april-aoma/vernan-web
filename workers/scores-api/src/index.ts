@@ -13,6 +13,8 @@ type ScoreEntry = {
   floorReached: number;
   coins: number;
   enemiesKilled: number;
+  /** Sum of per-kill difficulty; 0 for legacy rows. */
+  enemiesKillDifficulty: number;
   durationSec: number;
   itemIds: string[];
   /** e.g. web_0.1.19 / desktop_0.1.53; empty for legacy rows. */
@@ -61,6 +63,9 @@ function compareScores(a: ScoreEntry, b: ScoreEntry): number {
   if (b.floorReached !== a.floorReached) return b.floorReached - a.floorReached;
   if (b.coins !== a.coins) return b.coins - a.coins;
   if (b.enemiesKilled !== a.enemiesKilled) return b.enemiesKilled - a.enemiesKilled;
+  if (b.enemiesKillDifficulty !== a.enemiesKillDifficulty) {
+    return b.enemiesKillDifficulty - a.enemiesKillDifficulty;
+  }
   return a.createdAt.localeCompare(b.createdAt);
 }
 
@@ -106,6 +111,11 @@ function isScoreEntry(v: unknown): v is ScoreEntry {
   );
 }
 
+function normalizeKillDifficulty(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return 0;
+  return Math.floor(v);
+}
+
 async function readScores(env: Env): Promise<ScoreEntry[]> {
   const raw = await env.SCORES.get(SCORES_KEY);
   if (!raw) return [];
@@ -116,6 +126,9 @@ async function readScores(env: Env): Promise<ScoreEntry[]> {
       .filter(isScoreEntry)
       .map((e) => ({
         ...e,
+        enemiesKillDifficulty: normalizeKillDifficulty(
+          (e as ScoreEntry).enemiesKillDifficulty,
+        ),
         itemIds: normalizeItemIds(e.itemIds),
         client: sanitizeClient((e as ScoreEntry).client),
         createdAt: formatUtcTimestamp(e.createdAt),
@@ -136,14 +149,23 @@ function validateBody(body: Record<string, unknown>): Omit<ScoreEntry, "id" | "c
   const floorReached = Number(body.floorReached);
   const coins = Number(body.coins);
   const enemiesKilled = Number(body.enemiesKilled);
+  const enemiesKillDifficulty = Number(body.enemiesKillDifficulty);
   const durationSec = Number(body.durationSec);
 
   if (!Number.isFinite(seed)) throw new Error("Invalid seed");
   if (!Number.isFinite(floorReached) || floorReached < 1) throw new Error("Invalid floor");
   if (!Number.isFinite(coins) || coins < 0) throw new Error("Invalid coins");
   if (!Number.isFinite(enemiesKilled) || enemiesKilled < 0) throw new Error("Invalid kills");
+  if (!Number.isFinite(enemiesKillDifficulty) || enemiesKillDifficulty < 0) {
+    throw new Error("Invalid kill difficulty");
+  }
   if (!Number.isFinite(durationSec) || durationSec < 0) throw new Error("Invalid duration");
-  if (floorReached > 500 || coins > 999_999 || enemiesKilled > 99_999) {
+  if (
+    floorReached > 500 ||
+    coins > 999_999 ||
+    enemiesKilled > 99_999 ||
+    enemiesKillDifficulty > 9_999_999
+  ) {
     throw new Error("Score out of range");
   }
   const itemIds = normalizeItemIds(body.itemIds);
@@ -155,6 +177,7 @@ function validateBody(body: Record<string, unknown>): Omit<ScoreEntry, "id" | "c
     floorReached: Math.floor(floorReached),
     coins: Math.floor(coins),
     enemiesKilled: Math.floor(enemiesKilled),
+    enemiesKillDifficulty: Math.floor(enemiesKillDifficulty),
     durationSec,
     itemIds,
     client: sanitizeClient(body.client),

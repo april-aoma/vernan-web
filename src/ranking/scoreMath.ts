@@ -2,12 +2,21 @@
 
 import type { ScoreEntry } from "./types";
 
-/** Temporary formula — Floor + Kills + $. */
-export function totalScore(e: Pick<ScoreEntry, "floorReached" | "enemiesKilled" | "coins">): number {
-  return e.floorReached + e.enemiesKilled + e.coins;
+/** Temporary formula — (Floor×10) + (KillDiff×2) + Coins. */
+export function totalScore(
+  e: Pick<ScoreEntry, "floorReached" | "enemiesKillDifficulty" | "coins">,
+): number {
+  return e.floorReached * 10 + e.enemiesKillDifficulty * 2 + e.coins;
 }
 
-export const TOTAL_SCORE_FORMULA = "Floor + Kills + $";
+export const TOTAL_SCORE_FORMULA = "(Floor×10) + (KillDiff×2) + Coins";
+
+/** Display kills as `count/difficulty`. */
+export function formatKills(
+  e: Pick<ScoreEntry, "enemiesKilled" | "enemiesKillDifficulty">,
+): string {
+  return `${e.enemiesKilled}/${e.enemiesKillDifficulty}`;
+}
 
 export type SortKey =
   | "rank"
@@ -57,6 +66,7 @@ export function compareBy(
       break;
     case "kills":
       cmp = a.enemiesKilled - b.enemiesKilled;
+      if (cmp === 0) cmp = a.enemiesKillDifficulty - b.enemiesKillDifficulty;
       break;
     case "client":
       cmp = (a.client || "").localeCompare(b.client || "");
@@ -75,6 +85,9 @@ export function compareBy(
   if (b.floorReached !== a.floorReached) return b.floorReached - a.floorReached;
   if (b.coins !== a.coins) return b.coins - a.coins;
   if (b.enemiesKilled !== a.enemiesKilled) return b.enemiesKilled - a.enemiesKilled;
+  if (b.enemiesKillDifficulty !== a.enemiesKillDifficulty) {
+    return b.enemiesKillDifficulty - a.enemiesKillDifficulty;
+  }
   return a.createdAt.localeCompare(b.createdAt);
 }
 

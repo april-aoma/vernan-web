@@ -4,6 +4,8 @@ export type RunSummary = {
   floorReached: number;
   coins: number;
   enemiesKilled: number;
+  /** Sum of per-kill difficulty points (boss = 25, etc.). */
+  enemiesKillDifficulty: number;
   durationSec: number;
   /** Item ids obtained during the run (inventory at submit). */
   itemIds: string[];

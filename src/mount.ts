@@ -21,6 +21,7 @@ import {
   compositeBodyStrip,
 } from "./render/VernanBodyComposite";
 import { gemKillSource, setGemKillSource } from "./combat/GemKillTracking";
+import { enemyKillDifficulty } from "./combat/EnemyKillDifficulty";
 import { resolveSwordProfile } from "./combat/SwordProfile";
 import { HitboxPose } from "./collision/HitboxPose";
 import { ARCING_ENEMY_BULLET_PLAYER_DAMAGE } from "./config/Physics";
@@ -403,6 +404,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   let floorOrdinal = 1;
   /** Mirrors Java GamePanel.enemiesKilledThisRun. */
   let enemiesKilledThisRun = 0;
+  /** Mirrors Java GamePanel.enemiesKillDifficultyThisRun. */
+  let enemiesKillDifficultyThisRun = 0;
   let submitDialogOpen = false;
   let pauseSubmitPending = false;
   let pauseMenuHits: PauseMenuHitRects = { submit: { x: 0, y: 0, w: 0, h: 0 } };
@@ -621,6 +624,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       floorReached: floorOrdinal,
       coins: player.stats.money,
       enemiesKilled: enemiesKilledThisRun,
+      enemiesKillDifficulty: enemiesKillDifficultyThisRun,
       durationSec: session?.timeSec ?? 0,
       itemIds: player.inventory.ownedIds(),
     };
@@ -1829,6 +1833,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       session.enemies = session.enemies.filter((e) => {
         if (!e.isDead()) return true;
         enemiesKilledThisRun++;
+        enemiesKillDifficultyThisRun += enemyKillDifficulty(e);
         return false;
       });
       tryProcessRoomClear(session, player);

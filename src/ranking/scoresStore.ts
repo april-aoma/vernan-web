@@ -93,17 +93,25 @@ function parseScoreList(data: unknown): ScoreEntry[] {
   if (!Array.isArray(data)) return [];
   return data.filter(isScoreEntry).map((e) => ({
     ...e,
+    enemiesKillDifficulty:
+      typeof (e as ScoreEntry).enemiesKillDifficulty === "number" &&
+      Number.isFinite((e as ScoreEntry).enemiesKillDifficulty)
+        ? Math.max(0, Math.floor((e as ScoreEntry).enemiesKillDifficulty))
+        : 0,
     itemIds: normalizeItemIds((e as ScoreEntry).itemIds),
     client: sanitizeClientId((e as ScoreEntry).client),
     createdAt: formatUtcTimestamp(e.createdAt),
   }));
 }
 
-/** Rank: floor → coins → kills (desc), then earliest submit wins ties. */
+/** Rank: floor → coins → kills → kill difficulty (desc), then earliest submit wins ties. */
 export function compareScores(a: ScoreEntry, b: ScoreEntry): number {
   if (b.floorReached !== a.floorReached) return b.floorReached - a.floorReached;
   if (b.coins !== a.coins) return b.coins - a.coins;
   if (b.enemiesKilled !== a.enemiesKilled) return b.enemiesKilled - a.enemiesKilled;
+  if (b.enemiesKillDifficulty !== a.enemiesKillDifficulty) {
+    return b.enemiesKillDifficulty - a.enemiesKillDifficulty;
+  }
   return a.createdAt.localeCompare(b.createdAt);
 }
 
@@ -158,10 +166,18 @@ function validateSummary(summary: RunSummary): void {
   if (!Number.isFinite(summary.enemiesKilled) || summary.enemiesKilled < 0) {
     throw new Error("Invalid kills");
   }
+  if (!Number.isFinite(summary.enemiesKillDifficulty) || summary.enemiesKillDifficulty < 0) {
+    throw new Error("Invalid kill difficulty");
+  }
   if (!Number.isFinite(summary.durationSec) || summary.durationSec < 0) {
     throw new Error("Invalid duration");
   }
-  if (summary.floorReached > 500 || summary.coins > 999_999 || summary.enemiesKilled > 99_999) {
+  if (
+    summary.floorReached > 500 ||
+    summary.coins > 999_999 ||
+    summary.enemiesKilled > 99_999 ||
+    summary.enemiesKillDifficulty > 9_999_999
+  ) {
     throw new Error("Score out of range");
   }
   if (!Array.isArray(summary.itemIds) || summary.itemIds.length > 64) {
@@ -242,6 +258,7 @@ export async function submitScore(
     floorReached: Math.floor(summary.floorReached),
     coins: Math.floor(summary.coins),
     enemiesKilled: Math.floor(summary.enemiesKilled),
+    enemiesKillDifficulty: Math.floor(summary.enemiesKillDifficulty),
     durationSec: summary.durationSec,
     itemIds: normalizeItemIds(summary.itemIds),
     client: webClientId(),
@@ -259,6 +276,7 @@ export async function submitScore(
         floorReached: entry.floorReached,
         coins: entry.coins,
         enemiesKilled: entry.enemiesKilled,
+        enemiesKillDifficulty: entry.enemiesKillDifficulty,
         durationSec: entry.durationSec,
         itemIds: entry.itemIds,
         client: entry.client,

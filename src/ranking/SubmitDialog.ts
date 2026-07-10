@@ -55,7 +55,7 @@ export function openSubmitDialog(summary: RunSummary): Promise<SubmitDialogResul
     const stats = document.createElement("p");
     stats.textContent =
       `Floor ${summary.floorReached} · Coins ${summary.coins} · ` +
-      `Kills ${summary.enemiesKilled} · Seed ${summary.seed}`;
+      `Kills ${summary.enemiesKilled}/${summary.enemiesKillDifficulty} · Seed ${summary.seed}`;
     Object.assign(stats.style, {
       margin: "0 0 0.5rem",
       fontSize: "0.8rem",

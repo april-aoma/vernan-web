@@ -2,6 +2,7 @@ import { renderCostumeIdleIcon } from "./costumeIdleIcon";
 import { loadCostumeLayers } from "../ranking/costumeResolve";
 import {
   defaultSortDir,
+  formatKills,
   sortScores,
   TOTAL_SCORE_FORMULA,
   totalScore,
@@ -80,7 +81,25 @@ function headerButton(
 ): string {
   const pressed = key === active ? "true" : "false";
   const tip = title ? ` title="${escapeHtml(title)}"` : "";
-  return `<button type="button" class="col-head ${extraClass}" data-sort="${key}" aria-pressed="${pressed}"${tip}>${escapeHtml(label)}${sortIndicator(key, active, dir)}</button>`;
+  // Sort mark comes first so right-aligned headers keep the label on the cell's right edge.
+  return `<button type="button" class="col-head ${extraClass}" data-sort="${key}" aria-pressed="${pressed}"${tip}>${sortIndicator(key, active, dir)}<span class="col-label">${escapeHtml(label)}</span></button>`;
+}
+
+function cell(
+  className: string,
+  displayHtml: string,
+  fullText: string,
+  opts?: { tipFormula?: string; selectable?: boolean },
+): string {
+  const selectable = opts?.selectable !== false;
+  const title = opts?.tipFormula
+    ? escapeHtml(opts.tipFormula)
+    : escapeHtml(fullText);
+  const tipAttr = opts?.tipFormula
+    ? ` data-tip="${escapeHtml(opts.tipFormula)}" tabindex="0"`
+    : "";
+  const selectClass = selectable ? " cell-copyable" : "";
+  return `<span class="${className}${selectClass}" title="${title}"${tipAttr} data-full="${escapeHtml(fullText)}">${displayHtml}</span>`;
 }
 
 function renderHeader(active: SortKey, dir: SortDir): string {
@@ -93,7 +112,7 @@ function renderHeader(active: SortKey, dir: SortDir): string {
         ${headerButton("total", "Score", active, dir, "col-total", TOTAL_SCORE_FORMULA)}
         ${headerButton("floor", "Fl", active, dir, "col-floor")}
         ${headerButton("coins", "$", active, dir, "col-coins")}
-        ${headerButton("kills", "Kills", active, dir, "col-kills")}
+        ${headerButton("kills", "Kills", active, dir, "col-kills", "count / difficulty")}
         ${headerButton("client", "Client", active, dir, "col-client")}
         ${headerButton("seed", "Seed", active, dir, "col-seed")}
         ${headerButton("time", "Time", active, dir, "col-time")}
@@ -106,19 +125,24 @@ function renderHeader(active: SortKey, dir: SortDir): string {
 
 function renderRow(r: ScoreEntry, rank: number, delay: number): string {
   const tot = totalScore(r);
+  const client = r.client || "—";
+  const time = formatUtcTimestamp(r.createdAt);
+  const seed = String(r.seed);
   return `
     <div class="ladder-bay ${placeClass(rank)}" role="listitem" data-score-id="${escapeHtml(r.id)}">
       <span class="rail" aria-hidden="true"></span>
       <div class="score score-cols" style="animation-delay: ${delay}s">
-        <span class="col-rank rank">#${rank}</span>
-        <span class="col-name player">${escapeHtml(r.playerName)}</span>
-        <span class="col-total total-score" tabindex="0" title="${escapeHtml(TOTAL_SCORE_FORMULA)}" data-tip="${escapeHtml(TOTAL_SCORE_FORMULA)}"><strong>${tot}</strong></span>
-        <span class="col-floor stat"><strong>${r.floorReached}</strong></span>
-        <span class="col-coins stat"><strong>${r.coins}</strong></span>
-        <span class="col-kills stat"><strong>${r.enemiesKilled}</strong></span>
-        <span class="col-client stat client" title="Client">${escapeHtml(r.client || "—")}</span>
-        <span class="col-seed stat seed"><a href="${playUrlForSeed(r.seed)}" title="Replay this seed">${r.seed}</a></span>
-        <span class="col-time time">${escapeHtml(formatUtcTimestamp(r.createdAt))}</span>
+        ${cell("col-rank rank", `#${rank}`, `#${rank}`)}
+        ${cell("col-name player", escapeHtml(r.playerName), r.playerName)}
+        ${cell("col-total total-score", `<strong>${tot}</strong>`, String(tot), { tipFormula: TOTAL_SCORE_FORMULA })}
+        ${cell("col-floor stat", `<strong>${r.floorReached}</strong>`, String(r.floorReached))}
+        ${cell("col-coins stat", `<strong>${r.coins}</strong>`, String(r.coins))}
+        ${cell("col-kills stat", `<strong>${formatKills(r)}</strong>`, formatKills(r), {
+          tipFormula: "kill count / kill difficulty",
+        })}
+        ${cell("col-client stat client", escapeHtml(client), client)}
+        <span class="col-seed stat seed cell-copyable" title="${escapeHtml(seed)}" data-full="${escapeHtml(seed)}"><a href="${playUrlForSeed(r.seed)}">${escapeHtml(seed)}</a></span>
+        ${cell("col-time time", escapeHtml(time), time)}
         <div class="col-costume costume" title="Costume">
           <img class="costume-icon" data-costume-for="${escapeHtml(r.id)}" alt="" width="${rank <= 10 ? 52 : 40}" height="${rank <= 10 ? 52 : 40}" />
         </div>
@@ -198,13 +222,13 @@ async function main(): Promise<void> {
   if (meta) {
     if (usingRemoteScores()) {
       meta.textContent =
-        "Click a column to sort. Score = Floor + Kills + $. Showing the shared remote board.";
+        "Click a column to sort. Score = (Floor×10) + (KillDiff×2) + Coins. Showing the shared remote board.";
     } else if (usingRepoMirror()) {
       meta.textContent =
-        "Click a column to sort. Score = Floor + Kills + $. Shared scores load from the GitHub repo; this browser may also show unpublished local submits.";
+        "Click a column to sort. Score = (Floor×10) + (KillDiff×2) + Coins. Shared scores load from the GitHub repo; this browser may also show unpublished local submits.";
     } else {
       meta.textContent =
-        "Click a column to sort. Score = Floor + Kills + $. Scores are stored in this browser.";
+        "Click a column to sort. Score = (Floor×10) + (KillDiff×2) + Coins. Scores are stored in this browser.";
     }
   }
 

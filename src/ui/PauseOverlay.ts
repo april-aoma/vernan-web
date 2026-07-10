@@ -59,7 +59,7 @@ export function drawPauseMenu(
     y += 16;
     g.fillStyle = "#9aa7b5";
     g.fillText(
-      `Fl ${runSummary.floorReached}  $ ${runSummary.coins}  Kills ${runSummary.enemiesKilled}`,
+      `Fl ${runSummary.floorReached}  $ ${runSummary.coins}  Kills ${runSummary.enemiesKilled}/${runSummary.enemiesKillDifficulty}`,
       x,
       y,
     );

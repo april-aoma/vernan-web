@@ -35,7 +35,7 @@ export function drawDeathOverlay(
   y += 20;
   g.fillStyle = "#9aa7b5";
   g.font = "10px monospace";
-  const line1 = `Fl ${summary.floorReached}  $ ${summary.coins}  Kills ${summary.enemiesKilled}`;
+  const line1 = `Fl ${summary.floorReached}  $ ${summary.coins}  Kills ${summary.enemiesKilled}/${summary.enemiesKillDifficulty}`;
   g.fillText(line1, boxX + (boxW - g.measureText(line1).width) / 2, y);
 
   y += 14;
