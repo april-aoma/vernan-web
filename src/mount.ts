@@ -71,6 +71,7 @@ import {
   WorldPickup,
 } from "./world/WorldPickup";
 import { resolveDisplayTileId } from "./tileset/resolveDisplayTile";
+import { decoOverlayFromStamps } from "./tileset/ContextThemeSubstitution";
 import { resolveShellTileId } from "./tileset/ShellTileResolve";
 import {
   RUN_START_MONEY,
@@ -156,6 +157,7 @@ import {
   tryDoorTransition,
   tryLadderTransition,
   tryProcessRoomClear,
+  onRoomEnteredWithKeyblockBypass,
   type RoomSession,
 } from "./world/roomTransition";
 import type { LevelAscendState } from "./world/roomFade";
@@ -174,13 +176,14 @@ import {
   assignRoomMathBackgroundPresets,
   roomKindUsesMathBackground,
 } from "./world/roomMathBackgrounds";
+import { destKindByDoorCell } from "./world/DoorDestinationResolver";
 import { enrichDungeonArt } from "./tileset/enrichDungeonArt";
 import {
   applySwordBreakables,
   finishSeamOpenAnimInstant,
   tickSeamOpenAnim,
 } from "./world/BreakableStrike";
-import { onRoomEntered } from "./world/SecretEntrancePlacer";
+import { tickKeyblockSeals } from "./world/KeyblockTick";
 import type { SecretSeamOpenAnim } from "./world/SecretSeamOpenAnim";
 
 export type MountOptions = {
@@ -843,10 +846,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         possessedHead.clear();
         // Fade-swap only (pending spawn set). Skip boss-ascend rebuild — stale pendingSpawnKind.
         if (isRoomTransitionActive(s.transition) && roomBeforeTransition !== s.roomId) {
-          onRoomEntered(
-            s.dungeon.layout,
-            s.dungeon.rooms,
-            s.dungeon.secretSeams,
+          onRoomEnteredWithKeyblockBypass(
+            s,
             roomBeforeTransition,
             s.roomId,
             s.transition.pendingSpawnKind,
@@ -886,6 +887,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         return;
       }
 
+      // Keyblock unlock freeze (Java keyblockGameplayFreezeSeal early return).
+      if (session.keyblocks.freezeSeal != null) {
+        tickKeyblockSeals(session.keyblocks, session.roomId, map, player, input);
+        followCamera(session, false);
+        return;
+      }
+
       // Ladder before door (Java order); may start fade (incl. boss ascend cinematic).
       if (tryLadderTransition(session, player, input, camera)) {
         followCamera(session, false);
@@ -902,6 +910,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       const headSwordEdge = possessedHead.consumeSwordActiveEdge(player.attackPhase);
       possessedHead.tick(FIXED_DT, player, map, session.enemies, headSwordEdge);
       tickBossDoorSealAnim(session);
+
+      // Late keyblock tick — may start freeze mid-step (Java tickKeyblockSeals after combat FX).
+      tickKeyblockSeals(session.keyblocks, session.roomId, map, player, input);
+      if (session.keyblocks.freezeSeal != null) {
+        followCamera(session, false);
+        return;
+      }
 
       const nodeKind = session.dungeon.layout.room(session.roomId).kind;
       if (nodeKind === RoomKind.SHOP) {
@@ -1381,6 +1396,11 @@ function drawTiles(
   const art = room.art;
   const primarySheetId = art?.sheetId ?? project?.primarySheetIdForFloor(floor);
   const simTick = Math.floor(session.timeSec * 60);
+  const doorDestByCell = destKindByDoorCell(
+    session.dungeon.layout,
+    session.roomId,
+    room,
+  );
   drawShellTiles(
     g,
     map,
@@ -1407,6 +1427,8 @@ function drawTiles(
       decoStamps: art?.decoStamps,
       simTick,
       tileWorld,
+      doorDestByCell,
+      contextThemeRules: art?.contextThemeRules ?? null,
     },
   );
 }
@@ -1896,6 +1918,10 @@ function snapshotBreakableTile(
       room.kind,
       node.contentSeed,
       floor,
+      {
+        decoOverlay: decoOverlayFromStamps(art.decoStamps),
+        contextThemeRules: art.contextThemeRules ?? null,
+      },
     );
   }
   if (!tileId) tileId = resolveShellTileId(map, tx, ty);

@@ -1,5 +1,7 @@
 import { isOneScreenRoomKind, RoomKind } from "./DungeonTypes";
 import type { DungeonLayout } from "./DungeonLayout";
+import { makeKeyblockSealSpec, type KeyblockSealSpec } from "./KeyblockSealSpec";
+import type { KeyblockSlot } from "./KeyblockSlot";
 import type { GeneratedRoom } from "./RoomGenerator";
 import {
   alignLeftDoorTopY,
@@ -155,6 +157,47 @@ function seamMatchesTraverseDir(
 
 function isSecretKind(k: RoomKind): boolean {
   return k === RoomKind.SECRET || k === RoomKind.SUPER_SECRET;
+}
+
+/**
+ * Drop keyblock slots that overlap seam breakable cells (seams win with B).
+ * (Java SecretEntrancePlacer.reconcileKeyblocksWithSeams)
+ */
+export function reconcileKeyblocksWithSeams(
+  keyblocks: (KeyblockSealSpec[] | null)[],
+  seams: SecretSeam[],
+): (KeyblockSealSpec[] | null)[] {
+  if (!keyblocks.length || seams.length === 0) return keyblocks;
+  const seamCells = new Set<string>();
+  for (const seam of seams) {
+    for (let i = 0; i < seam.cellCount; i++) {
+      if (seam.cellRoleAt(i) === ROLE_BREAKABLE) {
+        seamCells.add(keyblockCellKey(seam.roomIdAt(i), seam.txAt(i), seam.tyAt(i)));
+      }
+    }
+  }
+  const n = keyblocks.length;
+  const out: (KeyblockSealSpec[] | null)[] = new Array(n).fill(null);
+  for (let rid = 0; rid < n; rid++) {
+    const specs = keyblocks[rid];
+    if (!specs) continue;
+    const kept: KeyblockSealSpec[] = [];
+    for (const spec of specs) {
+      const slots: KeyblockSlot[] = [];
+      for (const slot of spec.slots) {
+        if (!seamCells.has(keyblockCellKey(rid, slot.tx, slot.ty))) {
+          slots.push(slot);
+        }
+      }
+      if (slots.length > 0) kept.push(makeKeyblockSealSpec(slots));
+    }
+    if (kept.length > 0) out[rid] = kept;
+  }
+  return out;
+}
+
+function keyblockCellKey(roomId: number, tx: number, ty: number): string {
+  return `${roomId},${tx},${ty}`;
 }
 
 /** Place hidden breakable shells on secret/super-secret edges (Java SecretEntrancePlacer.place). */

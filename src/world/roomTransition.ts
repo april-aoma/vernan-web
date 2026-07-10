@@ -20,6 +20,7 @@ import {
 import {
   defaultSpawnPx,
   horizontalDoorSpawnPx,
+  levelEntrySpawnPx,
   PLAYER_STAND_SPAWN_H,
   type GeneratedRoom,
 } from "./RoomGenerator";
@@ -36,7 +37,16 @@ import {
   tickRoomTransition,
   type RoomTransitionState,
 } from "./roomFade";
-import { TILE_BREAKABLE, TILE_DOOR, TILE_EMPTY, TILE_LADDER, TILE_SOLID } from "./TileMap";
+import {
+  TILE_BREAKABLE,
+  TILE_DOOR,
+  TILE_EMPTY,
+  TILE_KEYBLOCK,
+  TILE_KEYBLOCK_CONNECTOR,
+  TILE_LADDER,
+  TILE_SOLID,
+  type TileMap,
+} from "./TileMap";
 import { RoomKind } from "./DungeonTypes";
 import { BossDoorSealAnim, packCell } from "./BossDoorSealAnim";
 import { injectBossExitLadder } from "./BossAscend";
@@ -44,6 +54,12 @@ import {
   bossRoomHasPossessed,
   pickPossessedSpecialReward,
 } from "../item/possessedBossReward";
+import { clearEntrancesOnItemOrShopEnter } from "./KeyblockBypass";
+import {
+  createKeyblockTickState,
+  type KeyblockTickState,
+} from "./KeyblockTick";
+import { onRoomEntered } from "./SecretEntrancePlacer";
 
 export enum SpawnKind {
   INITIAL = 0,
@@ -79,6 +95,8 @@ export type RoomSession = {
   activeBossDoorSealAnim: BossDoorSealAnim | null;
   /** Shared fade / door-pose machine. */
   transition: RoomTransitionState;
+  /** Keyblock seal runtimes + unlock freeze (Java roomKeyblockRuntimes). */
+  keyblocks: KeyblockTickState;
   /** Sim time for pedestal bob. */
   timeSec: number;
   lastPickupName: string | null;
@@ -106,6 +124,7 @@ export function createSession(
     bossAscendLadderTx: new Array(n).fill(-1),
     activeBossDoorSealAnim: null,
     transition: createRoomTransitionState(),
+    keyblocks: createKeyblockTickState(dungeon.roomKeyblockSeals, n),
     timeSec: 0,
     lastPickupName: null,
     lastPickupTimer: 0,
@@ -127,6 +146,7 @@ export function rebindSessionToDungeon(session: RoomSession, dungeon: BuiltDunge
   session.bossAscendLadderTx = new Array(n).fill(-1);
   session.activeBossDoorSealAnim = null;
   session.transition = createRoomTransitionState();
+  session.keyblocks = createKeyblockTickState(dungeon.roomKeyblockSeals, n);
   session.decks.beginDungeonLevel();
 }
 
@@ -138,8 +158,9 @@ export function applyRoomAndSpawn(
 ): void {
   session.roomId = roomId;
   const g = session.dungeon.rooms[roomId]!;
+  const layout = session.dungeon.layout;
   resolvePedestal(session, g);
-  // Spawn helpers return player top Y (groundTop − standH). spawnAt expects groundTop.
+  // Spawn helpers return player top-left (groundTop − standH), matching Java player.x/y.
   if (spawnKind === SpawnKind.FROM_WEST) {
     const spawn = horizontalDoorSpawnPx(g, true);
     player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
@@ -150,18 +171,22 @@ export function applyRoomAndSpawn(
     if (g.ladderFromNorthSpawnX >= 0) {
       player.spawnAtWorld(g.ladderFromNorthSpawnX, g.ladderFromNorthSpawnY, true);
     } else {
-      const spawn = defaultSpawnPx(g);
+      const spawn = defaultSpawnPx(g, layout, roomId);
       player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
     }
   } else if (spawnKind === SpawnKind.FROM_BELOW) {
     if (g.ladderFromSouthSpawnX >= 0) {
       player.spawnAtWorld(g.ladderFromSouthSpawnX, g.ladderFromSouthSpawnY, true);
     } else {
-      const spawn = defaultSpawnPx(g);
+      const spawn = defaultSpawnPx(g, layout, roomId);
       player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
     }
   } else {
-    const spawn = defaultSpawnPx(g);
+    // INITIAL: floor 2+ start room uses center level-entry pad (Java spawnPlayerAtDefault).
+    const spawn =
+      session.dungeon.floorOrdinal > 1 && roomId === 0
+        ? levelEntrySpawnPx(g)
+        : defaultSpawnPx(g, layout, roomId);
     player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
   }
   session.enemies = spawnEnemiesForRoom(session);
@@ -450,6 +475,20 @@ export function applyNextFloorAscend(session: RoomSession, player: Player): void
   rebindSessionToDungeon(session, next);
   session.transition = savedTransition;
   applyRoomAndSpawn(session, 0, SpawnKind.INITIAL, player);
+  finalizeLevelEntrySpawn(session, player);
+}
+
+/**
+ * Java finalizeLevelEntrySpawn — re-snap to center column + face right after next-floor apply.
+ */
+function finalizeLevelEntrySpawn(session: RoomSession, player: Player): void {
+  const g = session.dungeon.rooms[0]!;
+  const spawn = levelEntrySpawnPx(g);
+  const map = g.map;
+  const spawnTx = Math.max(0, Math.min(map.getWidth() - 1, Math.floor(spawn.x / TILE_SIZE)));
+  const groundTop = map.groundTopWorldYAtColumn(spawnTx);
+  player.spawnAt(spawnTx * TILE_SIZE, groundTop);
+  player.facing = 1;
 }
 
 /** Try horizontal door (Up/W edge) — starts fade; does not swap immediately. */
@@ -533,6 +572,7 @@ export function tryLadderTransition(
 
   if (wantDown && node.ladderSouth && playerNearRoomSouthEdge(player, camera)) {
     if (!southLadderMouthAllowsTransition(g, L)) return false;
+    if (southLadderPathBlockedByKeyblock(g.map, L, player)) return false;
     const south = session.dungeon.layout.neighborSouth(roomId);
     if (south >= 0) {
       input.clearHardwareStateForRoomTransition();
@@ -542,6 +582,7 @@ export function tryLadderTransition(
   }
   if (wantUp && node.ladderNorth && playerNearRoomNorthEdge(player)) {
     if (!northLadderSeamOpenAtTop(g, L)) return false;
+    if (northLadderPathBlockedByKeyblock(g.map, L, player)) return false;
     const north = session.dungeon.layout.neighborNorth(roomId);
     if (north >= 0) {
       input.clearHardwareStateForRoomTransition();
@@ -573,7 +614,64 @@ function southLadderMouthAllowsTransition(g: GeneratedRoom, L: number): boolean 
   const h = g.map.getHeight();
   const mouthRow = Math.max(1, Math.min(g.groundY[L] ?? h - 2, h - 2));
   const t = g.map.tileAt(L, mouthRow);
-  return t !== TILE_SOLID && t !== TILE_BREAKABLE;
+  return (
+    t !== TILE_SOLID &&
+    t !== TILE_BREAKABLE &&
+    t !== TILE_KEYBLOCK &&
+    t !== TILE_KEYBLOCK_CONNECTOR
+  );
+}
+
+/** Uncleared K/k between room top and player top blocks climbing north. */
+function northLadderPathBlockedByKeyblock(map: TileMap, ladderTx: number, player: Player): boolean {
+  if (ladderTx < 0) return false;
+  let maxTy = Math.floor(player.hitboxPose().bounds().y / TILE_SIZE);
+  maxTy = Math.min(Math.max(maxTy, 1), map.getHeight() - 2);
+  for (let ty = 1; ty <= maxTy; ty++) {
+    const t = map.tileAt(ladderTx, ty);
+    if (t === TILE_KEYBLOCK || t === TILE_KEYBLOCK_CONNECTOR) return true;
+  }
+  return false;
+}
+
+/** Uncleared K/k from player feet down the shaft blocks dropping south. */
+function southLadderPathBlockedByKeyblock(map: TileMap, ladderTx: number, player: Player): boolean {
+  if (ladderTx < 0) return false;
+  const b = player.hitboxPose().bounds();
+  let minTy = Math.floor((b.y + b.h) / TILE_SIZE);
+  minTy = Math.min(Math.max(minTy, 1), map.getHeight() - 2);
+  for (let ty = minTy; ty <= map.getHeight() - 2; ty++) {
+    const t = map.tileAt(ladderTx, ty);
+    if (t === TILE_KEYBLOCK || t === TILE_KEYBLOCK_CONNECTOR) return true;
+  }
+  return false;
+}
+
+/**
+ * After a room swap completes: open secret seam face + free ITEM/SHOP keyblock bypass.
+ */
+export function onRoomEnteredWithKeyblockBypass(
+  session: RoomSession,
+  fromRoom: number,
+  toRoom: number,
+  spawnKind: number,
+): void {
+  onRoomEntered(
+    session.dungeon.layout,
+    session.dungeon.rooms,
+    session.dungeon.secretSeams,
+    fromRoom,
+    toRoom,
+    spawnKind,
+  );
+  clearEntrancesOnItemOrShopEnter(
+    session.dungeon.layout,
+    session.dungeon.roomKeyblockSeals,
+    session.keyblocks.runtimesByRoom,
+    session.dungeon.rooms,
+    toRoom,
+    session.dungeon.floorOrdinal,
+  );
 }
 
 /**

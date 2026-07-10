@@ -132,6 +132,28 @@ export function placeAmbientDeco(
   );
 }
 
+/**
+ * Thin reground: drop ground-hugging stamps that lost standable support after
+ * seams/keyblocks (Java DecoPlacementRules.regroundToFinalTerrain subset).
+ */
+export function regroundDecoStampsToFinalTerrain(
+  stamps: DecoStamp[],
+  map: TileMap,
+  ladderColumnTx: number,
+): DecoStamp[] {
+  return stamps.filter((s) => {
+    if (ladderColumnTx >= 0 && s.tx === ladderColumnTx) return false;
+    if (s.tx <= 0 || s.ty <= 0 || s.tx >= map.getWidth() - 1 || s.ty >= map.getHeight() - 1) {
+      return false;
+    }
+    if (map.tileAt(s.tx, s.ty) !== TILE_EMPTY) return false;
+    if (s.groundHugging) {
+      return proceduralDecoEligibleGroundCell(map, s.tx, s.ty);
+    }
+    return true;
+  });
+}
+
 type PoolEntry =
   | { kind: "tile"; tileId: string }
   | { kind: "full"; obj: AutotileObject; tileId: string };

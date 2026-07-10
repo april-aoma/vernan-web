@@ -2,7 +2,12 @@ import { TILE_SIZE, WORLD_VIEWPORT_H, WORLD_VIEWPORT_W } from "../specs";
 import { DungeonLayout } from "./DungeonLayout";
 import { RoomKind, type RoomNode } from "./DungeonTypes";
 import { rollEnemySpawns } from "./EnemySpawnBudget";
-import { applyAll as ladderAlignApplyAll, applyFinalShaftPass } from "./LadderVerticalSeamAlign";
+import {
+  placeKeyblockEntrances,
+  stripKeyblocksFromSecretRooms,
+} from "./KeyblockEntrancePlacer";
+import type { KeyblockSealSpec } from "./KeyblockSealSpec";
+import { applyAll as ladderAlignApplyAll, applyFinalShaftPass, applyPostDungeonPasses } from "./LadderVerticalSeamAlign";
 import {
   applySecretPostGenerationContent,
   connectivityFromNode,
@@ -12,7 +17,11 @@ import {
 } from "./RoomGenerator";
 import { floorLayoutSeed, targetRoomCount } from "./RunSeed";
 import { neighborFaces, secretRoomSeams } from "./SecretHorizontalSeamSpec";
-import { placeSecretEntrances, type SecretSeam } from "./SecretEntrancePlacer";
+import {
+  placeSecretEntrances,
+  reconcileKeyblocksWithSeams,
+  type SecretSeam,
+} from "./SecretEntrancePlacer";
 import { plannedHeights, plannedWidths } from "./SecretRoomLayoutPlanner";
 
 export type BuiltDungeon = {
@@ -22,6 +31,8 @@ export type BuiltDungeon = {
   rooms: GeneratedRoom[];
   /** Secret entrance seams (breakable shells between NORMAL↔SECRET). */
   secretSeams: SecretSeam[];
+  /** Per-room keyblock seal specs (floor ≥ 2 ITEM/SHOP entrances). */
+  roomKeyblockSeals: (KeyblockSealSpec[] | null)[];
   combatW: number;
   combatH: number;
   oneScreenW: number;
@@ -30,9 +41,9 @@ export type BuiltDungeon = {
 };
 
 /**
- * Mirror GamePanel.buildDungeonContent / Java GEN-ORDER-1 (minus keyblocks/deco reground):
+ * Mirror GamePanel.buildDungeonContent / Java GEN-ORDER-1:
  * layout → planned W/H → Pass A → Pass B → secret content → ladder align →
- * placeSecretEntrances → final shaft → enemies last.
+ * placeSecretEntrances → final shaft → keyblocks → enemies last.
  */
 export function buildDungeon(runSeed: bigint, floorOrdinal = 1): BuiltDungeon {
   const layoutSeed = floorLayoutSeed(runSeed, floorOrdinal);
@@ -76,11 +87,17 @@ export function buildDungeon(runSeed: bigint, floorOrdinal = 1): BuiltDungeon {
 
   // LADDER-MOUTH-2 first pass (before seam strike lanes change flank groundY).
   ladderAlignApplyAll(layout, filled);
+  applyPostDungeonPasses(layout, filled);
 
   const secretSeams = placeSecretEntrances(layout, filled);
 
   // Re-finalize shafts after seams (mouth rows may be stale).
   applyFinalShaftPass(layout, filled, secretSeams);
+
+  // Keyblocks after final shaft geometry (Java KeyblockEntrancePlacer).
+  let roomKeyblockSeals = placeKeyblockEntrances(layout, filled, floorOrdinal);
+  stripKeyblocksFromSecretRooms(layout, filled);
+  roomKeyblockSeals = reconcileKeyblocksWithSeams(roomKeyblockSeals, secretSeams);
 
   // Enemies after terrain final (Java applyPostGenerationEnemies).
   for (let i = 0; i < n; i++) {
@@ -99,6 +116,7 @@ export function buildDungeon(runSeed: bigint, floorOrdinal = 1): BuiltDungeon {
     layout,
     rooms: filled,
     secretSeams,
+    roomKeyblockSeals,
     combatW,
     combatH,
     oneScreenW,

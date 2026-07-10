@@ -10,7 +10,18 @@ import { groundYFromMap } from "./SecretRoomMapBuild";
 
 /** Java DungeonVerticalShaftRules.MAX_PROCEDURAL_LADDER_RUNGS. */
 export const MAX_PROCEDURAL_LADDER_RUNGS = 6;
+/** Java MAX_SAFETY_LADDER_GAP_FILL — safety gap-fill cap. */
+export const MAX_SAFETY_LADDER_GAP_FILL = MAX_PROCEDURAL_LADDER_RUNGS + 2;
 const MAX_TRAVERSAL_LADDER_TOP_ROW = 2;
+
+export function isTraversalLadderRowAllowed(
+  tx: number,
+  y: number,
+  shaftColumnL: number,
+): boolean {
+  if (shaftColumnL < 0 || tx === shaftColumnL) return true;
+  return y >= MAX_TRAVERSAL_LADDER_TOP_ROW;
+}
 
 /**
  * Thin GEN-LADDER-1 strip: clamp procedural H columns (not dungeon shaft L).

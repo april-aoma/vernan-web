@@ -31,7 +31,9 @@ export type AutotileObject = {
   roomKinds: string[];
   /** `all` | `red` | `blue` — ambient blob channel filter. */
   decoBlobClusterChannel: "all" | "red" | "blue";
-  memberGraphLayout: { cells: Array<{ tileId: string; x: number; y: number }> } | null;
+  memberGraphLayout: {
+    cells: Array<{ tileId: string; x: number; y: number; quadrantComposite?: boolean }>;
+  } | null;
   islands: MemberGraphIsland[];
   usesMemberGraph: boolean;
   isFullObject: boolean;
@@ -56,6 +58,13 @@ export type BiomeRow = {
   decoClusterCountMin: number;
   decoClusterCountMax: number;
   decoClusterFallback: { red: string; blue: string };
+  /** Biome-local contextThemeRules (empty → use project root). */
+  contextThemeRules: Array<{
+    baseObjectId?: string;
+    themedObjectId?: string;
+    triggerBackgroundObjectId?: string;
+    flankDecoObjectId?: string;
+  }>;
 };
 
 export type TerrainBridgeBucket = {
@@ -144,6 +153,13 @@ export class TilesetProject {
   readonly tileDefs = new Map<string, TileDefJson>();
   /** decoTilePlacementRules keyed by tile id. */
   readonly decoPlacementRules = new Map<string, DecoPlacementRule>();
+  /** Top-level contextThemeRules from tileset.json. */
+  contextThemeRulesRaw: Array<{
+    baseObjectId?: string;
+    themedObjectId?: string;
+    triggerBackgroundObjectId?: string;
+    flankDecoObjectId?: string;
+  }> = [];
   private readonly tileBridgeWeight = new Map<string, number>();
   private readonly tileConnectAnchor = new Set<string>();
 
@@ -156,6 +172,7 @@ export class TilesetProject {
     proj.loadTerrainBridge(raw.terrainBridge as Record<string, unknown> | undefined);
     proj.loadProcedural(raw.proceduralRoomGen as Record<string, unknown> | undefined);
     proj.loadDecoPlacementRules(raw.decoTilePlacementRules as Record<string, unknown> | undefined);
+    proj.contextThemeRulesRaw = parseContextThemeRulesRaw(raw.contextThemeRules);
     // Java TilesetRuntime.load always rebuilds from objects (anchors only).
     rebuildTerrainBridgeFromObjects(proj);
     return proj;
@@ -293,6 +310,7 @@ export class TilesetProject {
         visualPlayback: tile.visualPlayback,
         variations: tile.variations,
         sprite: tile.sprite,
+        autotile: (tile as { autotile?: unknown }).autotile,
       });
       const w = typeof tile.terrainBridgeWeight === "number" ? tile.terrainBridgeWeight : 1;
       this.tileBridgeWeight.set(tile.id, Math.max(1, Math.floor(w)));
@@ -586,11 +604,13 @@ function footprintFromLayout(
 
 function parseMemberGraphLayout(
   raw: unknown,
-): { cells: Array<{ tileId: string; x: number; y: number }> } | null {
+): {
+  cells: Array<{ tileId: string; x: number; y: number; quadrantComposite?: boolean }>;
+} | null {
   if (!raw || typeof raw !== "object") return null;
   const cellsRaw = (raw as { cells?: unknown }).cells;
   if (!Array.isArray(cellsRaw)) return null;
-  const cells: Array<{ tileId: string; x: number; y: number }> = [];
+  const cells: Array<{ tileId: string; x: number; y: number; quadrantComposite?: boolean }> = [];
   for (const c of cellsRaw) {
     if (!c || typeof c !== "object") continue;
     const row = c as Record<string, unknown>;
@@ -598,7 +618,13 @@ function parseMemberGraphLayout(
     const x = num(row.x, -1);
     const y = num(row.y, -1);
     if (!tileId || x < 0 || y < 0) continue;
-    cells.push({ tileId, x, y });
+    const cell: { tileId: string; x: number; y: number; quadrantComposite?: boolean } = {
+      tileId,
+      x,
+      y,
+    };
+    if (row.quadrantComposite === true) cell.quadrantComposite = true;
+    cells.push(cell);
   }
   return cells.length ? { cells } : null;
 }
@@ -653,6 +679,7 @@ function parseBiomeRows(raw: unknown): BiomeRow[] {
           red: str(fb.red) || "main_10_0",
           blue: str(fb.blue) || "main_9_0",
         },
+        contextThemeRules: parseContextThemeRulesRaw(row.contextThemeRules),
       } satisfies BiomeRow;
     })
     .filter((b): b is BiomeRow => b != null);
@@ -665,6 +692,34 @@ function normalizeSheetPath(imagePath: string): string {
   if (norm.startsWith("tiles/")) return norm;
   const base = norm.split("/").pop();
   return base ? `tiles/${base}` : norm;
+}
+
+function parseContextThemeRulesRaw(
+  raw: unknown,
+): Array<{
+  baseObjectId?: string;
+  themedObjectId?: string;
+  triggerBackgroundObjectId?: string;
+  flankDecoObjectId?: string;
+}> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{
+    baseObjectId?: string;
+    themedObjectId?: string;
+    triggerBackgroundObjectId?: string;
+    flankDecoObjectId?: string;
+  }> = [];
+  for (const e of raw) {
+    if (!e || typeof e !== "object") continue;
+    const row = e as Record<string, unknown>;
+    out.push({
+      baseObjectId: str(row.baseObjectId) || undefined,
+      themedObjectId: str(row.themedObjectId) || undefined,
+      triggerBackgroundObjectId: str(row.triggerBackgroundObjectId) || undefined,
+      flankDecoObjectId: str(row.flankDecoObjectId) || undefined,
+    });
+  }
+  return out;
 }
 
 function str(v: unknown): string {

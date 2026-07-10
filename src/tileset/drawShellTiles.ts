@@ -2,8 +2,16 @@ import type { WorldCamera } from "../camera/WorldCamera";
 import { CAMERA_ZOOM, TILE_SIZE } from "../specs";
 import type { RoomKind } from "../world/DungeonTypes";
 import type { TileMap } from "../world/TileMap";
+import { TILE_BREAKABLE, TILE_SOLID } from "../world/TileMap";
 import type { SheetAtlas } from "./SheetAtlas";
 import type { DecoStamp } from "./placeAmbientDeco";
+import { decoOverlayFromStamps, type ContextThemeRule } from "./ContextThemeSubstitution";
+import {
+  drawQuadrantOverlay,
+  innerCornerMask,
+  sourceTileIdForObject,
+} from "./QuadrantCompositeAutotile";
+import type { AutotileMassContext } from "./MemberGraphAutotile";
 import { resolveDisplayTileId } from "./resolveDisplayTile";
 import { resolveShellTileId } from "./ShellTileResolve";
 import type { TerrainTileBridge } from "./TerrainTileBridge";
@@ -25,6 +33,10 @@ export type ShellDrawExtras = {
   simTick?: number;
   /** Composite renderer for animated tiles (grass / flame). */
   tileWorld?: TileWorldRenderer | null;
+  /** Door destination kind by packCell. */
+  doorDestByCell?: Map<number, RoomKind> | null;
+  /** Parsed context theme rules. */
+  contextThemeRules?: ContextThemeRule[] | null;
 };
 
 /**
@@ -45,7 +57,15 @@ export function drawShellTiles(
   const displaySalt = extras.displaySalt ?? 0n;
   const simTick = extras.simTick ?? 0;
   const tileWorld = extras.tileWorld ?? null;
+  const floorOrdinal = extras.floorOrdinal ?? 1;
   const useCPlus = !!(project && bridge && roomKind != null);
+  const decoOverlay = decoOverlayFromStamps(extras.decoStamps);
+  const themeRules = extras.contextThemeRules ?? [];
+  const resolveExtras = {
+    doorDestByCell: extras.doorDestByCell,
+    decoOverlay,
+    contextThemeRules: themeRules,
+  };
 
   // Deco underlay on EMPTY cells (behind terrain) — full opacity (Java ambient deco).
   if (atlas && extras.decoStamps?.length) {
@@ -58,7 +78,17 @@ export function drawShellTiles(
       const dh = Math.floor(CAMERA_ZOOM * TILE_SIZE);
       if (
         project &&
-        tileWorld?.drawTileIfAnimated(g, project, stamp.tileId, simTick, dx, dy, CAMERA_ZOOM)
+        tileWorld?.drawTileIfAnimated(
+          g,
+          project,
+          stamp.tileId,
+          simTick,
+          dx,
+          dy,
+          CAMERA_ZOOM,
+          wx,
+          wy,
+        )
       ) {
         continue;
       }
@@ -97,7 +127,8 @@ export function drawShellTiles(
           ty,
           roomKind!,
           displaySalt,
-          extras.floorOrdinal ?? 1,
+          floorOrdinal,
+          resolveExtras,
         );
       }
       if (!tileId) {
@@ -106,14 +137,91 @@ export function drawShellTiles(
       if (
         tileId &&
         project &&
-        tileWorld?.drawTileIfAnimated(g, project, tileId, simTick, dx, dy, CAMERA_ZOOM)
+        tileWorld?.drawTileIfAnimated(
+          g,
+          project,
+          tileId,
+          simTick,
+          dx,
+          dy,
+          CAMERA_ZOOM,
+          wx,
+          wy,
+        )
       ) {
         continue;
       }
       if (tileId && atlas?.drawTileId(g, tileId, dx, dy, dw, dh, sheetOverride)) {
+        if (
+          useCPlus &&
+          atlas &&
+          project &&
+          bridge &&
+          roomKind != null &&
+          (terrain === TILE_SOLID || terrain === TILE_BREAKABLE)
+        ) {
+          drawQuadrantIfNeeded(
+            g,
+            atlas,
+            project,
+            bridge,
+            map,
+            tx,
+            ty,
+            terrain,
+            tileId,
+            roomKind,
+            displaySalt,
+            floorOrdinal,
+            dx,
+            dy,
+            dw,
+            sheetOverride,
+          );
+        }
         continue;
       }
       colorFallback(terrain, dx, dy, dw, dh);
     }
   }
+}
+
+function drawQuadrantIfNeeded(
+  g: CanvasRenderingContext2D,
+  atlas: SheetAtlas,
+  project: TilesetProject,
+  bridge: TerrainTileBridge,
+  map: TileMap,
+  tx: number,
+  ty: number,
+  terrain: number,
+  displayTileId: string,
+  roomKind: RoomKind,
+  displaySalt: bigint,
+  floorOrdinal: number,
+  dx: number,
+  dy: number,
+  dw: number,
+  sheetOverride?: string,
+): void {
+  const owner =
+    project.objectByTileId.get(displayTileId) ??
+    (() => {
+      const connectId = bridge.connectTileIdForRoomKind(terrain, roomKind) || displayTileId;
+      return project.objectByTileId.get(connectId) ?? project.objectById.get(connectId);
+    })();
+  if (!owner?.usesMemberGraph) return;
+  const sourceId = sourceTileIdForObject(owner, project);
+  if (!sourceId) return;
+  const massCtx: AutotileMassContext = {
+    object: owner,
+    bridge,
+    displaySalt,
+    roomKind,
+    floorOrdinal,
+    project,
+  };
+  const mask = innerCornerMask(tx, ty, terrain, map, massCtx, project);
+  if (mask === 0) return;
+  drawQuadrantOverlay(g, atlas, project, sourceId, dx, dy, dw, mask, sheetOverride);
 }

@@ -8,6 +8,11 @@ import {
   TILE_PLATFORM,
   TILE_SOLID,
 } from "../world/TileMap";
+import { packCell } from "../world/BossDoorSealAnim";
+import {
+  themedDisplayTileId,
+  type ContextThemeRule,
+} from "./ContextThemeSubstitution";
 import {
   resolveTerrainDisplayTileId,
   sameAutotilePackage,
@@ -25,6 +30,15 @@ const FALLBACK: Record<number, string> = {
   [TILE_BREAKABLE]: "main_r4c3",
 };
 
+export type ResolveDisplayExtras = {
+  /** Door art kind by packCell (Java doorDisplayKindForCell). */
+  doorDestByCell?: Map<number, RoomKind> | null;
+  /** Deco overlay for context theme swap. */
+  decoOverlay?: Map<number, string> | null;
+  /** Parsed context theme rules. */
+  contextThemeRules?: ContextThemeRule[] | null;
+};
+
 /**
  * Resolve display tile id for a map cell: terrain bridge → MemberGraph for SOLID/BREAKABLE.
  * Matches Java AutotileDraw.resolveTerrainMassCell: bridge pick is a package tag; connect-package
@@ -39,6 +53,7 @@ export function resolveDisplayTileId(
   roomKind: RoomKind,
   displaySalt: bigint,
   floorOrdinal = 1,
+  extras: ResolveDisplayExtras = {},
 ): string | null {
   const terrain = map.tileAt(tx, ty);
   if (terrain === TILE_EMPTY) return null;
@@ -46,7 +61,11 @@ export function resolveDisplayTileId(
   const tileAllowed = (id: string) => project.tileAllowed(id, floorOrdinal, roomKind);
 
   if (terrain === TILE_DOOR) {
-    return resolveDoorTile(bridge, map, tx, ty, roomKind, displaySalt, tileAllowed);
+    const doorKind =
+      extras.doorDestByCell?.get(packCell(tx, ty)) ?? roomKind;
+    return resolveDoorTile(bridge, map, tx, ty, doorKind, displaySalt, (id) =>
+      project.tileAllowed(id, floorOrdinal, doorKind),
+    );
   }
 
   const pooled =
@@ -63,12 +82,21 @@ export function resolveDisplayTileId(
         return "main_3_3";
       }
     }
-    return pooled;
+    const themed = themedDisplayTileId(
+      extras.contextThemeRules ?? [],
+      pooled,
+      terrain,
+      extras.decoOverlay ?? new Map(),
+      tx,
+      ty,
+    );
+    return themed ?? pooled;
   }
 
   // Java resolveTerrainMassCell: if pick belongs to connect object → force connect graph.
   const connectId = bridge.connectTileIdForRoomKind(terrain, roomKind) || pooled;
   const connectObj = project.objectByTileId.get(connectId) ?? project.objectById.get(connectId);
+  let resolved = pooled;
   if (
     connectObj?.usesMemberGraph &&
     pickBelongsToConnectObject(connectObj, pooled, project)
@@ -81,24 +109,32 @@ export function resolveDisplayTileId(
       floorOrdinal,
       project,
     };
-    return resolveTerrainDisplayTileId(project, connectId, map, tx, ty, terrain, massCtx);
+    resolved = resolveTerrainDisplayTileId(project, connectId, map, tx, ty, terrain, massCtx);
+  } else {
+    // Else: pick's own autotile package (e.g. log among block mass).
+    const owner = project.objectByTileId.get(pooled);
+    if (owner?.usesMemberGraph) {
+      const massCtx: AutotileMassContext = {
+        object: owner,
+        bridge,
+        displaySalt,
+        roomKind,
+        floorOrdinal,
+        project,
+      };
+      resolved = resolveTerrainDisplayTileId(project, pooled, map, tx, ty, terrain, massCtx);
+    }
   }
 
-  // Else: pick's own autotile package (e.g. log among block mass).
-  const owner = project.objectByTileId.get(pooled);
-  if (owner?.usesMemberGraph) {
-    const massCtx: AutotileMassContext = {
-      object: owner,
-      bridge,
-      displaySalt,
-      roomKind,
-      floorOrdinal,
-      project,
-    };
-    return resolveTerrainDisplayTileId(project, pooled, map, tx, ty, terrain, massCtx);
-  }
-
-  return pooled;
+  const themed = themedDisplayTileId(
+    extras.contextThemeRules ?? [],
+    resolved,
+    terrain,
+    extras.decoOverlay ?? new Map(),
+    tx,
+    ty,
+  );
+  return themed ?? resolved;
 }
 
 function resolveDoorTile(
@@ -106,12 +142,12 @@ function resolveDoorTile(
   map: TileMap,
   tx: number,
   ty: number,
-  roomKind: RoomKind,
+  doorKind: RoomKind,
   displaySalt: bigint,
   tileAllowed: (id: string) => boolean,
 ): string {
   return (
-    bridge.displayTileIdForDoorIfPaired(map, tx, ty, displaySalt, roomKind, tileAllowed) ??
+    bridge.displayTileIdForDoorIfPaired(map, tx, ty, displaySalt, doorKind, tileAllowed) ??
     FALLBACK[TILE_DOOR] ??
     "main_9_3"
   );

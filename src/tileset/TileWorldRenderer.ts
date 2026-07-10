@@ -49,6 +49,8 @@ export class TileWorldRenderer {
    * Draw one tile at device px. Returns true if drawn.
    * Uses composite path when needed; caller may fall back to SheetAtlas otherwise.
    * @param scale device scale (CAMERA_ZOOM) — composed tile is TILE_SIZE logical px.
+   * @param phaseX/phaseY world-space px for warp/glow desync (Java draws in world space;
+   *   device dst must not be used or camera motion retargets the phase bucket).
    */
   drawTile(
     g: CanvasRenderingContext2D,
@@ -58,6 +60,8 @@ export class TileWorldRenderer {
     dstX: number,
     dstY: number,
     scale = 1,
+    phaseX = dstX,
+    phaseY = dstY,
   ): boolean {
     if (!tileDef) return false;
     const tid = typeof tileDef.id === "string" ? tileDef.id : "";
@@ -66,7 +70,7 @@ export class TileWorldRenderer {
     const warped = resolvedStackUsesScanlineWarp(tile, varId, simTicks);
     const glowing = resolvedStackUsesGlowPulse(tile, varId, simTicks);
     const phaseAnimated = warped || glowing;
-    const bucket = phaseAnimated ? warpPhaseBucket(dstX, dstY, tid) : 0;
+    const bucket = phaseAnimated ? warpPhaseBucket(phaseX, phaseY, tid) : 0;
     const pad = glowing ? GLOW_BLEED_PX : 0;
     const key = phaseAnimated
       ? `${tid}\0${varId}\0${simTicks}\0w${bucket}`
@@ -98,10 +102,12 @@ export class TileWorldRenderer {
     dstX: number,
     dstY: number,
     scale = 1,
+    phaseX = dstX,
+    phaseY = dstY,
   ): boolean {
     const def = project.tileDef(tileId);
     if (!def || !tileNeedsComposite(def as JsonMap)) return false;
-    return this.drawTile(g, def, "", simTicks, dstX, dstY, scale);
+    return this.drawTile(g, def, "", simTicks, dstX, dstY, scale, phaseX, phaseY);
   }
 
   private putCache(key: string, img: HTMLCanvasElement): void {
@@ -118,12 +124,19 @@ export class TileWorldRenderer {
   }
 }
 
-function warpPhaseBucket(dstX: number, dstY: number, tileId: string): number {
-  let h = BigInt(dstX | 0) * 0x9e3779b97f4a7c15n ^ BigInt(dstY | 0) * 0x85ebca6bn;
+/** Stable 0..63 from world draw position + tile id (Java long arithmetic). */
+function warpPhaseBucket(worldX: number, worldY: number, tileId: string): number {
+  let h =
+    asI64(BigInt(worldX | 0) * 0x9e3779b97f4a7c15n) ^
+    asI64(BigInt(worldY | 0) * 0x85ebca6bn);
   for (let i = 0; i < tileId.length; i++) {
-    h = h * 31n + BigInt(tileId.charCodeAt(i));
+    h = asI64(h * 31n + BigInt(tileId.charCodeAt(i)));
   }
   return Number(h & 63n);
+}
+
+function asI64(n: bigint): bigint {
+  return BigInt.asIntN(64, n);
 }
 
 function warpPhaseOffsetFromBucket(bucket: number): number {

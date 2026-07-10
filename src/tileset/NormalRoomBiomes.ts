@@ -21,6 +21,8 @@ export type BiomeResolution = {
   decoClusterCountMin: number;
   decoClusterCountMax: number;
   decoClusterFallback: { red: string; blue: string };
+  /** Biome or project contextThemeRules (raw). */
+  contextThemeRules: BiomeRow["contextThemeRules"];
 };
 
 /** Java NormalRoomBiomes.resolve — weighted biome + terrain bridge overlay. */
@@ -47,6 +49,7 @@ export function resolveBiome(
       decoClusterCountMin: tun?.decoClusterCountMin ?? 3,
       decoClusterCountMax: tun?.decoClusterCountMax ?? 6,
       decoClusterFallback: fb ?? { red: "main_10_0", blue: "main_9_0" },
+      contextThemeRules: project.contextThemeRulesRaw,
     };
   }
 
@@ -78,6 +81,9 @@ export function resolveBiome(
     decoClusterCountMin: row.decoClusterCountMin,
     decoClusterCountMax: row.decoClusterCountMax,
     decoClusterFallback: row.decoClusterFallback,
+    contextThemeRules: row.contextThemeRules.length
+      ? row.contextThemeRules
+      : project.contextThemeRulesRaw,
   };
 }
 
@@ -101,6 +107,9 @@ function passthrough(
     decoClusterCountMin: row?.decoClusterCountMin ?? tun?.decoClusterCountMin ?? 3,
     decoClusterCountMax: row?.decoClusterCountMax ?? tun?.decoClusterCountMax ?? 6,
     decoClusterFallback: row?.decoClusterFallback ?? fb ?? { red: "main_10_0", blue: "main_9_0" },
+    contextThemeRules: row?.contextThemeRules.length
+      ? row.contextThemeRules
+      : project.contextThemeRulesRaw,
   };
 }
 

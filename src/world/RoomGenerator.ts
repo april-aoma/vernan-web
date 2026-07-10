@@ -2,13 +2,17 @@ import { TILE_SIZE } from "../specs";
 import { JavaRandom } from "../util/JavaRandom";
 import { placeStepBreakables } from "../tileset/placeStepBreakables";
 import { PickupKind } from "./BreakableLootRoll";
-import { RoomKind, type RoomNode } from "./DungeonTypes";
+import { isOneScreenRoomKind, RoomKind, type RoomNode } from "./DungeonTypes";
 import type { DungeonLayout } from "./DungeonLayout";
 import {
   MAX_PROCEDURAL_LADDER_RUNGS,
   stripSpuriousLaddersFromGrid,
   stripSpuriousLaddersFromMap,
 } from "./DungeonVerticalShaftRules";
+import {
+  applyLadderSafetyPlatforms,
+  stripPlatformsOnRow,
+} from "./LadderSafetyPlatforms";
 import type { EnemySpawn } from "./EnemySpawnBudget";
 import {
   makeItemPedestal,
@@ -28,8 +32,11 @@ import {
   finishSecretRoomMap,
   groundYFromMap,
 } from "./SecretRoomMapBuild";
+import { enforceOnGrid, enforceOnMap } from "./TerrainSolidConnectivity";
+import { shouldExpandWest } from "./SecretRoomLayoutPlanner";
 import { TILE_SOLID, TileMap } from "./TileMap";
 import type { TerrainTileBridge } from "../tileset/TerrainTileBridge";
+import type { ContextThemeRule } from "../tileset/ContextThemeSubstitution";
 import { resolvedLadderRunwayRowAt } from "./VerticalSeamGeometry";
 import { WorldPickup } from "./WorldPickup";
 
@@ -64,6 +71,8 @@ export type RoomArtData = {
   }>;
   /** Cached biome terrain bridge for draw (Phase C+). */
   bridge: TerrainTileBridge;
+  /** Parsed context theme rules for this room's biome. */
+  contextThemeRules?: ContextThemeRule[];
 };
 
 /** Deferred secret-room floor loot (spawned on room enter). */
@@ -376,6 +385,10 @@ export function generateRoomShell(
     stripSpuriousLaddersFromGrid(grid, w, h, ladderTx, groundY);
   }
 
+  if (kind === RoomKind.NORMAL || kind === RoomKind.BOSS || kind === RoomKind.ITEM) {
+    enforceOnGrid(grid, w, h, groundY);
+  }
+
   const rows = grid.map((row) => row.join(""));
   const map = TileMap.fromAscii(rows);
 
@@ -390,11 +403,22 @@ export function generateRoomShell(
     );
   }
 
+  const secretWillFinish = !!(finishOpts?.secretSeams || finishOpts?.neighborFaces);
+  applyLadderSafetyPlatforms(
+    map,
+    secretWillFinish,
+    ladderTx >= 0 ? ladderTx : -1,
+    dungeonLadderFloorRow,
+    dungeonVerticalLink,
+  );
+
   if (dungeonVerticalLink && ladderTx >= 0) {
     stripSpuriousLaddersFromMap(map, ladderTx, dungeonLadderFloorRow);
   } else if (kind === RoomKind.NORMAL || kind === RoomKind.BOSS) {
     stripSpuriousLaddersFromMap(map, -1);
   }
+
+  enforceOnMap(map);
 
   // Step-face breakables in generate (not enrich) — NORMAL / BOSS.
   let proceduralBreakables: Array<{ tx: number; ty: number }> = [];
@@ -510,6 +534,16 @@ export function generateRoomShell(
       maxReach,
       seed,
     );
+    // Post-finish safety: skip mouth platforms; shaft-only when vertical link.
+    applyLadderSafetyPlatforms(
+      room.map,
+      true,
+      ladderTx >= 0 ? ladderTx : -1,
+      dungeonLadderFloorRow,
+      true,
+    );
+    stripPlatformsOnRow(room.map, 1);
+    enforceOnMap(room.map);
   }
 
   return room;
@@ -656,6 +690,21 @@ export function connectivityFromNode(node: RoomNode, roomW: number): RoomConnect
   };
 }
 
+/** Grounded spawn with feet on an explicit floor tile row (Java spawnPxAtFloorRow). */
+export function spawnPxAtFloorRow(
+  map: TileMap,
+  spawnTx: number,
+  floorTy: number,
+): { x: number; y: number } {
+  const tx = Math.max(0, Math.min(spawnTx, map.getWidth() - 1));
+  const ty = Math.max(1, Math.min(floorTy, map.getHeight() - 2));
+  const groundTop = ty * TILE_SIZE;
+  return {
+    x: tx * TILE_SIZE,
+    y: Math.round(groundTop - PLAYER_STAND_SPAWN_H),
+  };
+}
+
 export function spawnPxAtFloorColumn(map: TileMap, spawnTx: number): { x: number; y: number } {
   const tx = Math.max(0, Math.min(spawnTx, map.getWidth() - 1));
   const groundTop = map.groundTopWorldYAtColumn(tx);
@@ -665,28 +714,71 @@ export function spawnPxAtFloorColumn(map: TileMap, spawnTx: number): { x: number
   };
 }
 
-export function defaultSpawnPx(g: GeneratedRoom): { x: number; y: number } {
+/**
+ * Safe spawn for INITIAL / missing door metadata (Java defaultSpawnPx).
+ * Optional layout: +1 tile east when a one-screen room was xor-widened west toward a secret.
+ */
+export function defaultSpawnPx(
+  g: GeneratedRoom,
+  layout?: DungeonLayout | null,
+  roomId = -1,
+): { x: number; y: number } {
   const w = g.map.getWidth();
-  const spawnTx = Math.min(2, Math.max(1, w - 3));
+  let spawnTx = Math.min(2, Math.max(1, w - 3));
+  if (layout != null && roomId >= 0 && wantsSpawnEastOfWestSecretDoor(layout, roomId, g)) {
+    spawnTx = Math.min(spawnTx + 1, w - 3);
+  }
   return spawnPxAtFloorColumn(g.map, spawnTx);
 }
 
+/**
+ * Center-of-room grounded spawn for ascending to a new dungeon level
+ * (Java levelEntrySpawnPx / finalizeLevelEntrySpawn).
+ */
+export function levelEntrySpawnPx(g: GeneratedRoom): { x: number; y: number } {
+  const w = g.map.getWidth();
+  const spawnTx = Math.max(1, Math.min(w - 2, Math.floor(w / 2)));
+  return spawnPxAtFloorColumn(g.map, spawnTx);
+}
+
+/** Grounded spawn inside a horizontal door frame (Java horizontalDoorSpawnPx). */
 export function horizontalDoorSpawnPx(g: GeneratedRoom, fromWest: boolean): { x: number; y: number } {
-  // Java refreshDoorSpawnPads: feet on doorTop+2 play floor.
   if (fromWest) {
     if (g.leftDoorTileX >= 0 && g.leftDoorTopTileY >= 0) {
-      return {
-        x: (g.leftDoorTileX + 1) * TILE_SIZE,
-        y: (g.leftDoorTopTileY + 2) * TILE_SIZE - 32,
-      };
+      return doorFrameSpawnPx(g.map, g.leftDoorTileX, g.leftDoorTopTileY);
     }
   } else if (g.rightDoorTileX >= 0 && g.rightDoorTopTileY >= 0) {
-    return {
-      x: (g.rightDoorTileX - 1) * TILE_SIZE,
-      y: (g.rightDoorTopTileY + 2) * TILE_SIZE - 32,
-    };
+    return doorFrameSpawnPx(g.map, g.rightDoorTileX, g.rightDoorTopTileY);
   }
   return defaultSpawnPx(g);
+}
+
+/** Feet on doorTop+2 play floor, X = door column (Java doorFrameSpawnPx). */
+function doorFrameSpawnPx(
+  map: TileMap,
+  doorTileX: number,
+  doorTopTileY: number,
+): { x: number; y: number } {
+  if (doorTopTileY >= 0) {
+    const floorRow = Math.min(doorTopTileY + 2, map.getHeight() - 2);
+    return spawnPxAtFloorRow(map, doorTileX, floorRow);
+  }
+  return spawnPxAtFloorColumn(map, doorTileX);
+}
+
+/** Java wantsSpawnEastOfWestSecretDoor — INITIAL pad shifts east of xor-widened west secret door. */
+function wantsSpawnEastOfWestSecretDoor(
+  layout: DungeonLayout,
+  roomId: number,
+  g: GeneratedRoom,
+): boolean {
+  if (!isOneScreenRoomKind(layout.room(roomId).kind)) return false;
+  if (!layout.room(roomId).doorWest || g.leftDoorTileX < 0) return false;
+  if (!shouldExpandWest(layout, roomId)) return false;
+  const westId = layout.neighborWest(roomId);
+  if (westId < 0) return false;
+  const wk = layout.room(westId).kind;
+  return wk === RoomKind.SECRET || wk === RoomKind.SUPER_SECRET;
 }
 
 /** PROP-TRAV-1 / ASCII-TRAV-1: no column may jump more than maxStep tiles. */

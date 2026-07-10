@@ -15,6 +15,7 @@ explicitly document a web-only exception here.
 | Timestep | Fixed 60 Hz |
 | Y axis | Down is positive |
 | Player stand hitbox / spawn | 10×18; spawn Y = `groundTop − 18` |
+| Door / level-entry spawn | Door frame: X = door column, Y = `(doorTop+2)×16 − 18`; next floor: center column (`levelEntrySpawnPx`) + `finalizeLevelEntrySpawn` |
 | Doors | 2 tiles tall at `x=1` / `x=w−2`, top = `groundY − 2` |
 | Seeded dungeon | Same seed ⇒ same layout when using `JavaRandom` (OpenJDK `java.util.Random` LCG) |
 | Seed URL | `?seed=` for friend testing |
@@ -67,12 +68,12 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 ### Phase room-transition notes
 
 - Shared fade machine: **20f out → swap → 20f in** @ 60Hz; black overlay α ≤ **220**; freezes player/enemies
-- **Horizontal doors**: Up/W edge; Vernan `doorenter`/`doorexit` poses (1f composites); **3f** exit hold after fade-in; camera snap on swap
+- **Horizontal doors**: Up/W edge; Vernan `doorenter`/`doorexit` poses (1f composites); **3f** exit hold after fade-in; camera snap on swap; spawn via `horizontalDoorSpawnPx` / `doorFrameSpawnPx` (door column X, stand-H Y — not the legacy −32 pad)
 - **Vertical ladders**: hold Up/Down at shaft edges; same fade (no door poses); `FROM_ABOVE`/`FROM_BELOW` spawns; shaft opens through N/S map borders when linked
 - **Hold through fade**: `clearHardwareStateForRoomTransition` flushes press edges only (held keys survive) — Java parity
 - **Ladder mouth getup**: double-tap Down (18f window) → 10f mount pose → climb; Up at shaft top → 10f dismount pose; single Down on mouth crouches (no drop-through)
-- **Boss floor ascend**: fade out → `LEVEL_LOAD_BLACK` (~5s) with climb-in-place then `leveltransition` strip → apply next floor mid-blackout → fade in (Java `startNextLevelAscend`)
-- Stubbed: keyblock shaft blocks, door destination theming
+- **Boss floor ascend**: fade out → `LEVEL_LOAD_BLACK` (~5s) with climb-in-place then `leveltransition` strip → apply next floor mid-blackout → fade in (Java `startNextLevelAscend`); landing uses `levelEntrySpawnPx` (room center) + `finalizeLevelEntrySpawn`
+- Stubbed: keyblock sprite strips (logic live — see gen-correctness)
 - Parallel tracks: see [`docs/handoffs/`](./handoffs/README.md)
 
 ### Phase breakables/seams notes
@@ -103,7 +104,7 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - **Palette clamp**: `GameColorPalette` snaps full backbuffer to `game-palette.png` (nearest chromatic swatch + black/white clamps); preserves exact in-game sprite colors via `data/palette-exact-source-keys.json` (Java `rebuildExactSourceColors`)
 - Room void is **black**; BOSS / SECRET / SUPER_SECRET use Earthbound-style **math backgrounds** (`sprites/background/*.preset.json`, seeded pick)
 - Step-face **breakables** (up to 6) in NORMAL/BOSS via cliff-mesa faces + reachability
-- Stubbed: placed props, context theme rules, quadrant composites, variation profiles, softlock-safe breakable reachability, door destination theming (uses current room kind)
+- Stubbed: placed props, variation profiles; door destination / context themes / quadrants — see Phase art-parity
 
 ### Phase C+ notes (full tileset — thin-real)
 
@@ -169,7 +170,7 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - `roomCombatCleared` prevents respawn; death waits **4 s** (`DEATH_REWARD_DELAY_SEC`) before clear
 - On clear: kill explosion + **BOSS_CLEAR** pedestal (`PedestalItemDecks.drawBossClear`)
 - HUD: boss HP bar; hit flash on Possessed
-- Stubbed (5b): Nephilim, Modern Chicken; scanline / full PartSim wall bounce / Lil familiar
+- Stubbed (5b): Nephilim, Modern Chicken; Lil familiar
 
 ### Phase 6a notes
 
@@ -198,15 +199,15 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 - Vision radius = `min(viewW, viewH)`; Phase B orbit standoff + aggression scaling
 - **Live combat (Java parity):** aimed / volley / fan (±45°) / 8-way nova / dash-through; kite at ≤1/3 HP; dodge+counter when threat closing; contact damage only during juke/dash windows
 - Pattern unlock at ≤50% HP (`PATTERN_HP_FRAC`); dash chance in mid range at any HP
-- Multi-part draw from `possessed.rig.json` (head/body/hands + pose offsets + bob); charge ring / nova ring telegraph
+- Multi-part draw from `possessed.rig.json` (head/body/hands) via `partRenders()` + EarthBound **scanline warp** (`warpPossessedPartFrame`); charge / nova ring telegraphs
 - **Boss arena platforms** live in RoomGenerator (`possessedBossArena` floating `-` platforms)
 - **Shiny variant** (`EnemyVariantRegistry`): 33% via `contentSeed ^ 0x51E0E5055`, HP 24, shiny strip; AI deltas (×1.2 move, kite ≤50%, dodge+counter from full HP, no dash / range-keyed attacks, upward dodge, down counter aim, start Phase A)
 - **Special boss drops** (`possessedBossReward`): Lil / Head until both owned (50/50 seed `^ 0x10557055ED`), else BOSS_CLEAR; `commitAssigned` on place
 - **Bullet die FX**: despawn queue + 2-frame die strip draw
-- **Light knock-loose limbs**: hurt hull AABBs from rig; sword knock offset+spin, spring back `SETTLED_K=220` (no wall bounce)
+- **Full PartSim** (Java parity): world-space springs (`SETTLED_K=220` / `LOOSE_K=40`), knock-loose + `moveLooseWithBounce` (`WALL_REST=0.7` / `FLOOR_REST=0.6`), `ANCHOR_TRAIL_FRAC=1.0`; hurt/collision hulls from rig
 - **Possessed Head** melee: horizontal bullet on attackPhase 2 rising edge (`PossessedHead.ts`)
-- **Death debris**: 4 colored BrickChunks from part centers on death start
-- Stubbed: scanline warp, full PartSim wall bounce, **LilPossessed familiar** (Head works; familiar deferred — see `LilPossessed.ts`)
+- **Death debris**: BrickChunks from part sim centers on death start (boss `partRenders` empty while dying)
+- Stubbed: **LilPossessed familiar** (Head works; familiar deferred — see `LilPossessed.ts`); full pivot-hull death debris (colored BrickChunks stand in)
 
 ### Phase 1b notes (movement parity)
 
@@ -238,9 +239,24 @@ Default recommendation if you don’t have a preference: **A (Mouse)** or **B (s
 ### Phase terrain-core notes
 
 - **RoomGenerator** thickened toward Java `generate`: `maxVerticalReachTilesForGridY` (easy 2 / standard 3), `enforceMaxWalkableGroundYStep`, GEN-LADDER-1 random `H`, floating `-` platforms (NORMAL + BOSS), step breakables in generate + softlock strip (`ProceduralBreakableNav`), pillar/play-floor caps with content `pillarThinSeed`
-- **Post–Pass B order** (GEN-ORDER-1 minus keyblocks/deco): secret content → `LadderVerticalSeamAlign.applyAll` → `placeSecretEntrances` → `applyFinalShaftPass` → enemies
+- **Post–Pass B order** (GEN-ORDER-1): secret content → `LadderVerticalSeamAlign.applyAll` → `applyPostDungeonPasses` → `placeSecretEntrances` → `applyFinalShaftPass` → keyblocks → enemies
 - **Secret loot**: `applySecretPostGenerationContent` (pedestal / key×3 / heart×3 / coin×10; SUPER cluster); `mountDeferredRoomPickups` thin hook in `mount.ts`
-- Still stubbed: keyblocks, deco-in-generate, dual-seam bridge, placed props, `start.json`, full `TerrainSolidConnectivity` / `LadderSafetyPlatforms`
+- Still stubbed: placed props, `start.json`, full PendingGroundedDeco deferral inside generate (deco stamps after final terrain via enrich)
+
+### Phase gen-correctness notes
+
+- **Keyblocks**: `KeyblockEntrancePlacer` (floor ≥2 ITEM/SHOP parent seals), strip secrets, seam reconcile; runtime tick/spend/restore + freeze; ladder path gates; `KeyblockBypass` on ITEM/SHOP enter
+- **Dual-seam**: `SecretDualSeamNav` + `bridgeDualSeamHeights` in `finishSecretRoomMap` (SEC-DUAL-1)
+- **Deco**: enrich stamps once on final terrain; thin `regroundDecoStampsToFinalTerrain` for ground-hugging support loss; idempotent skip re-stamp
+- **Safety / connectivity**: `LadderSafetyPlatforms` + `TerrainSolidConnectivity` in generate + `applyPostDungeonPasses` / final shaft `enforceOnMap`
+- Still stubbed: keyblock sprite strips, placed props, `start.json`
+
+### Phase art-parity notes
+
+- **Door destination**: `DoorDestinationResolver` — ITEM/SHOP/BOSS door art from neighbor/source kind; wired via `doorDestByCell` in `drawShellTiles` / `resolveDisplayTile`
+- **Context themes**: parse `contextThemeRules` (project + biome); flank bake in enrich; draw-time `themedDisplayTileId` swap
+- **Quadrant composites**: `QuadrantCompositeAutotile` inner-corner 8×8 overlay after MemberGraph blit
+- Still stubbed: placed props, `start.json`, variation profiles
 
 ### Phase terrain-bridge-v3 notes
 

@@ -1,11 +1,17 @@
 import type { DungeonLayout } from "./DungeonLayout";
 import { stripSpuriousLaddersFromMap } from "./DungeonVerticalShaftRules";
 import {
+  stripFlankingMouthDecks,
+  stripPlatformsOnRow,
+  stripShaftColumnPlatforms,
+} from "./LadderSafetyPlatforms";
+import {
   maxVerticalReachTilesForGridY,
   resolvedLadderShaftFootRowAt,
   type GeneratedRoom,
   type RoomConnectivity,
 } from "./RoomGenerator";
+import { resolvedLadderRunwayRowAt } from "./VerticalSeamGeometry";
 import {
   clearStrayLadderPlatforms,
   enforceInteriorPlayFloorSteps,
@@ -21,11 +27,12 @@ import {
   type SecretSeam,
 } from "./SecretEntrancePlacer";
 import { RoomKind } from "./DungeonTypes";
+import { enforceOnMap } from "./TerrainSolidConnectivity";
 import type { TileMap } from "./TileMap";
 
 /**
  * LADDER-MOUTH-2: after terrain is final, place south mouth and shaft rungs in column L
- * (Java LadderVerticalSeamAlign subset — no LadderSafetyPlatforms / TerrainSolidConnectivity).
+ * (Java LadderVerticalSeamAlign).
  */
 export function applyAll(layout: DungeonLayout, rooms: GeneratedRoom[]): void {
   const n = layout.roomCount();
@@ -82,7 +89,7 @@ export function applyAll(layout: DungeonLayout, rooms: GeneratedRoom[]): void {
 
 /**
  * Final shaft pass after SecretEntrancePlacer — re-finalize mouths stale after strike lanes.
- * Subset of Java applyFinalShaftPass (no keyblocks / full terrain connectivity).
+ * (Java LadderVerticalSeamAlign.applyFinalShaftPass)
  */
 export function applyFinalShaftPass(
   layout: DungeonLayout,
@@ -90,11 +97,42 @@ export function applyFinalShaftPass(
   seams: SecretSeam[],
 ): void {
   applyAll(layout, rooms);
+  applyPostDungeonPasses(layout, rooms);
   reapplyVerticalSeamTerrain(layout, rooms, seams);
   enforceRunwayCellsAfterSeams(layout, rooms, seams);
   enforceInteriorPlayFloorStepsAfterSeams(layout, rooms);
   fillShaftColumnGapsAfterSeams(layout, rooms);
   stripSpuriousVerticalShafts(layout, rooms);
+  enforceTerrainRulesOnRooms(rooms);
+}
+
+/**
+ * Strip early safety decks once mouths are final (Java applyPostDungeonPasses).
+ */
+export function applyPostDungeonPasses(layout: DungeonLayout, rooms: GeneratedRoom[]): void {
+  const n = layout.roomCount();
+  for (let id = 0; id < n; id++) {
+    if (id >= rooms.length || !rooms[id]) continue;
+    const map = rooms[id]!.map;
+    stripPlatformsOnRow(map, 1);
+    const node = layout.room(id);
+    if (!node.ladderNorth && !node.ladderSouth) continue;
+    const layoutL = node.ladderColumnTx;
+    if (layoutL < 0) continue;
+    const l = clampLadderColumn(map.getWidth(), layoutL);
+    const runwayRow = resolvedLadderRunwayRowAt(map, l, node.ladderSouth);
+    const keepMouth = node.ladderSouth;
+    clearStrayLadderPlatforms(map, l, runwayRow, keepMouth);
+    stripShaftColumnPlatforms(map, l, runwayRow, keepMouth);
+    stripFlankingMouthDecks(map, l, runwayRow);
+  }
+}
+
+function enforceTerrainRulesOnRooms(rooms: GeneratedRoom[]): void {
+  for (const g of rooms) {
+    if (!g) continue;
+    enforceOnMap(g.map);
+  }
 }
 
 function alignNorthSouthPair(

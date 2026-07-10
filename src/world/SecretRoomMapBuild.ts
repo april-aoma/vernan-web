@@ -1,5 +1,6 @@
 import { RoomKind } from "./DungeonTypes";
 import type { GeneratedRoom, RoomConnectivity } from "./RoomGenerator";
+import { hasDualHorizontalSeams, runwayFloorsConnected } from "./SecretDualSeamNav";
 import type { NeighborSecretFaces, SecretRoomSeams } from "./SecretHorizontalSeamSpec";
 import {
   TILE_BREAKABLE,
@@ -134,6 +135,7 @@ export function finishSecretRoomMap(
     }
     frameConnectedDoorColumns(map, room, conn, ladderTx);
     if (kind === RoomKind.SECRET) {
+      bridgeDualSeamHeights(map, room, ladderTx, maxStep);
       enforceInteriorPlayFloorSteps(
         map,
         room.leftDoorTileX,
@@ -575,6 +577,110 @@ export function enforceInteriorPlayFloorSteps(
     }
     if (!changed) break;
   }
+}
+
+/**
+ * When a SECRET has west+east seams at different play-floor heights, grade the
+ * interior so both entrances stay reachable (SEC-DUAL-1 / Java bridgeDualSeamHeights).
+ */
+export function bridgeDualSeamHeights(
+  map: TileMap,
+  g: GeneratedRoom,
+  _ladderTx: number,
+  maxStep = MAX_SECRET_STEP_HEIGHT_TILES,
+): void {
+  if (!hasDualHorizontalSeams(g)) return;
+  if (runwayFloorsConnected(map, g, maxStep)) return;
+  const leftX = g.leftDoorTileX;
+  const rightX = g.rightDoorTileX;
+  const h = map.getHeight();
+  const westFloor = seamPlayFloorRow(g.leftDoorTopTileY, h);
+  const eastFloor = seamPlayFloorRow(g.rightDoorTopTileY, h);
+  const bridgeLo = leftX + 1;
+  const bridgeHi = rightX - 1;
+  if (bridgeLo > bridgeHi) return;
+  applyGradedFloorBridge(map, bridgeLo, bridgeHi, westFloor, eastFloor, maxStep);
+  capBridgeSpanStepHeights(map, bridgeLo, bridgeHi, maxStep);
+  setColumnPlayFloorRow(map, leftX + 1, westFloor);
+  setColumnPlayFloorRow(map, rightX - 1, eastFloor);
+  capBridgeSpanStepHeights(map, bridgeLo, bridgeHi, maxStep);
+}
+
+function capBridgeSpanStepHeights(
+  map: TileMap,
+  bridgeLo: number,
+  bridgeHi: number,
+  maxStep: number,
+): void {
+  const floor = groundYFromMap(map);
+  for (let pass = 0; pass <= bridgeHi - bridgeLo; pass++) {
+    let changed = false;
+    for (let x = bridgeLo + 1; x <= bridgeHi; x++) {
+      const left = floor[x - 1]!;
+      const f = floor[x]!;
+      if (f - left > maxStep) {
+        const target = left + maxStep;
+        setColumnPlayFloorRow(map, x, target);
+        floor[x] = target;
+        changed = true;
+      }
+      if (left - f > maxStep) {
+        const target = f + maxStep;
+        setColumnPlayFloorRow(map, x - 1, target);
+        floor[x - 1] = target;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+}
+
+function applyGradedFloorBridge(
+  map: TileMap,
+  bridgeLo: number,
+  bridgeHi: number,
+  westFloor: number,
+  eastFloor: number,
+  maxStep: number,
+): void {
+  const floor = groundYFromMap(map);
+  const cols = bridgeHi - bridgeLo;
+  let prev = westFloor;
+  for (let i = 0; i <= cols; i++) {
+    const x = bridgeLo + i;
+    let target =
+      cols === 0 ? eastFloor : westFloor + Math.floor(((eastFloor - westFloor) * i) / cols);
+    target = clampFloorStep(prev, target, maxStep);
+    if (floor[x]! !== target) {
+      setColumnPlayFloorRow(map, x, target);
+      floor[x] = target;
+    }
+    prev = target;
+  }
+}
+
+function clampFloorStep(fromFloor: number, toFloor: number, maxStep: number): number {
+  if (toFloor > fromFloor + maxStep) return fromFloor + maxStep;
+  if (toFloor < fromFloor - maxStep) return fromFloor - maxStep;
+  return toFloor;
+}
+
+/** Set play-floor row for one column (air above floorRow, solid from floorRow down). */
+function setColumnPlayFloorRow(map: TileMap, x: number, floorRow: number): void {
+  const h = map.getHeight();
+  for (let y = 1; y < h - 1; y++) {
+    if (isPreservedForFloorReshape(map.tileAt(x, y))) continue;
+    map.setTile(x, y, TILE_EMPTY);
+  }
+  for (let y = floorRow; y < h - 1; y++) {
+    if (isPreservedForFloorReshape(map.tileAt(x, y))) continue;
+    map.setTile(x, y, TILE_SOLID);
+  }
+}
+
+/** Doors/keyblocks only — ladder rungs restored by shaft reconcile after the bridge. */
+function isPreservedForFloorReshape(t: number): boolean {
+  return t === TILE_DOOR || t === TILE_KEYBLOCK || t === TILE_KEYBLOCK_CONNECTOR;
 }
 
 function isStepColumnExcluded(
