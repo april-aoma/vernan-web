@@ -72,13 +72,24 @@ export function resolveBiome(
     return passthrough(project, sheetId, baseBridge, kindName, row);
   }
 
-  const bridge = buildBiomeTerrainBridge(project, baseBridge, row, isDefault);
+  const decoPoolRaw = row.decoPool.length
+    ? row.decoPool
+    : (project.decoPoolsByRoomKind.get("NORMAL") ?? []);
+  // Java buildOverlayProceduralRoot → filterPoolEntriesToSheet
+  const decoPool = project.filterPoolEntriesToSheet(decoPoolRaw, sheetId);
+  const terrainPool = project.filterPoolEntriesToSheet(row.terrainBridgePool, sheetId);
+  const bridge = buildBiomeTerrainBridge(
+    project,
+    baseBridge,
+    { ...row, terrainBridgePool: terrainPool },
+    isDefault,
+  );
   return {
     biomeId: row.id,
     sheetId,
     bridge,
     exclusive: !isDefault || hasOverride,
-    decoPool: row.decoPool.length ? row.decoPool : (project.decoPoolsByRoomKind.get("NORMAL") ?? []),
+    decoPool,
     decoClusterCountMin: row.decoClusterCountMin,
     decoClusterCountMax: row.decoClusterCountMax,
     decoClusterFallback: row.decoClusterFallback,
@@ -101,14 +112,15 @@ function passthrough(
 ): BiomeResolution {
   const tun = project.tunablesByRoomKind.get(kindName);
   const fb = project.decoClusterFallbackByRoomKind.get(kindName);
+  const decoRaw = row?.decoPool.length
+    ? row.decoPool
+    : (project.decoPoolsByRoomKind.get(kindName) ?? []);
   return {
     biomeId: row?.id ?? "default",
     sheetId,
     bridge,
     exclusive: false,
-    decoPool: row?.decoPool.length
-      ? row.decoPool
-      : (project.decoPoolsByRoomKind.get(kindName) ?? []),
+    decoPool: project.filterPoolEntriesToSheet(decoRaw, sheetId),
     decoClusterCountMin: row?.decoClusterCountMin ?? tun?.decoClusterCountMin ?? 3,
     decoClusterCountMax: row?.decoClusterCountMax ?? tun?.decoClusterCountMax ?? 6,
     decoClusterFallback: row?.decoClusterFallback ?? fb ?? defaultDecoClusterFallback(),

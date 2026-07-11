@@ -34,6 +34,40 @@ export function drawStripFrame(
   const sx = fi * strip.frameW;
   const dx = camera.worldToDeviceX(worldLeft);
   const dy = camera.worldToDeviceY(worldTop);
+  blitStripFrame(g, strip, sx, dx, dy, facing, juice);
+}
+
+/**
+ * Feet-pinned strip draw: pin sprite bottom to {@code feetWorldY} via
+ * {@link WorldCamera.worldSpriteTopDeviceY} (Java anti-shimmer).
+ */
+export function drawStripFrameFeetPinned(
+  g: CanvasRenderingContext2D,
+  strip: SpriteStrip,
+  frameIndex: number,
+  worldLeft: number,
+  feetWorldY: number,
+  facing: number,
+  camera: WorldCamera,
+  juice?: JuiceDrawOpts,
+  feetAnchorHeightWorldPx: number = strip.frameH,
+): void {
+  const fi = ((frameIndex % strip.frameCount) + strip.frameCount) % strip.frameCount;
+  const sx = fi * strip.frameW;
+  const dx = camera.worldToDeviceX(worldLeft);
+  const dy = camera.worldSpriteTopDeviceY(feetWorldY, feetAnchorHeightWorldPx);
+  blitStripFrame(g, strip, sx, dx, dy, facing, juice);
+}
+
+function blitStripFrame(
+  g: CanvasRenderingContext2D,
+  strip: SpriteStrip,
+  sx: number,
+  dx: number,
+  dy: number,
+  facing: number,
+  juice?: JuiceDrawOpts,
+): void {
   const dw = Math.floor(CAMERA_ZOOM * strip.frameW);
   const dh = Math.floor(CAMERA_ZOOM * strip.frameH);
   if (juice && (juice.solidRed || (juice.hurtTintAlpha ?? 0) > 0 || juice.tintRgb != null || juice.shakeX || juice.shakeY || (juice.scaleX ?? 1) !== 1 || (juice.scaleY ?? 1) !== 1)) {
@@ -74,8 +108,7 @@ export function drawFeetPinnedStrip(
   juice?: JuiceDrawOpts,
 ): void {
   const left = centerX - strip.frameW * 0.5;
-  const top = feetWorldY - strip.frameH;
-  drawStripFrame(g, strip, frameIndex, left, top, facing, camera, juice);
+  drawStripFrameFeetPinned(g, strip, frameIndex, left, feetWorldY, facing, camera, juice);
 }
 
 /**
@@ -123,9 +156,8 @@ export function drawFeetPinnedImage(
   juice?: JuiceDrawOpts,
 ): void {
   const left = centerX - image.width * 0.5;
-  const top = feetWorldY - image.height;
   const dx = camera.worldToDeviceX(left);
-  const dy = camera.worldToDeviceY(top);
+  const dy = camera.worldSpriteTopDeviceY(feetWorldY, image.height);
   const dw = Math.floor(CAMERA_ZOOM * image.width);
   const dh = Math.floor(CAMERA_ZOOM * image.height);
   if (juice && (juice.solidRed || (juice.hurtTintAlpha ?? 0) > 0 || juice.tintRgb != null || juice.shakeX || juice.shakeY || (juice.scaleX ?? 1) !== 1 || (juice.scaleY ?? 1) !== 1)) {
@@ -175,8 +207,7 @@ export function drawAttackComposite(
 ): void {
   const bodyW = body.frameW;
   const bodyLeft = hitboxLeft + hitboxW * 0.5 - bodyW * 0.5;
-  const bodyTop = feetWorldY - body.frameH;
-  drawStripFrame(g, body, frameIndex, bodyLeft, bodyTop, facing, camera, juice);
+  drawStripFrameFeetPinned(g, body, frameIndex, bodyLeft, feetWorldY, facing, camera, juice);
 
   const overlayJuice = juice
     ? { ...juice, solidRed: false, hurtTintAlpha: 0 }
@@ -184,7 +215,16 @@ export function drawAttackComposite(
 
   if (shield) {
     const overlayLeft = facing >= 0 ? bodyLeft : bodyLeft - 16;
-    drawStripFrame(g, shield, frameIndex, overlayLeft, bodyTop, facing, camera, overlayJuice);
+    drawStripFrameFeetPinned(
+      g,
+      shield,
+      frameIndex,
+      overlayLeft,
+      feetWorldY,
+      facing,
+      camera,
+      overlayJuice,
+    );
   }
 
   if (!sword) return;
@@ -193,5 +233,14 @@ export function drawAttackComposite(
     : facing >= 0
       ? bodyLeft
       : bodyLeft - 16;
-  drawStripFrame(g, sword, frameIndex, overlayLeft, bodyTop, facing, camera, overlayJuice);
+  drawStripFrameFeetPinned(
+    g,
+    sword,
+    frameIndex,
+    overlayLeft,
+    feetWorldY,
+    facing,
+    camera,
+    overlayJuice,
+  );
 }

@@ -305,6 +305,26 @@ export class WorldCamera {
     return Math.floor(CAMERA_ZOOM * wy + this.ty);
   }
 
+  /**
+   * Device Y for a feet world position (Java worldFeetDeviceY).
+   * Rounds to the nearest device row so render-interpolated feet on a half-pixel
+   * boundary do not flip between adjacent rows at 2× zoom.
+   */
+  worldFeetDeviceY(feetWorldY: number): number {
+    return Math.round(CAMERA_ZOOM * feetWorldY + this.ty);
+  }
+
+  /**
+   * Device Y for the top edge of a sprite whose bottom is pinned to {@code feetWorldY}.
+   * Uses {@code worldFeetDeviceY(feet) - floor(zoom * height)} so the feet line does not
+   * shimmer from {@code floor(zoom * (feet - height)) != floor(zoom * feet) - floor(zoom * height)}.
+   */
+  worldSpriteTopDeviceY(feetWorldY: number, spriteHeightWorldPx: number): number {
+    const feetDev = this.worldFeetDeviceY(feetWorldY);
+    const dh = Math.floor(CAMERA_ZOOM * spriteHeightWorldPx);
+    return feetDev - dh;
+  }
+
   /** Visible world rect corresponding to the world viewport (Java worldCameraVisibleRectWorld). */
   viewRect(): { x: number; y: number; w: number; h: number } {
     const { halfViewW, halfViewH } = WorldCamera.halfViews();

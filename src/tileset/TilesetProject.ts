@@ -281,6 +281,30 @@ export class TilesetProject {
     return this.tileAllowedOnFloor(tileId, floorOrdinal) && this.tileAllowedInRoomKind(tileId, roomKind);
   }
 
+  /**
+   * Java FloorScope.objectBelongsToSheet — object's anchor tile sheet matches
+   * {@code sheetId} (missing object / missing sheet → allow).
+   */
+  objectBelongsToSheet(objectId: string, sheetId: string): boolean {
+    const sid = sheetId.trim();
+    if (!objectId.trim() || !sid) return true;
+    const obj = this.objectById.get(objectId.trim());
+    if (!obj) return true;
+    const anchor = obj.anchorTileId || obj.tileIds[0];
+    if (!anchor) return true;
+    const cell = this.tileCells.get(anchor);
+    if (!cell) return true;
+    return cell.sheetId.trim().toLowerCase() === sid.toLowerCase();
+  }
+
+  /** Java NormalRoomBiomes.filterPoolEntriesToSheet. */
+  filterPoolEntriesToSheet(entries: BiomePoolEntry[], sheetId: string): BiomePoolEntry[] {
+    if (!entries.length || !sheetId.trim()) return entries.slice();
+    return entries.filter(
+      (e) => !e.objectId.trim() || this.objectBelongsToSheet(e.objectId, sheetId),
+    );
+  }
+
   /** Java FloorScope.primarySheetIdForFloor — narrowest bounded match wins. */
   primarySheetIdForFloor(floorOrdinal: number): string {
     let boundedId: string | null = null;
@@ -541,17 +565,25 @@ export class TilesetProject {
   /**
    * Java ProceduralRoomGen.mergedDecoTilePoolForRoomKind — weighted decoPoolsByRoomKind
    * multiset plus optional root decoTilePool (SeedParityDump / default biome path).
+   * @param poolEntriesOverride biome overlay pool (Java proceduralRoot decoPoolsByRoomKind.NORMAL)
    */
   mergedDecoTilePoolForRoomKind(
     roomKind: RoomKind,
     floorOrdinal = 1,
     mergeRootDecoTilePool = true,
+    poolEntriesOverride?: BiomePoolEntry[] | null,
   ): string[] {
     const kindName = (RoomKind[roomKind] ?? "NORMAL").toUpperCase();
-    const poolEntries = this.decoPoolsByRoomKind.get(kindName) ?? [];
+    const poolEntries =
+      poolEntriesOverride ?? this.decoPoolsByRoomKind.get(kindName) ?? [];
     const poolMembers = this.decoPoolMemberTileIds(poolEntries);
     const groundScatter = this.groundScatterTileIds();
-    const procedural = this.expandDecoPoolFiltered(roomKind, floorOrdinal, poolMembers);
+    const procedural = this.expandDecoPoolFiltered(
+      roomKind,
+      floorOrdinal,
+      poolMembers,
+      poolEntries,
+    );
     const proceduralSet = new Set(procedural);
     const out = [...procedural];
     if (!mergeRootDecoTilePool) {
@@ -581,8 +613,9 @@ export class TilesetProject {
     roomKind: RoomKind,
     floorOrdinal: number,
     poolMembers: Set<string>,
+    poolEntries?: BiomePoolEntry[],
   ): string[] {
-    const raw = this.expandDecoPoolRaw(roomKind, floorOrdinal);
+    const raw = this.expandDecoPoolRaw(roomKind, floorOrdinal, poolEntries);
     const groundScatter = this.groundScatterTileIds();
     const out: string[] = [];
     for (const tid of raw) {
@@ -602,9 +635,14 @@ export class TilesetProject {
   }
 
   /** Java ProceduralRoomGen.expandDecoPoolRaw — weighted multiset of member tile ids. */
-  private expandDecoPoolRaw(roomKind: RoomKind, floorOrdinal: number): string[] {
+  private expandDecoPoolRaw(
+    roomKind: RoomKind,
+    floorOrdinal: number,
+    poolEntriesOverride?: BiomePoolEntry[],
+  ): string[] {
     const kindName = (RoomKind[roomKind] ?? "NORMAL").toUpperCase();
-    const entries = this.decoPoolsByRoomKind.get(kindName) ?? [];
+    const entries =
+      poolEntriesOverride ?? this.decoPoolsByRoomKind.get(kindName) ?? [];
     const totalPicksByObjectId = new Map<string, number>();
     const firstEntryByObjectId = new Map<string, BiomePoolEntry>();
     for (const entry of entries) {

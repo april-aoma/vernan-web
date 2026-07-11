@@ -13,7 +13,6 @@ import {
 } from "../world/TileMap";
 import type { BiomeResolution } from "./NormalRoomBiomes";
 import type { AutotileObject, DecoClusterFallback, DecoPlacementRule, TilesetProject } from "./TilesetProject";
-import { FLOOR_SCOPE_ALL } from "./TilesetProject";
 import type { TerrainTileBridge } from "./TerrainTileBridge";
 import { groundYFromMap } from "../world/SecretRoomMapBuild";
 
@@ -57,7 +56,7 @@ export function placeAmbientDecoClusters(
   contentSeed: bigint,
   biome: BiomeResolution,
   ladderColumnTx: number,
-  _floorOrdinal = 1,
+  floorOrdinal = 1,
   roomKind: RoomKind = RoomKind.NORMAL,
   /** Continue room-gen RNG (Java); default salted stream for legacy enrich-only path. */
   rng: JavaRandom = new JavaRandom(contentSeed ^ 0xdec07een),
@@ -69,11 +68,13 @@ export function placeAmbientDecoClusters(
   if (cmax < cmin) [cmin, cmax] = [cmax, cmin];
   const clusters = cmin + (cmax > cmin ? rng.nextInt(cmax - cmin + 1) : 0);
 
-  // Java SeedParityDump: mergedDecoTilePoolForRoomKind(..., ALL_FLOORS) — same list for red+blue.
+  // Java GamePanel: mergedDecoTilePoolForRoomKind(..., dungeonFloorOrdinal, prgRoot, !exclusive)
+  // — biome overlay deco pool, sheet-filtered; exclusive biomes skip root decoTilePool merge.
   const poolTiles = project.mergedDecoTilePoolForRoomKind(
     roomKind,
-    FLOOR_SCOPE_ALL,
-    /* mergeRoot */ true,
+    floorOrdinal,
+    /* mergeRoot */ !biome.exclusive,
+    biome.decoPool,
   );
 
   const stamps: DecoStamp[] = [];

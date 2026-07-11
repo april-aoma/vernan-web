@@ -445,9 +445,9 @@ function drawFruit(
 ): void {
   const feet = player.y + player.h;
   const cx = player.x + player.w * 0.5;
-  const top = feet - HELD_ABOVE_FEET - SPRITE_H;
+  const fruitFeet = feet - HELD_ABOVE_FEET;
   const left = cx - SPRITE_W * 0.5;
-  drawFruitAt(g, camera, fruit, left, top, variant, player.facing);
+  drawFruitAt(g, camera, fruit, left, fruitFeet - SPRITE_H, variant, player.facing);
 }
 
 function drawFruitAt(
@@ -464,7 +464,8 @@ function drawFruitAt(
   const frameCount = Math.max(1, Math.floor(fruit.width / frameW));
   const variantIdx = ((variant % frameCount) + frameCount) % frameCount;
   const dx = camera.worldToDeviceX(left);
-  const dy = camera.worldToDeviceY(top);
+  // Java GardeningGlovesSupport.worldSpriteTopDeviceY(fruitFeet, frameH)
+  const dy = camera.worldSpriteTopDeviceY(top + frameH, frameH);
   const dw = Math.floor(CAMERA_ZOOM * frameW);
   const dh = Math.floor(CAMERA_ZOOM * frameH);
   const sx = variantIdx * frameW;

@@ -1,7 +1,7 @@
 import type { Player } from "../entity/Player";
 import type { WorldCamera } from "../camera/WorldCamera";
 import type { JuiceDrawOpts } from "../render/JuiceDraw";
-import { drawStripFrame, type SpriteStrip } from "../render/SpriteDraw";
+import { drawStripFrameFeetPinned, type SpriteStrip } from "../render/SpriteDraw";
 import type { CostumeLayersFile } from "../ranking/costumeResolve";
 import { CostumeProfile } from "./CostumeProfile";
 import type { CostumeArtCache } from "./CostumeArtCache";
@@ -128,17 +128,16 @@ function drawAttackWeaponOverlays(
 ): void {
   const bodyW = overlay.bodyFrameW;
   const bodyLeft = player.x + player.w * 0.5 - bodyW * 0.5;
-  const bodyTop = feetWorldY - (overlay.shield?.frameH ?? overlay.sword?.frameH ?? 32);
   const overlayJuice = { ...juice, solidRed: false, hurtTintAlpha: 0 };
 
   if (overlay.shield) {
     const overlayLeft = player.facing >= 0 ? bodyLeft : bodyLeft - 16;
-    drawStripFrame(
+    drawStripFrameFeetPinned(
       g,
       overlay.shield,
       overlay.frameIndex,
       overlayLeft,
-      bodyTop,
+      feetWorldY,
       player.facing,
       camera,
       overlayJuice,
@@ -150,12 +149,12 @@ function drawAttackWeaponOverlays(
     : player.facing >= 0
       ? bodyLeft
       : bodyLeft - 16;
-  drawStripFrame(
+  drawStripFrameFeetPinned(
     g,
     overlay.sword,
     overlay.frameIndex,
     overlayLeft,
-    bodyTop,
+    feetWorldY,
     player.facing,
     camera,
     overlayJuice,

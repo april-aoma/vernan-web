@@ -10,7 +10,7 @@ import {
   drawFeetPinnedImage,
   drawFeetPinnedStrip,
   drawFeetRowAnchoredStripDevice,
-  drawStripFrame,
+  drawStripFrameFeetPinned,
   stripFromImage,
   type SpriteStrip,
 } from "./render/SpriteDraw";
@@ -1806,7 +1806,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         if (bodyLibrary.hasIdle) {
           costumeBundle = { bodyLibrary, artCache, drawConfig, layersFile };
         }
-      } catch {
+      } catch (err) {
+        console.warn("[vernan] costume bundle failed to load", err);
         costumeBundle = null;
       }
 
@@ -4969,10 +4970,8 @@ function drawPassiveShieldOverlay(
   const idx = player.shieldOverlayFrameIndex(climbAnimMod2);
   if (idx < 0) return;
   const fw = sprites.shieldPlayer.frameW;
-  const fh = sprites.shieldPlayer.frameH;
   const left = cx - fw * 0.5;
-  const top = feet - fh;
-  drawStripFrame(g, sprites.shieldPlayer, idx, left, top, facing, camera, {
+  drawStripFrameFeetPinned(g, sprites.shieldPlayer, idx, left, feet, facing, camera, {
     ...juice,
     solidRed: false,
     hurtTintAlpha: 0,

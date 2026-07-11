@@ -164,9 +164,9 @@ function drawCostumeFrame(
   const sh = image.height;
   const anchorH = feetAnchorBodyH > 0 ? feetAnchorBodyH : sh;
   const left = centerX - sw * 0.5;
-  const top = feetWorldY + yOff - anchorH;
-  const dx = camera.worldToDeviceX(left + (juice.shakeX ?? 0));
-  const dy = camera.worldToDeviceY(top + (juice.shakeY ?? 0));
+  // Java worldSpriteTopDeviceY(feet + yOff, anchorH) then +shake in device space.
+  const dx = camera.worldToDeviceX(left);
+  const dy = camera.worldSpriteTopDeviceY(feetWorldY + yOff, anchorH);
   const dw = Math.floor(CAMERA_ZOOM * sw);
   const dh = Math.floor(CAMERA_ZOOM * sh);
 
@@ -175,6 +175,8 @@ function drawCostumeFrame(
     juice.solidRed ||
     (juice.hurtTintAlpha ?? 0) > 0 ||
     juice.tintRgb != null ||
+    (juice.shakeX ?? 0) !== 0 ||
+    (juice.shakeY ?? 0) !== 0 ||
     (juice.scaleX ?? 1) !== 1 ||
     (juice.scaleY ?? 1) !== 1;
 

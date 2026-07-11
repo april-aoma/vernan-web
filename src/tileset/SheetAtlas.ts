@@ -58,14 +58,19 @@ export class SheetAtlas {
     dy: number,
     dw: number,
     dh: number,
-    /** Override sheet (floor primary); cells stay authored against `main`. */
+    /**
+     * Floor primary sheet remap for `main`-authored cells (forest→underground→LA).
+     * Never remaps tiles already authored on another sheet (e.g. biome_2 `sheet_2_*`
+     * members on floor 1) — that sampled the wrong PNG at the same row/col.
+     */
     sheetIdOverride?: string,
   ): boolean {
     const cell = this.project.cell(tileId);
     if (!cell) return false;
-    const resolved: SheetCell = sheetIdOverride
-      ? { sheetId: sheetIdOverride, row: cell.row, col: cell.col }
-      : cell;
+    const resolved: SheetCell =
+      sheetIdOverride && cell.sheetId === "main" && sheetIdOverride !== "main"
+        ? { sheetId: sheetIdOverride, row: cell.row, col: cell.col }
+        : cell;
     return this.drawCell(g, resolved, dx, dy, dw, dh);
   }
 
@@ -79,9 +84,10 @@ export class SheetAtlas {
   ): HTMLCanvasElement | null {
     const cell = this.project.cell(tileId);
     if (!cell) return null;
-    const resolved: SheetCell = sheetIdOverride
-      ? { sheetId: sheetIdOverride, row: cell.row, col: cell.col }
-      : cell;
+    const resolved: SheetCell =
+      sheetIdOverride && cell.sheetId === "main" && sheetIdOverride !== "main"
+        ? { sheetId: sheetIdOverride, row: cell.row, col: cell.col }
+        : cell;
     const bmp = this.bitmaps.get(resolved.sheetId);
     if (!bmp) return null;
     const canvas = document.createElement("canvas");

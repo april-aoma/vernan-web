@@ -101,11 +101,7 @@ export class TerrainTileBridge {
         filterChoices(bucket.displayChoices, tileIdAllowed),
       );
       if (fallback) return fallback;
-      // Last resort: ignore floor filter so we never leave a solid blank.
-      if (tileIdAllowed) {
-        const unfiltered = pickFromChoices(terrainInt, tx, ty, salt, bucket.displayChoices);
-        if (unfiltered) return unfiltered;
-      }
+      // Do not ignore floor/sheet filters — that remapped off-sheet ids into wrong art.
     }
     return null;
   }
