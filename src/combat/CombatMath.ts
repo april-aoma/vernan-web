@@ -1,3 +1,5 @@
+import type { HitVfxKind } from "../fx/HitVfx";
+
 /** Hitlag freeze frames from damage (Java CombatJuice.freezeFrames). */
 export function freezeFrames(damage: number, multiplier = 1): number {
   const raw = Math.max(5, 5 + damage) * multiplier;
@@ -21,16 +23,31 @@ export type KnockbackKind =
   | "contact_only"
   | "hurt"
   | "frisbee"
-  | "psychic_debris";
+  | "psychic_debris"
+  | "black_heart_burst"
+  | "slide_kick";
 
 const BASE_KX = 74;
 const BASE_KY = -98;
+/** Java KnockbackVectors.BLACK_HEART_VERT_SCALE. */
+const BLACK_HEART_VERT_SCALE = 0.7;
 /** Java KnockbackVectors.CROUCH_MAG_SCALE — same hypot, 80° launch. */
 const CROUCH_MAG_SCALE = 0.85;
 /** Java KnockbackVectors.FRISBEE_MAG_SCALE. */
 const FRISBEE_MAG_SCALE = 0.55;
 /** Java KnockbackVectors.PSYCHIC_DEBRIS_BASE_MAG. */
 const PSYCHIC_DEBRIS_BASE_MAG = 22;
+
+/** Sublinear impulse growth vs damage (Java KnockbackVectors.damageScale). */
+export function damageScale(damageDealt: number): number {
+  return Math.max(0.25, Math.sqrt(Math.max(0, damageDealt)));
+}
+
+/** Straight upward launch for black-heart retaliation (Java BLACK_HEART_BURST). */
+export function knockbackForBlackHeartBurst(damageDealt: number): { vx: number; vy: number } {
+  const scale = damageScale(damageDealt);
+  return { vx: 0, vy: BASE_KY * scale * BLACK_HEART_VERT_SCALE };
+}
 
 /** Knock vectors (Java KnockbackVectors / Player hurt). */
 export function knockbackFor(kind: KnockbackKind, facingAwaySign: number): { vx: number; vy: number } {
@@ -69,6 +86,10 @@ export function knockbackFor(kind: KnockbackKind, facingAwaySign: number): { vx:
       return { vx: 0, vy: 0 };
     case "frisbee":
       return knockbackForFrisbee(sign);
+    case "black_heart_burst":
+      return knockbackForBlackHeartBurst(1);
+    case "slide_kick":
+      return polar(0.9, 75);
     default:
       return { vx: sign * BASE_KX, vy: BASE_KY };
   }
@@ -145,6 +166,7 @@ export type WeaponStrike = {
   /** Optional contact for HitVfx (world px). */
   contactWorldX?: number;
   contactWorldY?: number;
+  hitVfxKind?: HitVfxKind;
 };
 
 /** Frisbee / telekinetic debris hits (Java ProjectileStrike). */

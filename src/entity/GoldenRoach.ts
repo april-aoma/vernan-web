@@ -6,6 +6,12 @@ import {
   type ProjectileStrike,
   type WeaponStrike,
 } from "../combat/CombatMath";
+import { BlackHeartBeatDeferral } from "../combat/BlackHeartBeatDeferral";
+import {
+  queueBlackHeartBurstKnock,
+  releaseBlackHeartBeatKnockback,
+  tickBlackHeartEnemyHitstun,
+} from "../combat/BlackHeartEnemyCombat";
 import { seesPlayerWithSolidLos } from "../combat/SolidLineOfSight";
 import type { WorldRect } from "../combat/EnemyVision";
 import {
@@ -27,12 +33,7 @@ import type { AmbientClusterMap } from "../world/AmbientClusterMap";
 import type { TileMap } from "../world/TileMap";
 import type { CombatEnemy } from "./CombatEnemy";
 import { SquashStretch } from "../render/SquashStretch";
-import {
-  DEFAULT_SHAKE_AMPLITUDE_PX,
-  HURT_TINT_PEAK_ALPHA,
-  HURT_TINT_SECONDS,
-  sampleShake,
-} from "../combat/HitlagState";
+import { HURT_TINT_PEAK_ALPHA, HURT_TINT_SECONDS } from "../combat/HitlagState";
 import { JavaRandom } from "../util/JavaRandom";
 
 export type GoldenRoachMode = "walk" | "fly";
@@ -107,7 +108,7 @@ export class GoldenRoach implements CombatEnemy {
   private animFrameSec = 0.125;
   private hp: number;
   readonly maxHp: number;
-  private hitstun = 0;
+  hitstun = 0;
   private pendingKnockVx = 0;
   private pendingKnockVy = 0;
   private pendingKnockContactOnly = false;
@@ -128,6 +129,7 @@ export class GoldenRoach implements CombatEnemy {
   hitlagShakeY = 0;
   hitlagSolidRed = false;
   private hurtTintRemaining = 0;
+  readonly blackHeartBeat = new BlackHeartBeatDeferral();
 
   constructor(x: number, y: number, maxHp: number, clusters: AmbientClusterMap) {
     this.x = x;
@@ -175,15 +177,10 @@ export class GoldenRoach implements CombatEnemy {
   update(dt: number, map: TileMap, playerX: number): void {
     this.lastMap = map;
     if (this.hp <= 0) {
-      if (this.hitstun > 0) {
-        this.hitlagSolidRed = true;
-        this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-        this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-        this.hitstun = Math.max(0, this.hitstun - dt);
-        if (this.hitstun <= 0) {
-          this.hitlagSolidRed = false;
-          this.hitlagShakeX = 0;
-          this.hitlagShakeY = 0;
+      if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+        const hadHitstun = this.hitstun > 0;
+        tickBlackHeartEnemyHitstun(dt, this);
+        if (hadHitstun && this.hitstun <= 0 && !this.blackHeartBeat.isLocked()) {
           this.pendingCorpseExplosion = true;
         }
       }
@@ -195,24 +192,17 @@ export class GoldenRoach implements CombatEnemy {
     this.squashImpulseThisFrame = false;
     this.tickAnimation(dt);
 
-    if (this.hitstun > 0) {
-      this.hitlagSolidRed = true;
-      this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitstun = Math.max(0, this.hitstun - dt);
-      if (this.hitstun > 0) {
-        this.vx = 0;
-        this.vy = 0;
-        this.finishRenderSquash(dt);
-        return;
+    if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+      const hadHitstun = this.hitstun > 0;
+      tickBlackHeartEnemyHitstun(dt, this);
+      if (hadHitstun && this.hitstun <= 0 && !this.blackHeartBeat.isLocked()) {
+        this.finishHitstunKnockRelease();
       }
-      this.finishHitstunKnockRelease();
+      this.vx = 0;
+      this.vy = 0;
       this.finishRenderSquash(dt);
       return;
     }
-    this.hitlagSolidRed = false;
-    this.hitlagShakeX = 0;
-    this.hitlagShakeY = 0;
 
     const playerCenterY = this.playerFeetCenterYGuess(map, playerX);
     if (this.aggro && this.seesPlayer) {
@@ -700,8 +690,14 @@ export class GoldenRoach implements CombatEnemy {
   }
 
   applyWeaponStrike(strike: WeaponStrike): boolean {
-    if (this.hp <= 0 || this.hitstun > 0) return false;
+    if (this.hp <= 0) return false;
+    if (this.hitstun > 0 && strike.knockKind !== "black_heart_burst") return false;
     this.hp = Math.max(0, this.hp - strike.damage);
+    if (strike.knockKind === "black_heart_burst") {
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      this.hurtTintRemaining = HURT_TINT_SECONDS;
+      return true;
+    }
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
     const r = this.rect();
     const away =
@@ -712,6 +708,19 @@ export class GoldenRoach implements CombatEnemy {
     this.pendingKnockContactOnly = false;
     this.hurtTintRemaining = HURT_TINT_SECONDS;
     return true;
+  }
+
+  releaseBlackHeartBeatKnockback(): void {
+    releaseBlackHeartBeatKnockback(this.blackHeartBeat, (vx, vy) => {
+      this.pendingKnockVx = vx;
+      this.pendingKnockVy = vy;
+      this.pendingKnockContactOnly = false;
+      this.finishHitstunKnockRelease();
+    });
+  }
+
+  isBlackHeartBeatLocked(): boolean {
+    return this.blackHeartBeat.isLocked();
   }
 
   intersectsProjectile(projectile: HitboxPose): boolean {
@@ -733,7 +742,15 @@ export class GoldenRoach implements CombatEnemy {
   }
 
   hurtsPlayer(playerHurt: Aabb): boolean {
-    if (this.isDead() || this.mode !== "fly" || this.hitstun > 0 || this.hurtLocked) return false;
+    if (
+      this.isDead() ||
+      this.mode !== "fly" ||
+      this.hitstun > 0 ||
+      this.blackHeartBeat.isLocked() ||
+      this.hurtLocked
+    ) {
+      return false;
+    }
     return aabbOverlap(playerHurt, this.contactDamagePose());
   }
 
@@ -774,7 +791,7 @@ export class GoldenRoach implements CombatEnemy {
   applyShieldBlockStrike(_strike: WeaponStrike): void {}
 
   isInCombatHitstun(): boolean {
-    return this.hitstun > 0;
+    return this.hitstun > 0 || this.blackHeartBeat.isLocked();
   }
 
   facingSign(): number {

@@ -91,6 +91,70 @@ export function nudgePositionOutOfSolidTiles(
   return { x: cx, y: cy };
 }
 
+/** Java Physics.axisSnapContactNormalIfDiagonal. */
+export function axisSnapContactNormalIfDiagonal(
+  n: { x: number; y: number } | null,
+): { x: number; y: number } | null {
+  if (!n) return null;
+  const ax = Math.abs(n.x);
+  const ay = Math.abs(n.y);
+  const ledgeThresh = 0.42;
+  if (ax < ledgeThresh || ay < ledgeThresh) return n;
+  if (ay >= ax) return { x: 0, y: Math.sign(n.y) || -1 };
+  return { x: Math.sign(n.x) || -1, y: 0 };
+}
+
+/**
+ * Axis-snapped nudge for polygon enemies (Java Physics.nudgePositionOutOfSolidTilesAxisAligned).
+ */
+export function nudgePositionOutOfSolidTilesAxisAligned(
+  map: TileMap,
+  x: number,
+  y: number,
+  poseAt: (ax: number, ay: number) => HitboxPose,
+  stepPx: number,
+  maxSteps: number,
+): { x: number; y: number } {
+  let cx = x;
+  let cy = y;
+  for (let i = 0; i < maxSteps; i++) {
+    const pose = poseAt(cx, cy);
+    if (!overlapsAnySolidTile(map, pose)) {
+      return { x: cx, y: cy };
+    }
+    const snapped = axisSnapContactNormalIfDiagonal(contactNormalSolidTowardPose(map, pose));
+    if (snapped) {
+      cx += snapped.x * stepPx;
+      cy += snapped.y * stepPx;
+    } else {
+      cx -= stepPx;
+    }
+  }
+  return { x: cx, y: cy };
+}
+
+/**
+ * Backstep along motion segment, then axis-aligned nudge (Java Physics.resolveEmbeddedPolygonFootprint).
+ */
+export function resolveEmbeddedPolygonFootprint(
+  map: TileMap,
+  prevX: number,
+  prevY: number,
+  x: number,
+  y: number,
+  poseAt: (ax: number, ay: number) => HitboxPose,
+  embeddedAt: (ax: number, ay: number) => boolean,
+): { x: number; y: number } {
+  const back = backstepPositionUntilClear(map, prevX, prevY, x, y, poseAt, 32);
+  let cx = back.x;
+  let cy = back.y;
+  if (embeddedAt(cx, cy)) {
+    const nudged = nudgePositionOutOfSolidTilesAxisAligned(map, cx, cy, poseAt, 2, 16);
+    return nudged;
+  }
+  return { x: cx, y: cy };
+}
+
 function contactNormalSolidTowardPose(
   map: TileMap,
   pose: HitboxPose,

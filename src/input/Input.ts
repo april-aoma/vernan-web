@@ -230,6 +230,9 @@ export class Input {
   get jumpPressed(): boolean {
     return this.wasPressed("KeyZ") || this.wasPressed("Space");
   }
+  get jumpReleased(): boolean {
+    return this.wasReleased("KeyZ") || this.wasReleased("Space");
+  }
   get attackPressed(): boolean {
     return this.wasPressed("KeyX");
   }
@@ -247,6 +250,10 @@ export class Input {
   }
   get subweaponPressed(): boolean {
     return this.wasPressed("KeyC");
+  }
+  /** disc03 air dodge — Shift (Java PlayerControls.isDodgePressed). */
+  get dodgePressed(): boolean {
+    return this.wasPressed("ShiftLeft") || this.wasPressed("ShiftRight");
   }
   /** Backpack primary cycle: Shift+X (Java). */
   get backpackPrimarySwitchPressed(): boolean {

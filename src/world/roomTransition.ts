@@ -2,8 +2,11 @@ import type { Player } from "../entity/Player";
 import type { Input } from "../input/Input";
 import { Crawler } from "../entity/Crawler";
 import { GoldenRoach } from "../entity/GoldenRoach";
+import { JackBlue } from "../entity/JackBlue";
 import { Mouse } from "../entity/Mouse";
 import { Penisman } from "../entity/Penisman";
+import { Multilimber } from "../entity/Multilimber";
+import { RollingHead } from "../entity/RollingHead";
 import { Possessed } from "../entity/Possessed";
 import { Nephilim } from "../entity/Nephilim";
 import type { CombatEnemy } from "../entity/CombatEnemy";
@@ -95,6 +98,8 @@ export type RoomSession = {
   bossClearPedestals: (ItemPedestal | null)[];
   /** SHOP priced pedestals (lazy-resolved; separate from free ITEM/boss). */
   shopPedestals: (ItemPedestal[] | null)[];
+  /** Enemy death loot pedestals (e.g. Jack Blue shield drop). */
+  enemyLootPedestals: (ItemPedestal[] | null)[];
   /** SHOP cat shopkeep (lazy with pedestals). */
   shopKeepers: (ShopKeeper | null)[];
   /** Sealed door cells per room (packCell keys). */
@@ -132,6 +137,7 @@ export function createSession(
     roomSpawnEnemyCount: 0,
     bossClearPedestals: new Array(n).fill(null),
     shopPedestals: new Array(n).fill(null),
+    enemyLootPedestals: new Array(n).fill(null),
     shopKeepers: new Array(n).fill(null),
     bossDoorSealedCells: new Array(n).fill(null),
     bossAscendLadderTx: new Array(n).fill(-1),
@@ -171,6 +177,7 @@ export function rebindSessionToDungeon(session: RoomSession, dungeon: BuiltDunge
   session.roomSpawnEnemyCount = 0;
   session.bossClearPedestals = new Array(n).fill(null);
   session.shopPedestals = new Array(n).fill(null);
+  session.enemyLootPedestals = new Array(n).fill(null);
   session.shopKeepers = new Array(n).fill(null);
   session.bossDoorSealedCells = new Array(n).fill(null);
   session.bossAscendLadderTx = new Array(n).fill(-1);
@@ -220,7 +227,7 @@ export function applyRoomAndSpawn(
         : defaultSpawnPx(g, layout, roomId);
     player.spawnAt(spawn.x, spawn.y + PLAYER_STAND_SPAWN_H);
   }
-  session.enemies = spawnEnemiesForRoom(session);
+  session.enemies = spawnEnemiesForRoom(session, player.x + player.w * 0.5);
   maybeBeginBossDoorSealAnim(session);
 }
 
@@ -239,7 +246,7 @@ function resolvePedestal(
   }
 }
 
-function spawnEnemiesForRoom(session: RoomSession): CombatEnemy[] {
+function spawnEnemiesForRoom(session: RoomSession, playerCenterX: number): CombatEnemy[] {
   session.roomSpawnEnemyCount = 0;
   const roomId = session.roomId;
   if (session.roomCombatCleared[roomId]) {
@@ -259,6 +266,18 @@ function spawnEnemiesForRoom(session: RoomSession): CombatEnemy[] {
       out.push(new Penisman(s.xPx, s.yPx, s.maxHealth));
     } else if (s.kind === "golden_roach") {
       out.push(new GoldenRoach(s.xPx, s.yPx, s.maxHealth, clusters));
+    } else if (s.kind === "jack_blue") {
+      const tx = Math.floor(s.xPx / TILE_SIZE);
+      const groundTop = g.map.groundTopWorldYAtColumn(tx);
+      out.push(JackBlue.onGround(s.xPx, groundTop, s.maxHealth));
+    } else if (s.kind === "rolling_head") {
+      const tx = Math.floor(s.xPx / TILE_SIZE);
+      const groundTop = g.map.groundTopWorldYAtColumn(tx);
+      out.push(RollingHead.spawnBouncing(s.xPx, groundTop, s.maxHealth, playerCenterX));
+    } else if (s.kind === "multilimber") {
+      const tx = Math.floor(s.xPx / TILE_SIZE);
+      const groundTop = g.map.groundTopWorldYAtColumn(tx);
+      out.push(Multilimber.onGround(s.xPx, groundTop, s.maxHealth));
     } else if (s.kind === "possessed") {
       const boss = new Possessed(s.xPx, s.yPx, s.maxHealth, s.variantId);
       boss.bindRoom(g.map);
@@ -456,6 +475,42 @@ export function tryCollectPedestal(
   session.decks.markAcquired(id);
   p.collected = true;
   return id;
+}
+
+/** Active enemy-loot pedestals in the current room (Jack Blue shield, etc.). */
+export function activeEnemyLootPedestals(session: RoomSession): ItemPedestal[] {
+  return session.enemyLootPedestals[session.roomId] ?? [];
+}
+
+export function addEnemyLootPedestal(session: RoomSession, ped: ItemPedestal): void {
+  const roomId = session.roomId;
+  if (!session.enemyLootPedestals[roomId]) {
+    session.enemyLootPedestals[roomId] = [];
+  }
+  session.enemyLootPedestals[roomId]!.push(ped);
+}
+
+/**
+ * Touch-collect enemy-loot pedestals (separate from ITEM / boss / shop).
+ * @returns collected item id, or null.
+ */
+export function tryCollectEnemyLootPedestal(
+  session: RoomSession,
+  player: Player,
+  host: ItemPickupHost,
+): string | null {
+  for (const p of activeEnemyLootPedestals(session)) {
+    if (p.collected || !p.itemId) continue;
+    const itemBox = pedestalItemAabb(p);
+    if (!itemBox) continue;
+    if (!aabbOverlap(player.hurtbox(), itemBox)) continue;
+    const id = p.itemId;
+    player.collectItem(id, session.catalog, host);
+    session.decks.markAcquired(id);
+    p.collected = true;
+    return id;
+  }
+  return null;
 }
 
 export type AscendFloorHooks = {

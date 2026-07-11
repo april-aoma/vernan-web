@@ -9,6 +9,8 @@ export interface CombatEnemy {
   contactDamagePose(): Aabb;
   damageReceivePose(): Aabb;
   intersectsAttack(sword: Aabb): boolean;
+  /** Per-hull polygon test vs sword pose (Java Player.applyAttackHits). */
+  intersectsMeleePose?(pose: HitboxPose): boolean;
   applyWeaponStrike(strike: WeaponStrike): boolean;
   /** Frisbee / projectile hit layer vs hurtbox (Java intersectsProjectile). */
   intersectsProjectile(projectile: HitboxPose): boolean;
@@ -41,6 +43,10 @@ export interface CombatEnemy {
   grabReleaseDamageToPlayer?(): number;
   /** Boss dying but room not cleared yet (Nephilim head landing, Possessed delay). */
   isDying?(): boolean;
+  /** Deferred black-heart burst knockback when the global beat ends. */
+  releaseBlackHeartBeatKnockback?(): void;
+  /** True while frozen for the black-heart beat after local hitstun elapsed. */
+  isBlackHeartBeatLocked?(): boolean;
   /** Offensive hitlag — boss freezes between attack beats (Nephilim drink sip, lift land). */
   applyOffensiveHitlag?(freezeFrames: number): void;
   /** Forearm shield blocks projectiles without HP loss. */

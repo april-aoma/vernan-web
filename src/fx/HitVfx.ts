@@ -15,6 +15,7 @@ export enum HitVfxKind {
   ELECTRIC = "electric",
   SHIELD = "shield",
   SHIELD_BREAK = "shield_break",
+  BLACK_HEART = "black_heart",
   FALLBACK = "fallback",
 }
 
@@ -28,6 +29,8 @@ export function hitVfxSpriteFile(kind: HitVfxKind): string {
       return "hit shield.png";
     case HitVfxKind.SHIELD_BREAK:
       return "hit shield break.png";
+    case HitVfxKind.BLACK_HEART:
+      return "hit black heart.png";
     case HitVfxKind.FALLBACK:
       return "hit fallback.png";
   }

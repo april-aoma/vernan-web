@@ -5,6 +5,12 @@ import {
   type ProjectileStrike,
   type WeaponStrike,
 } from "../combat/CombatMath";
+import { BlackHeartBeatDeferral } from "../combat/BlackHeartBeatDeferral";
+import {
+  queueBlackHeartBurstKnock,
+  releaseBlackHeartBeatKnockback,
+  tickBlackHeartEnemyHitstun,
+} from "../combat/BlackHeartEnemyCombat";
 import { isPossessedShiny, VARIANT_NORMAL } from "../combat/EnemyVariantRegistry";
 import {
   rectBottom,
@@ -15,12 +21,7 @@ import {
   type PlayerCombatSnapshot,
   type WorldRect,
 } from "../combat/EnemyVision";
-import {
-  DEFAULT_SHAKE_AMPLITUDE_PX,
-  HURT_TINT_PEAK_ALPHA,
-  HURT_TINT_SECONDS,
-  sampleShake,
-} from "../combat/HitlagState";
+import { HURT_TINT_PEAK_ALPHA, HURT_TINT_SECONDS } from "../combat/HitlagState";
 import {
   getPossessedRig,
   poseFromSequence,
@@ -239,7 +240,7 @@ export class Possessed implements CombatEnemy {
   private wanderTy = 0;
   private peeking = false;
   /** Defensive freeze remaining (seconds); Java hitstunFrames. */
-  private hitstun = 0;
+  hitstun = 0;
   private deathTimer = -1;
   private hurtPoseTimer = 0;
   private hurtTintRemaining = 0;
@@ -249,6 +250,7 @@ export class Possessed implements CombatEnemy {
   hitlagSolidRed = false;
   hitlagShakeX = 0;
   hitlagShakeY = 0;
+  readonly blackHeartBeat = new BlackHeartBeatDeferral();
   private dodgeCooldown = 0;
   private mapW = 256;
   private mapH = 256;
@@ -284,8 +286,8 @@ export class Possessed implements CombatEnemy {
   private deathExplosionAccum = 0;
   private readonly explosionRequests: Array<[number, number]> = [];
   private readonly pendingDeathChunkSpawns: PossessedDeathChunkSpawn[] = [];
-  /** Last sword AABB that overlapped (from intersectsAttack) for knock-loose targeting. */
-  private lastSwordProbe: Aabb | null = null;
+  /** Part indices struck by the latest melee probe (Java lastStruckParts). */
+  private readonly lastStruckParts: number[] = [];
   /** Per-channel latch so each inward streak triggers one absorb flash (spokes + rings). */
   private readonly novaStreakAbsorbFired = new Array<boolean>(
     NOVA_STREAK_SPOKES + NOVA_STREAK_RINGS,
@@ -606,13 +608,10 @@ export class Possessed implements CombatEnemy {
       return;
     }
 
-    // Java: full freeze while hitstunFrames > 0 (shake + red; no move / parts / bullets).
-    if (this.hitstun > 0) {
-      this.hitlagSolidRed = true;
-      this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitstun = Math.max(0, this.hitstun - dt);
-      if (this.hitstun > 0) {
+    // Java: full freeze while hitstunFrames > 0 or black-heart beat lock.
+    if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+      tickBlackHeartEnemyHitstun(dt, this);
+      if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
         return;
       }
       this.hitlagSolidRed = false;
@@ -929,7 +928,7 @@ export class Possessed implements CombatEnemy {
   }
 
   private tickShooting(dt: number): void {
-    if (this.hitstun > 0 || this.knockbackContactTimer > 0) return;
+    if (this.hitstun > 0 || this.knockbackContactTimer > 0 || this.blackHeartBeat.isLocked()) return;
 
     if (this.dashing) {
       this.dashTimer -= dt;
@@ -1345,9 +1344,41 @@ export class Possessed implements CombatEnemy {
   }
 
   intersectsAttack(sword: Aabb): boolean {
+    return this.probeMeleeHurtParts(sword, false);
+  }
+
+  intersectsMeleePose(swordPose: HitboxPose): boolean {
+    return this.probeMeleeHurtParts(swordPose, true);
+  }
+
+  /** Per-part hurt hull vs sword (Java intersectsAttack / intersectsProjectileOrAttackPose). */
+  private probeMeleeHurtParts(sword: Aabb | HitboxPose, usePose: boolean): boolean {
     if (this.hp <= 0 || this.deathTimer >= 0) return false;
-    if (!aabbOverlap(sword, this.damageReceivePose())) return false;
-    this.lastSwordProbe = { x: sword.x, y: sword.y, w: sword.w, h: sword.h };
+    this.lastStruckParts.length = 0;
+    const rig = getPossessedRig();
+    if (!rig || this.partSims.length === 0) {
+      const recv = this.damageReceivePose();
+      const hit = usePose
+        ? (sword as HitboxPose).intersectsRect(recv)
+        : aabbOverlap(sword as Aabb, recv);
+      if (!hit) return false;
+      const bodyIdx = this.partSims.findIndex((p) => p.name === "body");
+      this.lastStruckParts.push(bodyIdx >= 0 ? bodyIdx : 0);
+      return true;
+    }
+    this.ensureSims(rig);
+    let any = false;
+    for (let i = 0; i < this.partSims.length; i++) {
+      const hurt = this.partWorldHurtPose(rig, i);
+      if (!hurt) continue;
+      const hit = usePose
+        ? (sword as HitboxPose).intersects(hurt)
+        : hurt.intersectsRect(sword as Aabb);
+      if (!hit) continue;
+      this.lastStruckParts.push(i);
+      any = true;
+    }
+    if (!any) return false;
     return true;
   }
 
@@ -1356,16 +1387,30 @@ export class Possessed implements CombatEnemy {
     const struck = this.collectStruckParts(strike);
     this.hp = Math.max(0, this.hp - strike.damage);
     this.onDamaged(strike.freezeFrames);
+    if (strike.knockKind === "black_heart_burst") {
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      if (this.hp <= 0) this.beginDeath();
+      return true;
+    }
     const away =
       this.x + this.w * 0.5 >= strike.attackerX + strike.attackerW * 0.5 ? 1 : -1;
-    // Java: only knockStruckParts (limb impulse + ANCHOR_TRAIL_FRAC to anchor) — no separate body KB.
-    // Impulses latch immediately; integrate after hitstun freeze ends.
     const attackerCx = strike.attackerX + strike.attackerW * 0.5;
     this.knockStruckParts(attackerCx, away, strike.damage, struck);
     if (this.hp <= 0) {
       this.beginDeath();
     }
     return true;
+  }
+
+  releaseBlackHeartBeatKnockback(): void {
+    releaseBlackHeartBeatKnockback(this.blackHeartBeat, (vx, vy) => {
+      this.vx = vx;
+      this.vy = vy;
+    });
+  }
+
+  isBlackHeartBeatLocked(): boolean {
+    return this.blackHeartBeat.isLocked();
   }
 
   intersectsProjectile(projectile: HitboxPose): boolean {
@@ -1448,6 +1493,17 @@ export class Possessed implements CombatEnemy {
     return this.partWorldRoleAabb(rig, index, "hurt");
   }
 
+  private partWorldHurtPose(rig: PossessedRigData, index: number): HitboxPose | null {
+    const def = rig.parts[index];
+    const sim = this.partSims[index];
+    if (!def || !sim) return null;
+    const local = def.hurt.length >= 6 ? def.hurt : def.collision;
+    if (local.length < 6) return null;
+    const m = this.facingRight ? -1 : 1;
+    const world = transformHull(local, def.pivotX, def.pivotY, sim.cx, sim.cy, sim.angleDeg, m);
+    return HitboxPose.fromWorldPolygon(world);
+  }
+
   private partWorldRoleAabb(
     rig: PossessedRigData,
     index: number,
@@ -1489,38 +1545,10 @@ export class Possessed implements CombatEnemy {
     return { x: x0, y: top + hull.minY, w: x1 - x0, h: hull.maxY - hull.minY };
   }
 
-  private collectStruckParts(strike: WeaponStrike): number[] {
-    const rig = getPossessedRig();
-    let sword = this.lastSwordProbe;
-    if (!sword && strike.contactWorldX != null && strike.contactWorldY != null) {
-      sword = {
-        x: strike.contactWorldX - 4,
-        y: strike.contactWorldY - 4,
-        w: 8,
-        h: 8,
-      };
-    }
-    if (!sword) {
-      sword = {
-        x: strike.attackerX,
-        y: this.y - 8,
-        w: Math.max(16, strike.attackerW),
-        h: this.h + 16,
-      };
-    }
-    const struck: number[] = [];
-    if (rig) {
-      this.ensureSims(rig);
-      for (let i = 0; i < this.partSims.length; i++) {
-        const box = this.partWorldHurtAabb(rig, i);
-        if (box && aabbOverlap(sword, box)) struck.push(i);
-      }
-    }
-    if (struck.length === 0) {
-      const bodyIdx = this.partSims.findIndex((p) => p.name === "body");
-      struck.push(bodyIdx >= 0 ? bodyIdx : 0);
-    }
-    return struck;
+  private collectStruckParts(_strike: WeaponStrike): number[] {
+    if (this.lastStruckParts.length > 0) return [...this.lastStruckParts];
+    const bodyIdx = this.partSims.findIndex((p) => p.name === "body");
+    return [bodyIdx >= 0 ? bodyIdx : 0];
   }
 
   private knockStruckParts(attackerCx: number, facing: number, dmg: number, struck: number[]): void {
@@ -1557,7 +1585,7 @@ export class Possessed implements CombatEnemy {
   hurtsPlayer(playerHurt: Aabb): boolean {
     if (this.hp <= 0 || this.deathTimer >= 0) return false;
     if (this.contactActiveTimer <= 0) return false;
-    if (this.hitstun > 0 || this.knockbackContactTimer > 0) return false;
+    if (this.hitstun > 0 || this.knockbackContactTimer > 0 || this.blackHeartBeat.isLocked()) return false;
     return aabbOverlap(playerHurt, this.contactDamagePose());
   }
 
@@ -1586,8 +1614,8 @@ export class Possessed implements CombatEnemy {
   }
 
   isInCombatHitstun(): boolean {
-    // Java: whole reeling window (hitstun + knockback contact disable).
-    return this.hitstun > 0 || this.knockbackContactTimer > 0;
+    // Java: whole reeling window (hitstun + knockback contact disable + black-heart beat).
+    return this.hitstun > 0 || this.knockbackContactTimer > 0 || this.blackHeartBeat.isLocked();
   }
 
   facingSign(): number {

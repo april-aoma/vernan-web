@@ -1,8 +1,24 @@
 import type { JavaRandom } from "../util/JavaRandom";
-import { CRAWLER_MAX_HP, GOLDEN_ROACH_MAX_HP, MOUSE_MAX_HP, PENISMAN_MAX_HP } from "../config/CombatStats";
+import {
+  CRAWLER_MAX_HP,
+  GOLDEN_ROACH_MAX_HP,
+  JACK_BLUE_MAX_HP,
+  MOUSE_MAX_HP,
+  PENISMAN_MAX_HP,
+  ROLLING_HEAD_MAX_HP,
+  MULTILIMBER_MAX_HP,
+} from "../config/CombatStats";
 
 /** Regular + boss spawn kinds known to the web client. */
-export type ChallengeSpawnKind = "crawler" | "mouse" | "penisman" | "golden_roach" | "possessed";
+export type ChallengeSpawnKind =
+  | "crawler"
+  | "mouse"
+  | "penisman"
+  | "golden_roach"
+  | "jack_blue"
+  | "rolling_head"
+  | "multilimber"
+  | "possessed";
 
 export type SpawnPlacement = "floor_column" | "ambient_cluster";
 
@@ -10,7 +26,15 @@ export type SpawnPlacement = "floor_column" | "ambient_cluster";
  * Challenge tiers + weighted picks for regular room enemies (Java EnemyChallengeRegistry).
  */
 
-const REGULAR_KINDS: ChallengeSpawnKind[] = ["crawler", "mouse", "penisman", "golden_roach"];
+const REGULAR_KINDS: ChallengeSpawnKind[] = [
+  "crawler",
+  "mouse",
+  "penisman",
+  "golden_roach",
+  "jack_blue",
+  "rolling_head",
+  "multilimber",
+];
 
 export function spawnPlacement(kind: ChallengeSpawnKind): SpawnPlacement {
   if (kind === "golden_roach") return "ambient_cluster";
@@ -25,6 +49,11 @@ export function challengeLevel(kind: ChallengeSpawnKind): number {
       return 1;
     case "penisman":
       return 2;
+    case "jack_blue":
+    case "rolling_head":
+      return 4;
+    case "multilimber":
+      return 5;
     case "possessed":
       return 99;
   }
@@ -44,6 +73,12 @@ export function baseMaxHealth(kind: ChallengeSpawnKind): number {
       return GOLDEN_ROACH_MAX_HP;
     case "penisman":
       return PENISMAN_MAX_HP;
+    case "jack_blue":
+      return JACK_BLUE_MAX_HP;
+    case "rolling_head":
+      return ROLLING_HEAD_MAX_HP;
+    case "multilimber":
+      return MULTILIMBER_MAX_HP;
     case "possessed":
       return 32;
   }
@@ -94,8 +129,14 @@ function weightFor(kind: ChallengeSpawnKind, secretRoom: boolean): number {
       case "crawler":
       case "penisman":
         return 25;
+      case "jack_blue":
+        return 15;
       case "golden_roach":
         return 20;
+      case "rolling_head":
+        return 16;
+      case "multilimber":
+        return 18;
       default:
         return 0;
     }
@@ -104,7 +145,10 @@ function weightFor(kind: ChallengeSpawnKind, secretRoom: boolean): number {
     case "crawler":
     case "mouse":
     case "penisman":
+    case "jack_blue":
     case "golden_roach":
+    case "multilimber":
+    case "rolling_head":
       return 25;
     default:
       return 0;

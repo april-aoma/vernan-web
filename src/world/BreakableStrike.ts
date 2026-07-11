@@ -61,6 +61,14 @@ export type BreakableStrikeContext = {
  * Call from mount after player.applyAttackHits — does not edit Player.ts.
  * @returns hitlag frames to apply (BLOCK_BREAK_HITLAG_FRAMES), or 0 if none / already latched.
  */
+export function destroyBreakableAt(tx: number, ty: number, ctx: BreakableStrikeContext): void {
+  destroyBreakableTile(tx, ty, ctx);
+}
+
+export function tryStrikeBreakablesInAabb(hit: Aabb, ctx: BreakableStrikeContext): boolean {
+  return strikeBreakablesInAabb(hit, ctx);
+}
+
 export function applySwordBreakables(ctx: BreakableStrikeContext): number {
   const { player } = ctx;
   const sword = player.attackHitbox();

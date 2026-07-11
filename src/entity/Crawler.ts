@@ -8,12 +8,20 @@ import {
   type ProjectileStrike,
   type WeaponStrike,
 } from "../combat/CombatMath";
+import { BlackHeartBeatDeferral } from "../combat/BlackHeartBeatDeferral";
+import {
+  queueBlackHeartBurstKnock,
+  releaseBlackHeartBeatKnockback,
+  tickBlackHeartEnemyHitstun,
+} from "../combat/BlackHeartEnemyCombat";
 import {
   CRAWLER_H,
   CRAWLER_HOP_COOLDOWN_MAX,
   CRAWLER_HOP_COOLDOWN_MIN,
   CRAWLER_HOP_VX,
   CRAWLER_HOP_VY,
+  CRAWLER_HOP_WALL_PASS_CHANCE,
+  CRAWLER_HOP_WALL_PASS_FOOT_BAND_PX,
   CRAWLER_JUMPSQUAT_FRAMES,
   CRAWLER_MAX_HP,
   CRAWLER_WALK_SPEED,
@@ -27,26 +35,25 @@ import {
   ENEMY_CRAWLER_LOCAL,
   ENEMY_CRAWLER_PIVOT_X,
 } from "../config/HitboxValues";
+import {
+  embeddedAsideFromFootprintFloor,
+  nudgeCrawlerVerticallyIfEmbedded,
+  resolveHorizontalCrawler,
+  resolveVerticalCrawler,
+} from "../collision/EnemyCollision";
 import { HitboxPose } from "../collision/HitboxPose";
-import { GRAVITY, MAX_FALL, PLATFORM_DECK_SLACK_PX } from "../config/Physics";
-import { TILE_SIZE } from "../specs";
+import { GRAVITY, MAX_FALL } from "../config/Physics";
 import type { TileMap } from "../world/TileMap";
 import type { CombatEnemy } from "./CombatEnemy";
 import {
   isGrounded,
-  landingSurfaceY,
   ridingDeck,
   solidUnderFootAhead,
 } from "./EnemyPeerPlatforms";
 import { isPeerWalkingEnemy, type PeerWalkingEnemy } from "./PeerWalkingEnemy";
 import type { PeerRidingBehavior } from "./PeerRidingBehavior";
 import { SquashStretch } from "../render/SquashStretch";
-import {
-  DEFAULT_SHAKE_AMPLITUDE_PX,
-  HURT_TINT_PEAK_ALPHA,
-  HURT_TINT_SECONDS,
-  sampleShake,
-} from "../combat/HitlagState";
+import { HURT_TINT_PEAK_ALPHA, HURT_TINT_SECONDS } from "../combat/HitlagState";
 
 /**
  * Slim Crawler (Java Enemy.java hop/walk).
@@ -66,13 +73,18 @@ export class Crawler implements PeerWalkingEnemy {
 
   private hopCooldown: number;
   private jumpsquat = 0;
-  private hitstun = 0;
+  hitstun = 0;
+  private pendingKnockVx = 0;
+  private pendingKnockVy = 0;
   private faceCooldown = 0;
   private animFrame = 0;
   private animAccum = 0;
   private pendingCorpseExplosion = false;
   /** Java horizontalWallResolvedThisStep — wall snap this tick (turn after move). */
   private horizontalWallResolvedThisStep = false;
+  /** Java ignoreHorizontalSolidsThisHop — hop ascent may phase through walls above foot band. */
+  private ignoreHorizontalSolidsThisHop = false;
+  private hurtLocked = false;
   private peerCarryAnchorX = 0;
   private peerCarryAnchorY = 0;
   private peerCarrierThisTick: CombatEnemy | null = null;
@@ -82,6 +94,7 @@ export class Crawler implements PeerWalkingEnemy {
   hitlagShakeY = 0;
   hitlagSolidRed = false;
   private hurtTintRemaining = 0;
+  readonly blackHeartBeat = new BlackHeartBeatDeferral();
 
   constructor(x: number, y: number, maxHp = CRAWLER_MAX_HP) {
     this.x = x;
@@ -108,39 +121,28 @@ export class Crawler implements PeerWalkingEnemy {
 
     // Java: corpse stays through hitstun, then queues explosion.
     if (this.hp <= 0) {
-      if (this.hitstun > 0) {
-        this.hitlagSolidRed = true;
-        this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-        this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-        this.hitstun = Math.max(0, this.hitstun - dt);
-        if (this.hitstun <= 0) {
-          this.hitlagSolidRed = false;
-          this.hitlagShakeX = 0;
-          this.hitlagShakeY = 0;
+      if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+        const hadHitstun = this.hitstun > 0;
+        tickBlackHeartEnemyHitstun(dt, this);
+        if (hadHitstun && this.hitstun <= 0 && !this.blackHeartBeat.isLocked()) {
           this.pendingCorpseExplosion = true;
         }
       }
       return;
     }
 
-    if (this.hitstun > 0) {
-      this.hitlagSolidRed = true;
-      this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitstun = Math.max(0, this.hitstun - dt);
-      if (this.hitstun <= 0) {
-        this.hitlagSolidRed = false;
-        this.hitlagShakeX = 0;
-        this.hitlagShakeY = 0;
-        this.hurtTintRemaining = HURT_TINT_SECONDS;
+    if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+      const hadHitstun = this.hitstun > 0;
+      tickBlackHeartEnemyHitstun(dt, this);
+      if (hadHitstun && this.hitstun <= 0 && !this.blackHeartBeat.isLocked()) {
+        this.finishHitstunKnockRelease();
       }
-      this.applyGravity(dt);
-      this.moveAndCollide(dt, map, roomEnemies);
-      return;
+      if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+        this.vx = 0;
+        this.vy = 0;
+        return;
+      }
     }
-    this.hitlagSolidRed = false;
-    this.hitlagShakeX = 0;
-    this.hitlagShakeY = 0;
 
     const wasAirborneBeforeMove = !this.onGround;
     this.onGround = isGrounded(this, map, roomEnemies);
@@ -168,6 +170,8 @@ export class Crawler implements PeerWalkingEnemy {
       this.vy = 0;
       this.squash.applyStretchXHeld(1.2, 1);
       if (this.jumpsquat === 0) {
+        this.ignoreHorizontalSolidsThisHop =
+          !this.hurtLocked && this.hitstun <= 0 && Math.random() < CRAWLER_HOP_WALL_PASS_CHANCE;
         this.vx = this.facing * CRAWLER_HOP_VX;
         this.vy = -CRAWLER_HOP_VY;
         this.onGround = false;
@@ -192,9 +196,23 @@ export class Crawler implements PeerWalkingEnemy {
     }
     const impactVy = this.vy;
     const landed = this.moveAndCollide(dt, map, roomEnemies);
+    if (
+      embeddedAsideFromFootprintFloor(map, (ax, ay) => this.collisionPoseAt(ax, ay), this.x, this.y)
+    ) {
+      this.y = nudgeCrawlerVerticallyIfEmbedded(
+        map,
+        (ax, ay) => this.collisionPoseAt(ax, ay),
+        this.x,
+        this.y,
+      );
+    }
     this.onGround = isGrounded(this, map, roomEnemies);
+    if (this.onGround) this.ignoreHorizontalSolidsThisHop = false;
     if (landed && wasAirborneBeforeMove) {
       this.squash.applyStretchX(1.2, Math.abs(impactVy) >= 24 ? 20 : 5);
+    }
+    if (this.hurtLocked && landed) {
+      this.hurtLocked = false;
     }
     if (this.onGround && this.jumpsquat === 0 && !onDeck) {
       if (!solidUnderFootAhead(this, map, roomEnemies, this.facing)) {
@@ -217,6 +235,19 @@ export class Crawler implements PeerWalkingEnemy {
     while (this.animAccum >= frameSeconds) {
       this.animAccum -= frameSeconds;
       this.animFrame = (this.animFrame + 1) % 2;
+    }
+  }
+
+  private finishHitstunKnockRelease(): void {
+    this.vx = this.pendingKnockVx;
+    this.vy = this.pendingKnockVy;
+    this.pendingKnockVx = 0;
+    this.pendingKnockVy = 0;
+    this.hurtTintRemaining = HURT_TINT_SECONDS;
+    this.hurtLocked = true;
+    if (Math.abs(this.vx) + Math.abs(this.vy) > 1) {
+      this.onGround = false;
+      this.jumpsquat = 0;
     }
   }
 
@@ -253,18 +284,37 @@ export class Crawler implements PeerWalkingEnemy {
   }
 
   applyWeaponStrike(strike: WeaponStrike): boolean {
-    if (this.hp <= 0 || this.hitstun > 0) return false;
+    if (this.hp <= 0) return false;
+    if (this.hitstun > 0 && strike.knockKind !== "black_heart_burst") return false;
     this.hp = Math.max(0, this.hp - strike.damage);
+    if (strike.knockKind === "black_heart_burst") {
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      this.hurtTintRemaining = HURT_TINT_SECONDS;
+      return true;
+    }
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
     const r = this.rect();
     const away =
       r.x + r.w * 0.5 >= strike.attackerX + strike.attackerW * 0.5 ? 1 : -1;
     const kb = knockbackFor(strike.knockKind, away);
-    this.vx = kb.vx;
-    this.vy = kb.vy;
-    this.onGround = false;
+    this.pendingKnockVx = kb.vx;
+    this.pendingKnockVy = kb.vy;
+    this.vx = 0;
+    this.vy = 0;
     this.jumpsquat = 0;
     return true;
+  }
+
+  releaseBlackHeartBeatKnockback(): void {
+    releaseBlackHeartBeatKnockback(this.blackHeartBeat, (vx, vy) => {
+      this.pendingKnockVx = vx;
+      this.pendingKnockVy = vy;
+      this.finishHitstunKnockRelease();
+    });
+  }
+
+  isBlackHeartBeatLocked(): boolean {
+    return this.blackHeartBeat.isLocked();
   }
 
   intersectsProjectile(projectile: HitboxPose): boolean {
@@ -276,6 +326,8 @@ export class Crawler implements PeerWalkingEnemy {
     if (this.hp <= 0 || this.hitstun > 0) return false;
     this.hp = Math.max(0, this.hp - strike.damage);
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
+    let kbVx = 0;
+    let kbVy = 0;
     if (strike.knockKind === "psychic_debris") {
       const r = this.rect();
       const kb = knockbackForPsychicDebris(
@@ -287,8 +339,8 @@ export class Crawler implements PeerWalkingEnemy {
         strike.projectileVelY ?? 0,
         strike.damage,
       );
-      this.vx = kb.vx;
-      this.vy = kb.vy;
+      kbVx = kb.vx;
+      kbVy = kb.vy;
     } else if (strike.knockKind === "flint_fire_pull") {
       const r = this.rect();
       const kb = knockbackForFlintFirePull(
@@ -297,20 +349,23 @@ export class Crawler implements PeerWalkingEnemy {
         strike.debrisCenterWorldX ?? r.x,
         strike.debrisCenterWorldY ?? r.y,
       );
-      this.vx = kb.vx;
-      this.vy = kb.vy;
+      kbVx = kb.vx;
+      kbVy = kb.vy;
     } else {
       const kb = knockbackForFrisbee(strike.projectileVelX);
-      this.vx = kb.vx;
-      this.vy = kb.vy;
+      kbVx = kb.vx;
+      kbVy = kb.vy;
     }
-    this.onGround = false;
+    this.pendingKnockVx = kbVx;
+    this.pendingKnockVy = kbVy;
+    this.vx = 0;
+    this.vy = 0;
     this.jumpsquat = 0;
     return true;
   }
 
   hurtsPlayer(playerHurt: Aabb): boolean {
-    if (this.isDead() || this.hitstun > 0) return false;
+    if (this.isDead() || this.hitstun > 0 || this.blackHeartBeat.isLocked()) return false;
     return aabbOverlap(playerHurt, this.contactDamagePose());
   }
 
@@ -353,7 +408,7 @@ export class Crawler implements PeerWalkingEnemy {
   applyShieldBlockStrike(_strike: WeaponStrike): void {}
 
   isInCombatHitstun(): boolean {
-    return this.hitstun > 0;
+    return this.hitstun > 0 || this.blackHeartBeat.isLocked();
   }
 
   facingSign(): number {
@@ -447,116 +502,47 @@ export class Crawler implements PeerWalkingEnemy {
     peers: readonly CombatEnemy[],
   ): boolean {
     this.horizontalWallResolvedThisStep = false;
+    const poseAt = (ax: number, ay: number) => this.collisionPoseAt(ax, ay);
     const xBefore = this.x;
     this.x += this.vx * dt;
-    this.horizontalWallResolvedThisStep = this.resolveHorizontal(map, xBefore);
+    const horz = resolveHorizontalCrawler(
+      map,
+      poseAt,
+      () => this.rect(),
+      xBefore,
+      this.x,
+      this.y,
+      this.vx,
+      this.vy,
+      {
+        ignoreHorizontalSolidsThisHop: this.ignoreHorizontalSolidsThisHop,
+        hurtLocked: this.hurtLocked,
+        footBandPx: CRAWLER_HOP_WALL_PASS_FOOT_BAND_PX,
+      },
+    );
+    this.x = horz.x;
+    this.vx = horz.vx;
+    this.horizontalWallResolvedThisStep = horz.wallResolved;
+
     const before = this.hitboxPose().bounds();
-    const prevFoot = before.y + before.h;
+    const prevBottom = before.y + before.h;
     const prevTop = before.y;
     this.y += this.vy * dt;
     this.onGround = false;
-    return this.resolveVertical(map, peers, prevFoot, prevTop);
-  }
 
-  /**
-   * Java Enemy.resolveHorizontal: snap to wall face along motion; do not flip facing
-   * (1px ENEMY_CRAWLER overhang would otherwise re-trigger every frame).
-   */
-  private resolveHorizontal(map: TileMap, xBefore: number): boolean {
-    if (this.vx === 0) return false;
-    const r = this.rect();
-    const ts = TILE_SIZE;
-    const topTile = Math.floor((r.y + 0.001) / ts);
-    const bottomTile = Math.floor((r.y + r.h - 0.001) / ts);
-
-    if (this.vx > 0) {
-      const prevB = this.crawlerPose(ENEMY_CRAWLER_LOCAL, ENEMY_CRAWLER_PIVOT_X, xBefore, this.y).bounds();
-      const prevRight = prevB.x + prevB.w;
-      const prevRightTile = Math.floor((prevRight - 1e-6) / ts);
-      const newRightTile = Math.floor((r.x + r.w) / ts);
-      for (let tx = Math.max(prevRightTile, 0); tx <= newRightTile; tx++) {
-        for (let ty = topTile; ty <= bottomTile; ty++) {
-          if (!map.isSolidTile(tx, ty)) continue;
-          const cr = this.rect();
-          this.x += tx * ts - (cr.x + cr.w);
-          this.vx = 0;
-          return true;
-        }
-      }
-    } else {
-      const prevLeft = this.crawlerPose(
-        ENEMY_CRAWLER_LOCAL,
-        ENEMY_CRAWLER_PIVOT_X,
-        xBefore,
-        this.y,
-      ).bounds().x;
-      const prevLeftTile = Math.floor(prevLeft / ts);
-      const newLeftTile = Math.floor(r.x / ts);
-      for (let tx = prevLeftTile; tx >= newLeftTile; tx--) {
-        for (let ty = topTile; ty <= bottomTile; ty++) {
-          if (!map.isSolidTile(tx, ty)) continue;
-          const cr = this.rect();
-          this.x += (tx + 1) * ts - cr.x;
-          this.vx = 0;
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  private resolveVertical(
-    map: TileMap,
-    peers: readonly CombatEnemy[],
-    prevFoot: number,
-    prevTop: number,
-  ): boolean {
-    if (this.vy > 0) {
-      const b = this.hitboxPose().bounds();
-      const foot = b.y + b.h;
-      const left = Math.floor((b.x + 0.001) / TILE_SIZE);
-      const right = Math.floor((b.x + b.w - 0.001) / TILE_SIZE);
-      const bottomTile = Math.floor((foot - 1e-4) / TILE_SIZE);
-      for (let tx = left; tx <= right; tx++) {
-        if (!map.isSolidTile(tx, bottomTile) && !map.isPlatformTile(tx, bottomTile)) continue;
-        const floorY = bottomTile * TILE_SIZE;
-        const prevBottomTile = Math.floor((prevFoot - 1e-4) / TILE_SIZE);
-        const crossedFromAbove = prevFoot <= floorY + 1e-3 || prevBottomTile < bottomTile;
-        if (crossedFromAbove && foot >= floorY - 1e-3) {
-          if (map.isPlatformTile(tx, bottomTile) && foot > floorY + PLATFORM_DECK_SLACK_PX) {
-            continue;
-          }
-          this.y += floorY - foot;
-          this.vy = 0;
-          this.onGround = true;
-          return true;
-        }
-        return false;
-      }
-      const peerTop = landingSurfaceY(this, peers, prevFoot);
-      if (!Number.isNaN(peerTop)) {
-        const lr = this.rect();
-        this.y += peerTop - (lr.y + lr.h);
-        this.vy = 0;
-        this.onGround = true;
-        return true;
-      }
-    } else if (this.vy < 0) {
-      const b = this.hitboxPose().bounds();
-      const top = b.y;
-      const left = Math.floor((b.x + 0.001) / TILE_SIZE);
-      const right = Math.floor((b.x + b.w - 0.001) / TILE_SIZE);
-      const topTile = Math.floor((top + 1e-4) / TILE_SIZE);
-      const ceilingBottomY = (topTile + 1) * TILE_SIZE;
-      for (let tx = left; tx <= right; tx++) {
-        if (!map.isSolidTile(tx, topTile)) continue;
-        if (prevTop >= ceilingBottomY - 1e-3 && top <= ceilingBottomY + 1e-3) {
-          this.y += ceilingBottomY - top;
-          this.vy = 0;
-        }
-        break;
-      }
-    }
-    return false;
+    const vert = resolveVerticalCrawler(
+      map,
+      () => this.rect(),
+      this,
+      peers,
+      this.y,
+      this.vy,
+      prevBottom,
+      prevTop,
+    );
+    this.y = vert.y;
+    this.vy = vert.vy;
+    this.onGround = vert.onGround;
+    return vert.landed;
   }
 }

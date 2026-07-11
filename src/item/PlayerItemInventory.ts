@@ -17,6 +17,7 @@ export class PlayerItemInventory {
   private readonly backpackSubweapons = new Set<string>();
   private readonly backpackSubweaponAcquireSeq = new Map<string, number>();
   private backpackSubweaponSeqCounter = 0;
+  private readonly subweaponsEverAcquired = new Set<string>();
 
   add(id: string, amount = 1): number {
     const wasOwned = this.stacksOf(id) > 0;
@@ -151,6 +152,15 @@ export class PlayerItemInventory {
     }
   }
 
+  /** Java hasSubweaponEverAcquired — any subweapon picked up this run. */
+  hasSubweaponEverAcquired(id: string): boolean {
+    return this.subweaponsEverAcquired.has(id);
+  }
+
+  markSubweaponEverAcquired(id: string): void {
+    this.subweaponsEverAcquired.add(id);
+  }
+
   onBackpackAcquired(): void {
     if (this.equippedSub) this.registerBackpackSubweapon(this.equippedSub);
     this.backpackSelectedPrimaryId = this.preferredPrimary;
@@ -170,6 +180,7 @@ export class PlayerItemInventory {
     this.backpackSubweapons.clear();
     this.backpackSubweaponAcquireSeq.clear();
     this.backpackSubweaponSeqCounter = 0;
+    this.subweaponsEverAcquired.clear();
   }
 
   private latchPreferredPrimaryWeapon(id: string): void {

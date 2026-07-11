@@ -16,11 +16,15 @@ import {
 } from "../combat/EnemyChallengeRegistry";
 import { JavaRandom } from "../util/JavaRandom";
 import {
+  CRAWLER_MAX_HP,
   CRAWLER_SPAWN_H,
   GOLDEN_ROACH_SPAWN_H,
   GOLDEN_ROACH_SPAWN_W,
+  JACK_BLUE_SPAWN_H,
+  MULTILIMBER_SPAWN_H,
   MOUSE_SPAWN_H,
   PENISMAN_SPAWN_H,
+  ROLLING_HEAD_SPAWN_H,
 } from "../config/CombatStats";
 import { TILE_SIZE } from "../specs";
 import { AmbientClusterMap } from "./AmbientClusterMap";
@@ -43,6 +47,7 @@ export type EnemySpawn = {
 
 const MAX_PLACE_ATTEMPTS = 160;
 const SECRET_ROOM_ENEMY_CHANCE = 0.08;
+const BOSS_SIDE_ENEMY_CHANCE = 0.5;
 const ENEMY_CONTENT_SEED_SALT = 0xa24baed4963ee407n;
 
 /**
@@ -126,37 +131,84 @@ function rollBossSpawns(g: GeneratedRoom, contentSeed: bigint): EnemySpawn[] {
   const map = g.map;
   const w = map.getWidth();
   const h = map.getHeight();
-  const midX = Math.max(2, Math.min(w - 3, Math.floor(w / 2)));
+  const midX = clampInt(Math.floor(w / 2), 2, w - 3);
   const bossAnchorX = midX * TILE_SIZE + TILE_SIZE * 0.5;
   const entry = pickBossForFloor(1, contentSeed);
+  const enemies: EnemySpawn[] = [];
 
   if (entry.kind === BossKind.NEPHILIM) {
     const groundTop = map.groundTopWorldYAtColumn(midX);
     const bossAnchorY = Nephilim.anchorYOnGround(groundTop, getNephilimRig());
-    return [
-      {
-        xPx: Math.round(bossAnchorX),
-        yPx: Math.round(bossAnchorY),
-        maxHealth: entry.maxHealth,
-        kind: "nephilim",
-        countsForRoomClear: true,
-      },
-    ];
-  }
-
-  const bossAnchorY = h * TILE_SIZE * 0.4;
-  const variantId = rollPossessedVariant(contentSeed);
-  const maxHealth = possessedHpForVariant(variantId, entry.maxHealth);
-  return [
-    {
+    enemies.push({
+      xPx: Math.round(bossAnchorX),
+      yPx: Math.round(bossAnchorY),
+      maxHealth: entry.maxHealth,
+      kind: "nephilim",
+      countsForRoomClear: true,
+    });
+  } else {
+    const bossAnchorY = h * TILE_SIZE * 0.4;
+    const variantId = rollPossessedVariant(contentSeed);
+    const maxHealth = possessedHpForVariant(variantId, entry.maxHealth);
+    enemies.push({
       xPx: Math.round(bossAnchorX),
       yPx: Math.round(bossAnchorY),
       maxHealth,
       kind: "possessed",
       countsForRoomClear: true,
       variantId,
-    },
-  ];
+    });
+  }
+
+  enemies.push(...rollBossSideCrawlers(map, w, midX, contentSeed));
+  return enemies;
+}
+
+/** Two optional flank crawlers (Java RoomGenerator.rollPostGenerationEnemies BOSS branch). */
+function rollBossSideCrawlers(
+  map: TileMap,
+  w: number,
+  midX: number,
+  contentSeed: bigint,
+): EnemySpawn[] {
+  const rng = new JavaRandom(contentSeed ^ ENEMY_CONTENT_SEED_SALT);
+  if (rng.nextDouble() >= BOSS_SIDE_ENEMY_CHANCE) return [];
+
+  const minSide = Math.max(2, Math.floor(w / 6));
+  if (w <= minSide * 2 + 4) return [];
+
+  const flank = Math.max(3, Math.floor(w / 5));
+  const ox = clampInt(midX - flank, minSide, w - minSide - 1);
+  const ox2 = clampInt(midX + flank, minSide, w - minSide - 1);
+  const out: EnemySpawn[] = [];
+
+  if (ox !== midX && canSpawnEnemyAt(map, ox)) {
+    out.push({
+      xPx: ox * TILE_SIZE - 2,
+      yPx: enemySpawnAnchorYPx(map, ox),
+      maxHealth: CRAWLER_MAX_HP,
+      kind: "crawler",
+      countsForRoomClear: true,
+    });
+  }
+  if (ox2 !== midX && canSpawnEnemyAt(map, ox2)) {
+    out.push({
+      xPx: ox2 * TILE_SIZE - 2,
+      yPx: enemySpawnAnchorYPx(map, ox2),
+      maxHealth: CRAWLER_MAX_HP,
+      kind: "crawler",
+      countsForRoomClear: true,
+    });
+  }
+  return out;
+}
+
+function enemySpawnAnchorYPx(map: TileMap, tx: number): number {
+  return Math.round(map.groundTopWorldYAtColumn(tx) - CRAWLER_SPAWN_H);
+}
+
+function clampInt(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
 }
 
 function tryPlace(
@@ -182,7 +234,17 @@ function tryFloorColumn(
   const margin = Math.min(8, Math.max(2, Math.floor(w / 5)));
   const ladderTx = g.ladderColumnTx;
   const spawnH =
-    kind === "mouse" ? MOUSE_SPAWN_H : kind === "penisman" ? PENISMAN_SPAWN_H : CRAWLER_SPAWN_H;
+    kind === "mouse"
+      ? MOUSE_SPAWN_H
+      : kind === "penisman"
+        ? PENISMAN_SPAWN_H
+        : kind === "jack_blue"
+          ? JACK_BLUE_SPAWN_H
+          : kind === "rolling_head"
+            ? ROLLING_HEAD_SPAWN_H
+            : kind === "multilimber"
+              ? MULTILIMBER_SPAWN_H
+              : CRAWLER_SPAWN_H;
   for (let attempt = 0; attempt < 24; attempt++) {
     const x = margin + rng.nextInt(Math.max(1, w - margin * 2));
     if (ladderTx >= 0 && Math.abs(x - ladderTx) <= 1) continue;

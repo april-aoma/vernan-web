@@ -56,6 +56,20 @@ export const PENISMAN_SPRITE_H = 16;
 export const PENISMAN_FRAMES = 4;
 /** `penis bullet.png` / die — 16×8 → 2 frames. */
 export const PENIS_BULLET_FRAMES = 2;
+
+export const JACK_BLUE_SPRITE_W = 32;
+export const JACK_BLUE_SPRITE_H = 32;
+export const JACK_BLUE_FRAMES = 3;
+
+export const JACK_BONE_SPRITE_W = 16;
+export const JACK_BONE_SPRITE_H = 16;
+
+export const ROLLING_HEAD_SPRITE_W = 16;
+export const ROLLING_HEAD_SPRITE_H = 16;
+export const ROLLING_HEAD_FRAMES = 4;
+
+/** Multilimber part strips — 96×32 → 3 frames of 32×32. */
+export const MULTILIMBER_FRAMES = 3;
 export const PENIS_BULLET_SPRITE_W = 8;
 export const PENIS_BULLET_SPRITE_H = 8;
 export const PENIS_BULLET_FLIGHT_ANIM_FRAME_SEC = 0.09;

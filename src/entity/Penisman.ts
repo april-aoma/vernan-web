@@ -6,6 +6,12 @@ import {
   type ProjectileStrike,
   type WeaponStrike,
 } from "../combat/CombatMath";
+import { BlackHeartBeatDeferral } from "../combat/BlackHeartBeatDeferral";
+import {
+  queueBlackHeartBurstKnock,
+  releaseBlackHeartBeatKnockback,
+  tickBlackHeartEnemyHitstun,
+} from "../combat/BlackHeartEnemyCombat";
 import type { WorldRect } from "../combat/EnemyVision";
 import {
   PENISMAN_H,
@@ -27,16 +33,17 @@ import {
   ENEMY_PENISMAN_LOCAL,
   ENEMY_PENISMAN_PIVOT_X,
 } from "../config/HitboxValues";
+import {
+  feetCrossedOntoFloorThisStep,
+  nudgePenismanEmbedAfterMove,
+  resolveHorizontalPolygonEnemy,
+  resolveVerticalPolygonEnemy,
+} from "../collision/EnemyCollision";
 import { HitboxPose } from "../collision/HitboxPose";
-import { GRAVITY, MAX_FALL, PLATFORM_DECK_SLACK_PX } from "../config/Physics";
-import { TILE_SIZE } from "../specs";
+import { GRAVITY, MAX_FALL } from "../config/Physics";
 import type { TileMap } from "../world/TileMap";
 import type { CombatEnemy } from "./CombatEnemy";
-import {
-  isGrounded,
-  landingSurfaceY,
-  solidUnderFootAhead,
-} from "./EnemyPeerPlatforms";
+import { isGrounded, solidUnderFootAhead } from "./EnemyPeerPlatforms";
 import type { PeerWalkingEnemy } from "./PeerWalkingEnemy";
 import type { PeerRidingBehavior } from "./PeerRidingBehavior";
 import { PenismanBullet } from "./PenismanBullet";
@@ -45,12 +52,7 @@ import {
   PENIS_BULLET_DIE_FRAME_SEC,
 } from "../config/AnimStats";
 import { SquashStretch } from "../render/SquashStretch";
-import {
-  DEFAULT_SHAKE_AMPLITUDE_PX,
-  HURT_TINT_PEAK_ALPHA,
-  HURT_TINT_SECONDS,
-  sampleShake,
-} from "../combat/HitlagState";
+import { HURT_TINT_PEAK_ALPHA, HURT_TINT_SECONDS } from "../combat/HitlagState";
 import {
   createPatrolWallFlipState,
   tickWallFlipReady,
@@ -84,7 +86,9 @@ export class Penisman implements PeerWalkingEnemy {
   hp: number;
   readonly maxHp: number;
 
-  private hitstun = 0;
+  hitstun = 0;
+  private pendingKnockVx = 0;
+  private pendingKnockVy = 0;
   private hurtLocked = false;
   private animFrame = 0;
   private animAccum = 0;
@@ -107,6 +111,7 @@ export class Penisman implements PeerWalkingEnemy {
   hitlagShakeY = 0;
   hitlagSolidRed = false;
   private hurtTintRemaining = 0;
+  readonly blackHeartBeat = new BlackHeartBeatDeferral();
 
   constructor(x: number, y: number, maxHp = PENISMAN_MAX_HP) {
     this.x = x;
@@ -157,19 +162,27 @@ export class Penisman implements PeerWalkingEnemy {
 
     if (this.hp <= 0) {
       this.bullets.length = 0;
-      if (this.hitstun > 0) {
-        this.hitlagSolidRed = true;
-        this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-        this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-        this.hitstun = Math.max(0, this.hitstun - dt);
-        if (this.hitstun <= 0) {
-          this.hitlagSolidRed = false;
-          this.hitlagShakeX = 0;
-          this.hitlagShakeY = 0;
+      if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+        const hadHitstun = this.hitstun > 0;
+        tickBlackHeartEnemyHitstun(dt, this);
+        if (hadHitstun && this.hitstun <= 0 && !this.blackHeartBeat.isLocked()) {
           this.pendingCorpseExplosion = true;
         }
       }
       return;
+    }
+
+    if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+      const hadHitstun = this.hitstun > 0;
+      tickBlackHeartEnemyHitstun(dt, this);
+      if (hadHitstun && this.hitstun <= 0 && !this.blackHeartBeat.isLocked()) {
+        this.finishHitstunKnockRelease();
+      }
+      if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+        this.vx = 0;
+        this.vy = 0;
+        return;
+      }
     }
 
     for (let i = this.bullets.length - 1; i >= 0; i--) {
@@ -187,27 +200,6 @@ export class Penisman implements PeerWalkingEnemy {
       }
     }
 
-    if (this.hitstun > 0) {
-      this.hitlagSolidRed = true;
-      this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitstun = Math.max(0, this.hitstun - dt);
-      if (this.hitstun <= 0) {
-        this.hitlagSolidRed = false;
-        this.hitlagShakeX = 0;
-        this.hitlagShakeY = 0;
-        this.hurtTintRemaining = HURT_TINT_SECONDS;
-        this.hurtLocked = true;
-        this.knockbackLandingSquashPending = true;
-      }
-      this.applyGravity(dt);
-      this.moveAndCollide(dt, map, roomEnemies);
-      return;
-    }
-    this.hitlagSolidRed = false;
-    this.hitlagShakeX = 0;
-    this.hitlagShakeY = 0;
-
     const wasAirborneBeforeMove = !this.onGround || this.knockbackLandingSquashPending;
     this.onGround = isGrounded(this, map, roomEnemies);
 
@@ -222,13 +214,22 @@ export class Penisman implements PeerWalkingEnemy {
       }
     }
 
+    const hullBeforeStep = this.rect();
+    const prevFeetBottom = hullBeforeStep.y + hullBeforeStep.h;
+    const vyBeforeGravity = this.vy;
     this.applyGravity(dt);
-    const impactVy = this.vy;
     const landed = this.moveAndCollide(dt, map, roomEnemies);
+    const feetCrossedFloor = feetCrossedOntoFloorThisStep(
+      map,
+      this,
+      roomEnemies,
+      this.vy,
+      prevFeetBottom,
+    );
     this.onGround = isGrounded(this, map, roomEnemies);
 
-    if (landed && wasAirborneBeforeMove) {
-      this.squash.applyStretchX(1.2, Math.abs(impactVy) >= 24 ? 20 : 5);
+    if ((landed || feetCrossedFloor) && wasAirborneBeforeMove) {
+      this.squash.applyStretchX(1.2, Math.abs(vyBeforeGravity) >= 24 ? 20 : 5);
       this.knockbackLandingSquashPending = false;
     }
     if (this.hurtLocked && landed) this.hurtLocked = false;
@@ -299,6 +300,19 @@ export class Penisman implements PeerWalkingEnemy {
     }
   }
 
+  private finishHitstunKnockRelease(): void {
+    this.vx = this.pendingKnockVx;
+    this.vy = this.pendingKnockVy;
+    this.pendingKnockVx = 0;
+    this.pendingKnockVy = 0;
+    this.hurtTintRemaining = HURT_TINT_SECONDS;
+    this.hurtLocked = true;
+    this.knockbackLandingSquashPending = true;
+    if (Math.abs(this.vx) + Math.abs(this.vy) > 1) {
+      this.onGround = false;
+    }
+  }
+
   private tickAnim(dt: number): void {
     const frameSeconds = this.onGround ? 0.14 : 0.1;
     this.animAccum += dt;
@@ -341,17 +355,36 @@ export class Penisman implements PeerWalkingEnemy {
   }
 
   applyWeaponStrike(strike: WeaponStrike): boolean {
-    if (this.hp <= 0 || this.hitstun > 0) return false;
+    if (this.hp <= 0) return false;
+    if (this.hitstun > 0 && strike.knockKind !== "black_heart_burst") return false;
     this.hp = Math.max(0, this.hp - strike.damage);
+    if (strike.knockKind === "black_heart_burst") {
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      this.hurtTintRemaining = HURT_TINT_SECONDS;
+      return true;
+    }
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
     const r = this.rect();
     const away =
       r.x + r.w * 0.5 >= strike.attackerX + strike.attackerW * 0.5 ? 1 : -1;
     const kb = knockbackFor(strike.knockKind, away);
-    this.vx = kb.vx;
-    this.vy = kb.vy;
-    this.onGround = false;
+    this.pendingKnockVx = kb.vx;
+    this.pendingKnockVy = kb.vy;
+    this.vx = 0;
+    this.vy = 0;
     return true;
+  }
+
+  releaseBlackHeartBeatKnockback(): void {
+    releaseBlackHeartBeatKnockback(this.blackHeartBeat, (vx, vy) => {
+      this.pendingKnockVx = vx;
+      this.pendingKnockVy = vy;
+      this.finishHitstunKnockRelease();
+    });
+  }
+
+  isBlackHeartBeatLocked(): boolean {
+    return this.blackHeartBeat.isLocked();
   }
 
   intersectsProjectile(projectile: HitboxPose): boolean {
@@ -364,14 +397,17 @@ export class Penisman implements PeerWalkingEnemy {
     this.hp = Math.max(0, this.hp - strike.damage);
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
     const kb = knockbackForFrisbee(strike.projectileVelX);
-    this.vx = kb.vx;
-    this.vy = kb.vy;
-    this.onGround = false;
+    this.pendingKnockVx = kb.vx;
+    this.pendingKnockVy = kb.vy;
+    this.vx = 0;
+    this.vy = 0;
     return true;
   }
 
   hurtsPlayer(playerHurt: Aabb): boolean {
-    if (this.isDead() || this.hitstun > 0 || this.hurtLocked) return false;
+    if (this.isDead() || this.hitstun > 0 || this.blackHeartBeat.isLocked() || this.hurtLocked) {
+      return false;
+    }
     return aabbOverlap(playerHurt, this.contactDamagePose());
   }
 
@@ -412,7 +448,7 @@ export class Penisman implements PeerWalkingEnemy {
   applyShieldBlockStrike(_strike: WeaponStrike): void {}
 
   isInCombatHitstun(): boolean {
-    return this.hitstun > 0;
+    return this.hitstun > 0 || this.blackHeartBeat.isLocked();
   }
 
   facingSign(): number {
@@ -501,126 +537,50 @@ export class Penisman implements PeerWalkingEnemy {
     if (this.vy > MAX_FALL) this.vy = MAX_FALL;
   }
 
-  private isHorizontalBlockingSolid(map: TileMap, tx: number, ty: number, footRow: number): boolean {
-    if (!map.isSolidTile(tx, ty)) return false;
-    if (ty === footRow && !map.isSolidTile(tx, footRow - 1)) return false;
-    return true;
-  }
-
   private moveAndCollide(
     dt: number,
     map: TileMap,
     peers: readonly CombatEnemy[],
   ): boolean {
     this.horizontalWallResolvedThisStep = false;
+    const poseAt = (ax: number, ay: number) =>
+      this.penismanPose(ENEMY_PENISMAN_LOCAL, ENEMY_PENISMAN_PIVOT_X, ax, ay);
+    const anchorX0 = this.x;
+    const anchorY0 = this.y;
     const xBefore = this.x;
     this.x += this.vx * dt;
-    this.horizontalWallResolvedThisStep = this.resolveHorizontal(map, xBefore);
+    const horz = resolveHorizontalPolygonEnemy(map, poseAt, xBefore, this.x, this.y, this.vx);
+    this.x = horz.x;
+    this.vx = horz.vx;
+    this.horizontalWallResolvedThisStep = horz.wallResolved;
+
     const before = this.hitboxPose().bounds();
-    const prevFoot = before.y + before.h;
+    const prevBottom = before.y + before.h;
     const prevTop = before.y;
+    const yBefore = this.y;
     this.y += this.vy * dt;
     this.onGround = false;
-    return this.resolveVertical(map, peers, prevFoot, prevTop);
-  }
 
-  private resolveHorizontal(map: TileMap, xBefore: number): boolean {
-    if (this.vx === 0) return false;
-    const r = this.rect();
-    const ts = TILE_SIZE;
-    const topTile = Math.floor((r.y + 0.001) / ts);
-    const bottomTile = Math.floor((r.y + r.h - 0.001) / ts);
-    const footRow = Math.floor((r.y + r.h - 1.0) / ts);
+    const vert = resolveVerticalPolygonEnemy(
+      map,
+      poseAt,
+      this,
+      peers,
+      this.x,
+      yBefore,
+      this.y,
+      this.vy,
+      prevBottom,
+      prevTop,
+    );
+    this.y = vert.y;
+    this.vy = vert.vy;
+    if (vert.landed) this.onGround = true;
 
-    if (this.vx > 0) {
-      const prevB = this.penismanPose(ENEMY_PENISMAN_LOCAL, ENEMY_PENISMAN_PIVOT_X, xBefore, this.y).bounds();
-      const prevRight = prevB.x + prevB.w;
-      const prevRightTile = Math.floor((prevRight - 1e-6) / ts);
-      const newRightTile = Math.floor((r.x + r.w) / ts);
-      for (let tx = Math.max(prevRightTile, 0); tx <= newRightTile; tx++) {
-        for (let ty = topTile; ty <= bottomTile; ty++) {
-          if (!this.isHorizontalBlockingSolid(map, tx, ty, footRow)) continue;
-          const cr = this.rect();
-          this.x += tx * ts - (cr.x + cr.w);
-          this.vx = 0;
-          return true;
-        }
-      }
-    } else {
-      const prevLeft = this.penismanPose(
-        ENEMY_PENISMAN_LOCAL,
-        ENEMY_PENISMAN_PIVOT_X,
-        xBefore,
-        this.y,
-      ).bounds().x;
-      const prevLeftTile = Math.floor(prevLeft / ts);
-      const newLeftTile = Math.floor(r.x / ts);
-      for (let tx = prevLeftTile; tx >= newLeftTile; tx--) {
-        for (let ty = topTile; ty <= bottomTile; ty++) {
-          if (!this.isHorizontalBlockingSolid(map, tx, ty, footRow)) continue;
-          const cr = this.rect();
-          this.x += (tx + 1) * ts - cr.x;
-          this.vx = 0;
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  private resolveVertical(
-    map: TileMap,
-    peers: readonly CombatEnemy[],
-    prevFoot: number,
-    prevTop: number,
-  ): boolean {
-    if (this.vy >= 0) {
-      const b = this.hitboxPose().bounds();
-      const foot = b.y + b.h;
-      const left = Math.floor((b.x + 0.001) / TILE_SIZE);
-      const right = Math.floor((b.x + b.w - 0.001) / TILE_SIZE);
-      const bottomTile = Math.floor((foot - 1e-4) / TILE_SIZE);
-      for (let tx = left; tx <= right; tx++) {
-        if (!map.isSolidTile(tx, bottomTile) && !map.isPlatformTile(tx, bottomTile)) continue;
-        const floorY = bottomTile * TILE_SIZE;
-        const prevBottomTile = Math.floor((prevFoot - 1e-4) / TILE_SIZE);
-        const crossedFromAbove = prevFoot <= floorY + 1e-3 || prevBottomTile < bottomTile;
-        const embedded = foot > floorY + 1e-3 && foot <= floorY + TILE_SIZE;
-        if ((crossedFromAbove || embedded) && foot >= floorY - 1e-3) {
-          if (map.isPlatformTile(tx, bottomTile) && foot > floorY + PLATFORM_DECK_SLACK_PX) {
-            continue;
-          }
-          this.y += floorY - foot;
-          this.vy = 0;
-          this.onGround = true;
-          return crossedFromAbove;
-        }
-        return false;
-      }
-      const peerTop = landingSurfaceY(this, peers, prevFoot);
-      if (!Number.isNaN(peerTop)) {
-        const lr = this.rect();
-        this.y += peerTop - (lr.y + lr.h);
-        this.vy = 0;
-        this.onGround = true;
-        return true;
-      }
-    } else {
-      const b = this.hitboxPose().bounds();
-      const top = b.y;
-      const left = Math.floor((b.x + 0.001) / TILE_SIZE);
-      const right = Math.floor((b.x + b.w - 0.001) / TILE_SIZE);
-      const topTile = Math.floor((top + 1e-4) / TILE_SIZE);
-      const ceilingBottomY = (topTile + 1) * TILE_SIZE;
-      for (let tx = left; tx <= right; tx++) {
-        if (!map.isSolidTile(tx, topTile)) continue;
-        if (prevTop >= ceilingBottomY - 1e-3 && top <= ceilingBottomY + 1e-3) {
-          this.y += ceilingBottomY - top;
-          this.vy = 0;
-        }
-        break;
-      }
-    }
-    return false;
+    const nudged = nudgePenismanEmbedAfterMove(map, poseAt, anchorX0, anchorY0, this.x, this.y);
+    this.x = nudged.x;
+    this.y = nudged.y;
+    if (nudged.clearVx) this.vx = 0;
+    return vert.landed;
   }
 }

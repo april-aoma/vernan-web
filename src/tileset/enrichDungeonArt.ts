@@ -20,6 +20,7 @@ import {
 import type { TilesetProject } from "./TilesetProject";
 import type { BuiltDungeon } from "../world/buildDungeon";
 import type { GeneratedRoom, RoomArtData } from "../world/RoomGenerator";
+import { regroundItemPedestal } from "../world/RoomGenerator";
 
 /**
  * Attach biome + deco + placed props once tileset is loaded (and after floor ascend).
@@ -53,6 +54,7 @@ export function enrichRoomArt(
   const tileAllowed = (id: string) => project.tileAllowed(id, floorOrdinal, room.kind);
 
   if (room.art?.decoStamps?.length) {
+    regroundItemPedestal(room);
     let stamps = regroundDecoStampsToFinalTerrain(
       room.art.decoStamps,
       room.map,
@@ -172,6 +174,7 @@ export function enrichRoomArt(
   if (placedRoomObjects.length) {
     evictDecoOverlappingPlacedProps(decoStamps, placedRoomObjects);
   }
+  regroundItemPedestal(room);
 
   const art: RoomArtData = {
     biomeId: biome.biomeId,

@@ -20,6 +20,16 @@ import {
   LEVEL_TRANSITION_BODY_PARTS,
   compositeBodyStrip,
 } from "./render/VernanBodyComposite";
+import { CostumeArtCache } from "./costume/CostumeArtCache";
+import { CostumeDrawConfig } from "./costume/CostumeDrawConfig";
+import {
+  tryRenderLayeredPlayer,
+  type CostumeRenderBundle,
+  type AttackOverlayDraw,
+} from "./costume/renderPlayerBody";
+import { loadCostumeLayers } from "./ranking/costumeResolve";
+import { VernanBodyLibrary } from "./vernan/VernanBodyLibrary";
+import { mergeOwnedPalette } from "./vernan/OwnedPaletteRuntime";
 import { gemKillSource, setGemKillSource } from "./combat/GemKillTracking";
 import { enemyKillDifficulty } from "./combat/EnemyKillDifficulty";
 import { resolveSwordProfile } from "./combat/SwordProfile";
@@ -37,7 +47,18 @@ import { Crawler } from "./entity/Crawler";
 import { Mouse } from "./entity/Mouse";
 import { GoldenRoach } from "./entity/GoldenRoach";
 import { drawGoldenRoach } from "./entity/drawGoldenRoach";
+import { JackBlue } from "./entity/JackBlue";
+import { drawJackBlueBones } from "./entity/drawJackBlue";
+import {
+  processJackBlueDeathChunks,
+  tickPendingJackDeathExplosions,
+  type PendingJackDeathExplosion,
+} from "./entity/jackBlueDeathChunks";
+import { spawnJackBlueBoneBreakChunks } from "./entity/jackBlueBoneBreaks";
 import { Penisman } from "./entity/Penisman";
+import { RollingHead } from "./entity/RollingHead";
+import { Multilimber } from "./entity/Multilimber";
+import { drawMultilimber } from "./entity/drawMultilimber";
 import type { PenismanBullet } from "./entity/PenismanBullet";
 import { drawPenisBulletDieFx, drawPenismanBullets } from "./entity/drawPenisman";
 import { tickEnemyPeerPhysics } from "./entity/EnemyPeerTick";
@@ -55,6 +76,7 @@ import { bossKindLabel, BossKind } from "./boss/BossRegistry";
 import { ItemCatalog } from "./item/ItemCatalog";
 import { ItemPickupOverlay } from "./item/ItemPickupOverlay";
 import { PedestalItemDecks } from "./item/PedestalItemDecks";
+import { RunItemPool } from "./item/RunItemPool";
 import {
   drawPossessedHeadBullets,
   PossessedHeadController,
@@ -95,6 +117,25 @@ import { submitScore } from "./ranking/scoresStore";
 import type { RunSummary } from "./ranking/types";
 import { BrickChunk, spawnBreakableBrickChunks } from "./fx/BrickChunk";
 import {
+  drawAllSeeingEyeOverlays,
+  drawCarryHeldAndThrown,
+  type AllSeeingDrawContext,
+} from "./carry/AllSeeingEyeDraw";
+import { GardeningGlovesSupport, type GardeningWorldAccess } from "./carry/GardeningGlovesSupport";
+import type { ThrownCarryProjectile } from "./carry/ThrownCarryProjectile";
+import { IceBlock } from "./entity/IceBlock";
+import {
+  freezeCombatEnemyToIce,
+  snapshotIceHoldSprite,
+} from "./combat/freezeCombatEnemy";
+import { drawIceBlocks } from "./combat/drawIceBlock";
+import { captureBackbuffer } from "./render/IceBlockReflectionEffect";
+import { feetOnIce, trySwordStrikeIce } from "./combat/IceBlockSupport";
+import { isIceBlockFreezable } from "./combat/IceBlockFreeze";
+import { ICE_SHARD_VELOCITY_SCALE } from "./combat/IceBlockFx";
+import { CarryKind } from "./carry/CarryKind";
+import { iceBlockPayload, type CarryPayload } from "./carry/CarryPayload";
+import {
   drawBrickChunksFloatZBehindPlayer,
   drawBrickChunksInFront,
 } from "./fx/drawBrickChunk";
@@ -113,6 +154,7 @@ import {
   HitVfxKind,
   hitVfxSpriteFile,
 } from "./fx/HitVfx";
+import { drawRisingDustFx, RisingDustFx } from "./fx/RisingDustFx";
 import {
   coinValue,
   heartPickupFrameIndex,
@@ -159,6 +201,9 @@ import {
   CRAWLER_FRAMES,
   MOUSE_FRAMES,
   PENISMAN_FRAMES,
+  JACK_BLUE_FRAMES,
+  ROLLING_HEAD_FRAMES,
+  MULTILIMBER_FRAMES,
   GOLDEN_ROACH_WALK_FRAMES,
   GOLDEN_ROACH_FLY_FRAMES,
   HURT_AIR_SHEET_FRAMES,
@@ -197,6 +242,7 @@ import {
 import { buildDungeon } from "./world/buildDungeon";
 import { mountDeferredRoomPickups } from "./world/RoomGenerator";
 import {
+  makeItemPedestal,
   PEDESTAL_DRAW_H,
   PEDESTAL_DRAW_W,
   pedestalItemAabb,
@@ -223,6 +269,9 @@ import {
   tickSessionRoomTransition,
   TransitionPhase,
   tryCollectPedestal,
+  tryCollectEnemyLootPedestal,
+  addEnemyLootPedestal,
+  activeEnemyLootPedestals,
   tryDoorTransition,
   tryLadderTransition,
   tryProcessRoomClear,
@@ -258,8 +307,11 @@ import { enrichDungeonArt } from "./tileset/enrichDungeonArt";
 import { snapshotTerrainCell } from "./tileset/snapshotTerrainCell";
 import {
   applySwordBreakables,
+  destroyBreakableAt,
   finishSeamOpenAnimInstant,
   tickSeamOpenAnim,
+  tryStrikeBreakablesInAabb,
+  type BreakableStrikeContext,
 } from "./world/BreakableStrike";
 import { tickKeyblockSeals } from "./world/KeyblockTick";
 import type { SecretSeamOpenAnim } from "./world/SecretSeamOpenAnim";
@@ -301,6 +353,8 @@ type PlayerSprites = {
   doorEnter: SpriteStrip | null;
   doorExit: SpriteStrip | null;
   getup: SpriteStrip | null;
+  /** Nephilim grab hold — layered {@code vernan/grabbed *.png} (4 frames). */
+  grabbed: SpriteStrip | null;
   /** Arms-raised pickup / shop-buy pose (`vernan item.png`). */
   itemPose: ImageBitmap | null;
   /** Boss floor-ascend descent strip (11 frames). */
@@ -309,10 +363,26 @@ type PlayerSprites = {
   specialAttack: SpriteStrip | null;
   /** Air frisbee throw (5 frames). */
   airSpecialAttack: SpriteStrip | null;
+  /** Gardening gloves pluck (4 frames, base+hair composite). */
+  pluck: SpriteStrip | null;
+  /** Gardening gloves throw (5 frames). */
+  throwCarry: SpriteStrip | null;
+  /** Gardening gloves air throw (5 frames). */
+  throwCarryAir: SpriteStrip | null;
   /** HEADBAND exclusive attack strips (layered vernan/). */
   headbandCrouchAttack: SpriteStrip | null;
   headbandUpAttack: SpriteStrip | null;
   headbandSideAttack: SpriteStrip | null;
+  /** DISC01 slide (layered vernan/). */
+  slide: SpriteStrip | null;
+  /** DISC02 wall-slide (layered vernan/). */
+  wallSlide: SpriteStrip | null;
+  /** DISC03 air-dodge (layered vernan/). */
+  airDodge: SpriteStrip | null;
+  /** DISC04 heavy attack ground (layered vernan/attack1). */
+  heavyAttack: SpriteStrip | null;
+  /** DISC04 heavy attack air legs overlay. */
+  heavyAttackAirLegs: SpriteStrip | null;
   /** Lemon buster body pose swaps (flat legacy sheets). */
   lemonIdle: ImageBitmap | null;
   lemonCrouch: ImageBitmap | null;
@@ -332,6 +402,12 @@ type EnemySprites = {
   mouse: SpriteStrip | null;
   mouseHurt: SpriteStrip | null;
   penisman: SpriteStrip | null;
+  jackBlue: SpriteStrip | null;
+  jackBlueShield: SpriteStrip | null;
+  rollingHead: SpriteStrip | null;
+  multilimberBody: SpriteStrip | null;
+  multilimberHead: SpriteStrip | null;
+  multilimberEye: SpriteStrip | null;
   goldenRoachWalk: SpriteStrip | null;
   goldenRoachFly: SpriteStrip | null;
   possessed: SpriteStrip | null;
@@ -416,6 +492,18 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   let deathMenuHits: DeathOverlayHitRects = { submit: { x: 0, y: 0, w: 0, h: 0 } };
   const player = new Player();
   player.stats.money = RUN_START_MONEY;
+  player.onBlackHeartBurstHit = (enemy, strike) => {
+    const er = enemy.rect();
+    HitVfx.spawn(
+      hitVfxList,
+      strike.hitVfxKind ?? HitVfxKind.BLACK_HEART,
+      enemy,
+      strike.contactWorldX ?? er.x + er.w * 0.5,
+      strike.contactWorldY ?? er.y + er.h * 0.5,
+      strike.freezeFrames,
+      player.x + player.w * 0.5,
+    );
+  };
   const pickupOverlay = new ItemPickupOverlay();
   const hudEconomy = new HudEconomyDisplay();
   hudEconomy.sync(player.stats.money, player.stats.keys);
@@ -455,6 +543,128 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       );
     },
   };
+
+  let fruitCarrySprite: ImageBitmap | null = null;
+  const settledFruitByRoom = new Map<number, ThrownCarryProjectile[]>();
+  const iceBlocks: IceBlock[] = [];
+  const roomPersistedIceBlocks = new Map<number, IceBlock[]>();
+  let lastFrozenIce: IceBlock | null = null;
+  let gardeningGlovesSupport: GardeningGlovesSupport | null = null;
+
+  function buildGardeningWorldAccess(): GardeningWorldAccess {
+    return {
+      player: () => player,
+      map: () => session!.dungeon.rooms[session!.roomId]!.map,
+      roomDeco: () => session!.dungeon.rooms[session!.roomId]!.art?.decoStamps ?? [],
+      setRoomDeco(deco) {
+        const room = session!.dungeon.rooms[session!.roomId]!;
+        if (!room.art) return;
+        room.art.decoStamps = [...deco];
+      },
+      runSeed: () => session!.dungeon.runSeed,
+      currentRoomId: () => session!.roomId,
+      equippedSubweapon: () => player.inventory.equippedSubweapon(),
+      catalog: () => session!.catalog,
+      pickupHost: () => itemPickupHost,
+      playerThrowDamage: () =>
+        Math.ceil(player.effectiveOutgoingDamage(1 + player.stats.attackDamage / 2)),
+      fruitSprite: () => fruitCarrySprite,
+      project: () => tilesetProject,
+      removeDecoAt(tx, ty) {
+        const room = session!.dungeon.rooms[session!.roomId]!;
+        const stamps = room.art?.decoStamps;
+        if (!stamps?.length) return;
+        room.art!.decoStamps = stamps.filter((d) => d.tx !== tx || d.ty !== ty);
+      },
+      pluckBreakableFloor(tx, ty, hiddenShell) {
+        const s = session!;
+        const map = s.dungeon.rooms[s.roomId]!.map;
+        if (hiddenShell) {
+          destroyBreakableAt(tx, ty, {
+            player,
+            map,
+            roomId: s.roomId,
+            rooms: s.dungeon.rooms,
+            seams: s.dungeon.secretSeams,
+            layout: s.dungeon.layout,
+            runSeed: s.dungeon.runSeed,
+            camera,
+            brickChunks,
+            worldPickups,
+            project: tilesetProject,
+            snapshotTile: (x, y) =>
+              snapshotBreakableTile(
+                map,
+                x,
+                y,
+                s,
+                sheetAtlas,
+                tilesetProject,
+                floorOrdinal,
+                tileWorldRenderer,
+              ),
+            activeSeamOpenAnim,
+            seamAnimPlayableScrollOverride,
+          });
+          return;
+        }
+        map.setTile(tx, ty, TILE_EMPTY);
+      },
+      snapshotBreakableTile: (tx, ty) =>
+        snapshotBreakableTile(
+          session!.dungeon.rooms[session!.roomId]!.map,
+          tx,
+          ty,
+          session!,
+          sheetAtlas,
+          tilesetProject,
+          floorOrdinal,
+          tileWorldRenderer,
+        ),
+      isHiddenShellBreakable(tx, ty) {
+        const seams = session!.dungeon.secretSeams;
+        if (!seams) return false;
+        for (const seam of seams) {
+          if (seam.isHiddenBreakable(session!.roomId, tx, ty)) return true;
+        }
+        return false;
+      },
+      shatterBreakableBlock(payload, x, y) {
+        const snap = payload.breakableTileSnap;
+        spawnBreakableBrickChunks(x, y, Math.random, brickChunks, 1, "#8a5a3a", snap);
+      },
+      storeSettledFruitForRoom(roomId, settled) {
+        settledFruitByRoom.set(roomId, [...settled]);
+      },
+      settledFruitForRoom(roomId) {
+        return settledFruitByRoom.get(roomId) ?? [];
+      },
+      acquiredItemIds: () => new Set(player.inventory.ownedIds()),
+      grantPluckedItem(id) {
+        player.collectItem(id, session!.catalog, itemPickupHost);
+        session!.decks.markAcquired(id);
+      },
+      iceBlocks: () => iceBlocks,
+      removeIceBlockAt(index) {
+        if (index >= 0 && index < iceBlocks.length) iceBlocks.splice(index, 1);
+      },
+      snapshotIceHoldSprite(block) {
+        return snapshotIceHoldSprite(block);
+      },
+      shatterIceBlock(payload, x, y) {
+        shatterIceBlockPayload(payload, x, y);
+      },
+      spawnWorldHeartPickup(worldX, worldY) {
+        worldPickups.push(WorldPickup.createFromBreakable(PickupKind.HEART, worldX, worldY, Math.random));
+      },
+      tryStrikeBreakables(hit) {
+        return tryStrikeBreakablesInAabb(hit, breakableStrikeCtx());
+      },
+    };
+  }
+
+  gardeningGlovesSupport = new GardeningGlovesSupport(buildGardeningWorldAccess());
+
   LeotardCombat.setHost({
     leotardOwned: () => player.inventory.stacksOf("LEOTARD") > 0,
     onPlayerDamageApplied(damageDealt) {
@@ -694,10 +904,14 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     doorEnter: null,
     doorExit: null,
     getup: null,
+    grabbed: null,
     itemPose: null,
     levelTransition: null,
     specialAttack: null,
     airSpecialAttack: null,
+    pluck: null,
+    throwCarry: null,
+    throwCarryAir: null,
     headbandCrouchAttack: null,
     headbandUpAttack: null,
     headbandSideAttack: null,
@@ -710,6 +924,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     shieldPlayer: null,
     shieldAttack: null,
     crouchShieldAttack: null,
+    slide: null,
+    wallSlide: null,
+    airDodge: null,
+    heavyAttack: null,
+    heavyAttackAirLegs: null,
   };
   let renderFacing = 1;
   let turnAnimFramesLeft = 0;
@@ -718,6 +937,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     mouse: null,
     mouseHurt: null,
     penisman: null,
+    jackBlue: null,
+    jackBlueShield: null,
+    rollingHead: null,
+    multilimberBody: null,
+    multilimberHead: null,
+    multilimberEye: null,
     goldenRoachWalk: null,
     goldenRoachFly: null,
     possessed: null,
@@ -725,15 +950,75 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     nephilim: null,
     nephilimHealFx: null,
   };
+
+  function breakableStrikeCtx(): BreakableStrikeContext {
+    const s = session!;
+    const map = s.dungeon.rooms[s.roomId]!.map;
+    return {
+      player,
+      map,
+      roomId: s.roomId,
+      rooms: s.dungeon.rooms,
+      seams: s.dungeon.secretSeams,
+      layout: s.dungeon.layout,
+      runSeed: s.dungeon.runSeed,
+      camera,
+      brickChunks,
+      worldPickups,
+      project: tilesetProject,
+      snapshotTile: (tx, ty) =>
+        snapshotBreakableTile(map, tx, ty, s, sheetAtlas, tilesetProject, floorOrdinal, tileWorldRenderer),
+      activeSeamOpenAnim,
+      seamAnimPlayableScrollOverride,
+    };
+  }
+
+  function shatterIceBlockPayload(payload: CarryPayload, x: number, y: number): void {
+    if (payload.kind !== CarryKind.ICE_BLOCK) return;
+    const snap = payload.breakableTileSnap;
+    spawnBreakableBrickChunks(
+      x,
+      y,
+      Math.random,
+      brickChunks,
+      ICE_SHARD_VELOCITY_SCALE,
+      "#7fe4f9",
+      snap,
+    );
+    for (const loot of payload.iceLoot) {
+      worldPickups.push(WorldPickup.createFromBreakable(loot.kind, x + 8, y + 16, Math.random));
+    }
+  }
+
+  function tryFreezeDeadEnemy(e: CombatEnemy): boolean {
+    if (player.inventory.stacksOf("ICE_BLOCK") <= 0) return false;
+    if (!isIceBlockFreezable(e)) return false;
+    const block = freezeCombatEnemyToIce(e, enemySprites);
+    if (!block) return false;
+    iceBlocks.push(block);
+    lastFrozenIce = block;
+    return true;
+  }
+
+  function rollGemKillLootIntoIce(e: CombatEnemy): void {
+    if (player.inventory.stacksOf("GEM_SWORD") <= 0 || !lastFrozenIce) return;
+    const src = gemKillSource(e);
+    if (src !== "sword" && src !== "flint_fire") return;
+    if (Math.random() >= GEM_SWORD_KILL_COIN_CHANCE) return;
+    lastFrozenIce.addLoot(rollRoomClearCoinKind(Math.random));
+  }
+
   let possessedBulletBmp: ImageBitmap | null = null;
   let possessedBulletDieBmp: ImageBitmap | null = null;
   let penisBulletBmp: ImageBitmap | null = null;
   let penisBulletDieBmp: ImageBitmap | null = null;
+  let jackBlueBoneBmp: ImageBitmap | null = null;
   let lilPossessedBulletBmp: ImageBitmap | null = null;
   let lilPossessedBulletDieBmp: ImageBitmap | null = null;
   const possessedHead = new PossessedHeadController();
   const explosions: KillExplosion[] = [];
   const brickChunks: BrickChunk[] = [];
+  const pendingJackDeathExplosions: PendingJackDeathExplosion[] = [];
   const frisbeeProjectiles: FrisbeeProjectile[] = [];
   const flintFires: FlintFire[] = [];
   const lemonProjectiles: LemonProjectile[] = [];
@@ -748,6 +1033,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   const pickupCollectStrips = new Map<PickupKind, ImageBitmap>();
   const hitVfxList: HitVfx[] = [];
   const hitVfxSprites = new Map<HitVfxKind, ImageBitmap>();
+  const risingDustFx: RisingDustFx[] = [];
+  let dustSprite: ImageBitmap | null = null;
   const activeSeamOpenAnim: { current: SecretSeamOpenAnim | null } = { current: null };
   const seamAnimPlayableScrollOverride: { current: PlayableScrollX | null } = {
     current: null,
@@ -765,6 +1052,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   const bgBuffers: RoomMathBackgroundBuffers = createRoomMathBackgroundBuffers();
   let roomMathBackgroundPresetId: (string | null)[] = [];
   let gamePalette: GameColorPalette | null = null;
+  let costumeBundle: CostumeRenderBundle | null = null;
 
   void assets.hasManifest();
 
@@ -778,7 +1066,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         dungeon.layout,
         bgRegistry,
       );
-      const decks = new PedestalItemDecks(catalog, BigInt(seed));
+      const runItemPool = new RunItemPool();
+      const decks = new PedestalItemDecks(catalog, runItemPool, BigInt(seed));
       session = createSession(dungeon, catalog, decks);
       floorOrdinal = dungeon.floorOrdinal;
       miniMapState = createMiniMapState(dungeon.layout.roomCount());
@@ -856,11 +1145,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         HitVfxKind.ELECTRIC,
         HitVfxKind.SHIELD,
         HitVfxKind.SHIELD_BREAK,
+        HitVfxKind.BLACK_HEART,
         HitVfxKind.FALLBACK,
       ]) {
         const bmp = await loadImageSafe(assets, `sprites/${hitVfxSpriteFile(kind)}`);
         if (bmp) hitVfxSprites.set(kind, bmp);
       }
+      dustSprite = await loadImageSafe(assets, "sprites/dust.png");
 
       playerSprites.idle = await loadImageSafe(assets, "sprites/vernan idle.png");
       playerSprites.crouch = await loadImageSafe(assets, "sprites/vernan crouch.png");
@@ -948,6 +1239,25 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         "sprites/vernan air special attack.png",
         5,
       );
+      const pluckLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/pluck ${part}.png`, 4),
+        ),
+      );
+      playerSprites.pluck = (await compositeBodyStrip(pluckLayers)) ?? null;
+      const throwLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/throw ${part}.png`, 5),
+        ),
+      );
+      playerSprites.throwCarry = (await compositeBodyStrip(throwLayers)) ?? null;
+      const throwAirLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/throw air-${part}.png`, 5),
+        ),
+      );
+      playerSprites.throwCarryAir = (await compositeBodyStrip(throwAirLayers)) ?? null;
+      fruitCarrySprite = await loadImageSafe(assets, "sprites/fruits.png");
       const headbandCrouchLayers = await Promise.all(
         (["base", "hair"] as const).map((part) =>
           loadStrip(assets, `sprites/vernan/crouchattack1 ${part}.png`, 4),
@@ -966,6 +1276,35 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         ),
       );
       playerSprites.headbandSideAttack = await compositeBodyStrip(headbandSideLayers);
+      const slideLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/slide ${part}.png`, 1),
+        ),
+      );
+      playerSprites.slide = (await compositeBodyStrip(slideLayers)) ?? null;
+      const wallSlideLayers = await Promise.all(
+        (["base", "hair", "arm", "l-arm"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/wallslide ${part}.png`, 2),
+        ),
+      );
+      playerSprites.wallSlide = (await compositeBodyStrip(wallSlideLayers)) ?? null;
+      const airDodgeLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/airdodge ${part}.png`, 3),
+        ),
+      );
+      playerSprites.airDodge = (await compositeBodyStrip(airDodgeLayers)) ?? null;
+      const heavyAttackLayers = await Promise.all(
+        (["base", "hair", "legs"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/attack1 ${part}.png`, 8),
+        ),
+      );
+      playerSprites.heavyAttack = (await compositeBodyStrip(heavyAttackLayers)) ?? null;
+      playerSprites.heavyAttackAirLegs = await loadStrip(
+        assets,
+        "sprites/vernan/attack1 air-legs.png",
+        8,
+      );
       playerSprites.lemonIdle = await loadImageSafe(assets, "sprites/vernan idle lemon.png");
       playerSprites.lemonCrouch = await loadImageSafe(assets, "sprites/vernan crouch lemon.png");
       playerSprites.lemonTurn = await loadImageSafe(assets, "sprites/vernan turn lemon.png");
@@ -998,6 +1337,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         ),
       );
       playerSprites.getup = await compositeBodyStrip(getupLayers);
+      const grabbedLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/grabbed ${part}.png`, 4),
+        ),
+      );
+      playerSprites.grabbed = await compositeBodyStrip(grabbedLayers);
       // Layered item pose (base + hair); fall back to flat vernan item.png.
       const itemLayers = await Promise.all(
         (["base", "hair"] as const).map((part) =>
@@ -1020,10 +1365,57 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           LEVEL_TRANS_SHEET_FRAMES,
         ));
 
+      try {
+        const manifest = await assets.loadJson<{ files?: { path: string }[] }>("runtime-manifest.json");
+        const manifestPaths = (manifest.files ?? []).map((f) => f.path);
+        const layersFile = await loadCostumeLayers(assets.url("data/costume_layers.json"));
+        const drawConfig = await CostumeDrawConfig.load(() =>
+          assets.loadJson("data/costume_slots.json"),
+        );
+        const bodyLibrary = await VernanBodyLibrary.load(assets, manifestPaths);
+        const artCache = await CostumeArtCache.load(
+          assets,
+          layersFile,
+          drawConfig,
+          manifestPaths,
+        );
+        if (bodyLibrary.hasIdle) {
+          costumeBundle = { bodyLibrary, artCache, drawConfig, layersFile };
+        }
+      } catch {
+        costumeBundle = null;
+      }
+
       enemySprites.crawler = await loadStrip(assets, "sprites/crawler.png", CRAWLER_FRAMES);
       enemySprites.mouse = await loadStrip(assets, "sprites/mouse.png", MOUSE_FRAMES);
       enemySprites.mouseHurt = await loadStrip(assets, "sprites/mouse hurt.png", MOUSE_FRAMES);
       enemySprites.penisman = await loadStrip(assets, "sprites/penisman.png", PENISMAN_FRAMES);
+      enemySprites.jackBlue = await loadStrip(assets, "sprites/jack blue.png", JACK_BLUE_FRAMES);
+      enemySprites.jackBlueShield = await loadStrip(
+        assets,
+        "sprites/jack blue shield.png",
+        JACK_BLUE_FRAMES,
+      );
+      enemySprites.rollingHead = await loadStrip(
+        assets,
+        "sprites/rolling head cc.png",
+        ROLLING_HEAD_FRAMES,
+      );
+      enemySprites.multilimberBody = await loadStrip(
+        assets,
+        "sprites/multilimber body.png",
+        MULTILIMBER_FRAMES,
+      );
+      enemySprites.multilimberHead = await loadStrip(
+        assets,
+        "sprites/multilimber head.png",
+        MULTILIMBER_FRAMES,
+      );
+      enemySprites.multilimberEye = await loadStrip(
+        assets,
+        "sprites/multilimber eye.png",
+        MULTILIMBER_FRAMES,
+      );
       enemySprites.goldenRoachWalk = await loadStrip(
         assets,
         "sprites/golden roach2.png",
@@ -1056,6 +1448,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       );
       penisBulletBmp = await loadImageSafe(assets, "sprites/penis bullet.png");
       penisBulletDieBmp = await loadImageSafe(assets, "sprites/penis bullet die.png");
+      jackBlueBoneBmp = await loadImageSafe(assets, "sprites/bone.png");
       lilPossessedBulletBmp = await loadImageSafe(assets, "sprites/lil possessed bullet.png");
       lilPossessedBulletDieBmp = await loadImageSafe(
         assets,
@@ -1222,6 +1615,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   function onBackpackSubweaponSwitched(): void {
     psychicSpoon.clearTelekinesis(brickChunks);
+    player.dropCarryForSubweaponSwitch();
     player.resetSubweaponAnim();
   }
 
@@ -1453,6 +1847,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       session.pedestalBobPhase = tickPedestalBobPhase(session.pedestalBobPhase, FIXED_DT);
 
       for (const fx of explosions) fx.update(FIXED_DT);
+      tickPendingJackDeathExplosions(pendingJackDeathExplosions, FIXED_DT, (cx, cy) => {
+        explosions.push(new KillExplosion(cx, cy));
+      });
       for (let i = explosions.length - 1; i >= 0; i--) {
         if (explosions[i]!.done) explosions.splice(i, 1);
       }
@@ -1462,6 +1859,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         if (pickupCollectFx[i]!.done) pickupCollectFx.splice(i, 1);
       }
       HitVfx.tickAll(hitVfxList);
+      RisingDustFx.tickAll(risingDustFx, FIXED_DT);
       AutismDamageFloater.tickAll(autismDamageFloaters);
       tickKaleidoscopePedestalVisual(
         session,
@@ -1545,8 +1943,18 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         worldPickups.length = 0;
         pickupCollectFx.length = 0;
         hitVfxList.length = 0;
+        risingDustFx.length = 0;
         possessedHead.clear();
         player.resetSubweaponAnim();
+        player.dropCarryForSubweaponSwitch();
+        const prevRoom = roomBeforeTransition;
+        if (prevRoom !== s.roomId) {
+          roomPersistedIceBlocks.set(prevRoom, [...iceBlocks]);
+          gardeningGlovesSupport?.onRoomChange(prevRoom, s.roomId);
+        }
+        iceBlocks.length = 0;
+        iceBlocks.push(...(roomPersistedIceBlocks.get(s.roomId) ?? []));
+        lastFrozenIce = null;
         psychicSpoon.reset();
         brickChunks.push(...loadRoomBrickChunks(s, s.roomId));
         // Fade-swap only (pending spawn set). Skip boss-ascend rebuild — stale pendingSpawnKind.
@@ -1576,6 +1984,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           worldPickups.length = 0;
           pickupCollectFx.length = 0;
           hitVfxList.length = 0;
+        risingDustFx.length = 0;
           possessedHead.clear();
           player.resetSubweaponAnim();
           psychicSpoon.reset();
@@ -1663,6 +2072,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           e.setGrabStruggleMashing(grabStruggleMash);
         } else if (e instanceof Penisman) {
           e.setCameraView(camViewPre);
+        } else if (e instanceof JackBlue) {
+          e.setCameraView(camViewPre);
+          e.applyVision(playerSnapPre, seeRPre);
+        } else if (e instanceof Multilimber) {
+          e.setCameraView(camViewPre);
+          e.applyVision(playerSnapPre.cx, playerSnapPre.cy, seeRPre, map);
         } else if (e instanceof GoldenRoach) {
           e.setCameraView(camViewPre);
           e.prepareVisionTick(map);
@@ -1672,7 +2087,34 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         }
       }
       tickEnemyPeerPhysics(session.enemies, map, player.x + player.w * 0.5, FIXED_DT);
-      player.update(FIXED_DT, input, map, subweaponHost, pedestalPlatforms, session.enemies);
+      for (const block of iceBlocks) block.tick(FIXED_DT);
+      player.setIceBlockCollisionContext(iceBlocks, feetOnIce(player, iceBlocks));
+      player.update(
+        FIXED_DT,
+        input,
+        map,
+        subweaponHost,
+        pedestalPlatforms,
+        session.enemies,
+        gardeningGlovesSupport,
+      );
+      const wallDust = player.disc.consumeWallSlideDustSpawn();
+      if (wallDust) RisingDustFx.spawnStripPuff(risingDustFx, wallDust[0], wallDust[1]);
+      const slideDust = player.disc.consumeSlideDustSpawn();
+      if (slideDust) RisingDustFx.spawnStripPuff(risingDustFx, slideDust[0], slideDust[1]);
+      const landDust = player.consumeLandingDustSpawn();
+      if (landDust) {
+        const puffCount = landDust[0];
+        const behindX = landDust[1];
+        const feetY = landDust[2];
+        if (puffCount >= 2) {
+          RisingDustFx.spawnStripPuff(risingDustFx, behindX - 5, feetY);
+          RisingDustFx.spawnStripPuff(risingDustFx, behindX + 5, feetY);
+        } else {
+          RisingDustFx.spawnStripPuff(risingDustFx, behindX, feetY);
+        }
+      }
+      gardeningGlovesSupport?.tick(FIXED_DT, session.enemies);
       tickFlintFiresAndLemonShots(map);
       if (player.consumeLandedThisTick() && session) {
         ItemEffects.onPlayerLanded(
@@ -1718,6 +2160,14 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           pickupOverlayBonusLine = "";
           applySwordProfileIfPresent();
           void ensureItemArt(session.catalog.def(collected).spriteFileName);
+        } else {
+          const enemyLoot = tryCollectEnemyLootPedestal(session, player, itemPickupHost);
+          if (enemyLoot) {
+            pickupOverlay.begin(enemyLoot, pickupOverlayBonusLine);
+            pickupOverlayBonusLine = "";
+            applySwordProfileIfPresent();
+            void ensureItemArt(session.catalog.def(enemyLoot).spriteFileName);
+          }
         }
       }
 
@@ -1744,6 +2194,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           void ensureItemArt(def.spriteFileName);
         }
       }
+      for (const ep of activeEnemyLootPedestals(session)) {
+        if (ep.itemId && !ep.collected) {
+          const def = session.catalog.def(ep.itemId);
+          void ensureItemArt(def.spriteFileName);
+        }
+      }
 
       // Enemies already simulated before player.update; refresh camera for combat FX.
       followCamera(session, true);
@@ -1762,6 +2218,20 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           }
           if (!e.isDead()) {
             e.tickDeathHeadLanding(FIXED_DT, map);
+          }
+        } else if (e instanceof JackBlue) {
+          processJackBlueDeathChunks(e, enemySprites.jackBlue, brickChunks);
+          for (const ex of e.drainDeathExplosionSpawns()) {
+            pendingJackDeathExplosions.push({ cx: ex.cx, cy: ex.cy, delaySec: ex.delaySec });
+          }
+          if (!e.isDead()) {
+            for (const req of e.drainBoneBreakRequests()) {
+              spawnJackBlueBoneBreakChunks(req.cx, req.cy, jackBlueBoneBmp, brickChunks);
+            }
+          }
+        } else if (e instanceof Multilimber) {
+          for (const ex of e.drainExplosionSpawns()) {
+            pendingJackDeathExplosions.push({ cx: ex.cx, cy: ex.cy, delaySec: ex.delaySec });
           }
         }
         maybeSpawnDeathFx(e);
@@ -1823,8 +2293,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         activeSeamOpenAnim,
         seamAnimPlayableScrollOverride,
       });
-      if (enemyFreeze > 0 || blockFreeze > 0) {
-        player.latchAttackHit(Math.max(enemyFreeze, blockFreeze));
+      const iceFreeze = trySwordStrikeIce(player, iceBlocks, (block) => {
+        const snap = snapshotIceHoldSprite(block);
+        const payload = iceBlockPayload(snap, block.lootCopy(), block.mirrorSourceX);
+        shatterIceBlockPayload(payload, block.x, block.y);
+      });
+      if (enemyFreeze > 0 || blockFreeze > 0 || iceFreeze > 0) {
+        player.latchAttackHit(Math.max(enemyFreeze, blockFreeze, iceFreeze));
       }
       collectWorldPickups(player, worldPickups, hudEconomy, pickupCollectFx);
       player.applyEnemyContacts(session.enemies, (e, strike, contact) => {
@@ -1839,8 +2314,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         );
       });
       applyPenismanBulletHits(session, player);
+      applyJackBlueBoneHits(session, player);
       applyPossessedBulletHits(session, player);
       applyStickReflectedArcingBulletHits(session, player);
+      lastFrozenIce = null;
       for (const e of session.enemies) maybeSpawnDeathFx(e);
       session.enemies = session.enemies.filter((e) => {
         if (!e.isDead()) return true;
@@ -1888,6 +2365,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       g.rect(0, 0, INTERNAL_WIDTH, WORLD_VIEWPORT_H);
       g.clip();
 
+      const paintCamTx = camera.tx + player.blackHeartScreenShakeDeviceX() + player.heavyAttackScreenShakeDeviceX();
+      const paintCamTy = camera.ty + player.blackHeartScreenShakeDeviceY() + player.heavyAttackScreenShakeDeviceY();
+      const savedCamTx = camera.tx;
+      const savedCamTy = camera.ty;
+      camera.tx = paintCamTx;
+      camera.ty = paintCamTy;
+
       // Black void behind world (Java setBackground BLACK); math bg fills boss/secret.
       g.fillStyle = "#000000";
       g.fillRect(0, 0, INTERNAL_WIDTH, WORLD_VIEWPORT_H);
@@ -1931,6 +2415,41 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         keyblockStrip,
         keyblockConnectorStrip,
       );
+      const room = session.dungeon.rooms[session.roomId]!;
+      const art = room.art;
+      const primarySheetId = art?.sheetId ?? tilesetProject?.primarySheetIdForFloor(floorOrdinal);
+      drawAllSeeingEyeOverlays(g, {
+        inventory: player.inventory,
+        runSeed: session.dungeon.runSeed,
+        roomId: session.roomId,
+        map,
+        deco: art?.decoStamps,
+        seams: session.dungeon.secretSeams,
+        camera,
+        atlas: sheetAtlas,
+        project: tilesetProject,
+        tileWorld: tileWorldRenderer,
+        bridge: art?.bridge ?? null,
+        roomKind: room.kind,
+        displaySalt: node.contentSeed,
+        floorOrdinal,
+        simTick: Math.floor(session.timeSec * 60),
+        primarySheetId,
+        doorDestByCell: destKindByDoorCell(session.dungeon.layout, session.roomId, room),
+        contextThemeRules: art?.contextThemeRules ?? null,
+        isHiddenShellBreakable: (tx, ty) => {
+          const seams = session!.dungeon.secretSeams;
+          if (!seams) return false;
+          for (const seam of seams) {
+            if (seam.isHiddenBreakable(session!.roomId, tx, ty)) return true;
+          }
+          return false;
+        },
+        pickupBitmaps,
+        itemBitmaps,
+        fruitSprite: fruitCarrySprite,
+        catalog: session.catalog,
+      } satisfies AllSeeingDrawContext);
       const preloadPedestalItem = (ped: ItemPedestal | null) => {
         if (ped?.itemId && !ped.collected && session) {
           void ensureItemArt(session.catalog.def(ped.itemId).spriteFileName);
@@ -1941,6 +2460,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         ensureShopResolved(session);
         for (const sp of activeShopPedestals(session)) preloadPedestalItem(sp);
       }
+      for (const ep of activeEnemyLootPedestals(session)) preloadPedestalItem(ep);
       drawPedestal(
         g,
         activePedestal(session),
@@ -1984,13 +2504,26 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           );
         }
       }
+      for (const ep of activeEnemyLootPedestals(session)) {
+        drawPedestal(
+          g,
+          ep,
+          session,
+          camera,
+          pedestalBmp,
+          itemBitmaps,
+          kaleidoscopePedestalSprite,
+        );
+      }
       for (const e of session.enemies) {
-        drawEnemy(g, e, camera, enemySprites);
+        drawEnemy(g, e, camera, enemySprites, player, playerSprites);
         if (e instanceof Possessed) {
           drawPossessedBullets(g, e, camera, possessedBulletBmp, possessedBulletDieBmp);
         } else if (e instanceof Penisman) {
           drawPenismanBullets(g, e, camera, penisBulletBmp);
           drawPenisBulletDieFx(g, e, camera, penisBulletDieBmp);
+        } else if (e instanceof JackBlue) {
+          drawJackBlueBones(g, e, camera, jackBlueBoneBmp);
         }
       }
       if (player.inventory.stacksOf("AUTISM") > 0) {
@@ -2024,7 +2557,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       for (const ff of flintFires) {
         drawFlintFire(g, ff, camera, fireStrip);
       }
-      if (!levelAscendFadeOut) {
+      if (!levelAscendFadeOut && !isPlayerGrabDrawEmbeddedInNephilim(player, session.enemies)) {
+        const ownedPalette = mergeOwnedPalette(player.inventory, session.catalog);
         drawPlayer(
           g,
           player,
@@ -2034,7 +2568,28 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           turnAnimFramesLeft > 0,
           session.transition.pose,
           pickupOverlay.isActive(),
+          costumeBundle,
+          ownedPalette,
         );
+        const carryThrown = gardeningGlovesSupport?.thrownProjectiles() ?? [];
+        const heldCarry = player.carryPayload();
+        const needsIceReflection =
+          iceBlocks.length > 0 ||
+          heldCarry?.kind === CarryKind.ICE_BLOCK ||
+          carryThrown.some((p) => p.isAlive() && p.payload.kind === CarryKind.ICE_BLOCK);
+        const iceReflectionBackbuffer = needsIceReflection ? captureBackbuffer(fb.internal) : null;
+        drawCarryHeldAndThrown(
+          g,
+          camera,
+          player,
+          fruitCarrySprite,
+          carryThrown,
+          pickupBitmaps,
+          itemBitmaps,
+          session.catalog,
+          iceReflectionBackbuffer,
+        );
+        drawIceBlocks(g, iceBlocks, camera, iceReflectionBackbuffer);
         if (pickupOverlay.isActive() && pickupOverlay.itemId) {
           const heldBmp = itemBitmaps.get(
             session.catalog.def(pickupOverlay.itemId).spriteFileName,
@@ -2065,6 +2620,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       for (const lp of lemonProjectiles) {
         drawLemonProjectile(g, lp, camera, lemonShotStrip);
       }
+      drawRisingDustFx(g, risingDustFx, camera, dustSprite);
       drawHitVfx(g, hitVfxList, camera, hitVfxSprites);
       for (const p of worldPickups) drawWorldPickup(g, p, camera, pickupBitmaps);
       drawPickupCollectFx(g, pickupCollectFx, camera, pickupCollectStrips);
@@ -2101,6 +2657,19 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
 
       g.restore();
+
+      camera.tx = savedCamTx;
+      camera.ty = savedCamTy;
+
+      const blackHeartOverlayAlpha = player.blackHeartOverlayAlpha();
+      if (blackHeartOverlayAlpha > 0.001) {
+        const overlayA = Math.min(
+          255,
+          Math.max(0, Math.round(255 * blackHeartOverlayAlpha)),
+        );
+        g.fillStyle = `rgba(0,0,0,${overlayA / 255})`;
+        g.fillRect(0, 0, INTERNAL_WIDTH, WORLD_VIEWPORT_H);
+      }
 
       // Java: pause overlay/menu before bottom HUD so the HUD band paints on top.
       if (paused) {
@@ -2218,9 +2787,46 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   function maybeSpawnDeathFx(e: CombatEnemy): void {
     // Feet-centered explosions (Java). Crawler/Mouse wait until hitstun ends via takeCorpseExplosion.
-    if (e instanceof Crawler || e instanceof Mouse || e instanceof Penisman || e instanceof GoldenRoach) {
+    if (e instanceof JackBlue) {
+      if (e.isDead() && !dyingFxStarted.has(e)) {
+        dyingFxStarted.add(e);
+        if (tryFreezeDeadEnemy(e)) {
+          rollGemKillLootIntoIce(e);
+          return;
+        }
+        e.prepareDeathFxIfNeeded();
+        e.rollShieldDropOnDeath(
+          player.hasShieldEquipped(),
+          session!.dungeon.runSeed,
+          session!.roomId,
+        );
+        const shieldDrop = e.drainShieldDropRequest();
+        if (shieldDrop) {
+          const map = currentMap(session!);
+          const tx = Math.max(0, Math.min(map.width - 1, Math.floor(shieldDrop.anchorX / TILE_SIZE)));
+          const groundTop = map.groundTopWorldYAtColumn(tx);
+          addEnemyLootPedestal(
+            session!,
+            makeItemPedestal(shieldDrop.itemId, shieldDrop.anchorX, groundTop),
+          );
+        }
+        trySpawnGemKillCoin(e);
+      }
+      return;
+    }
+    if (
+      e instanceof Crawler ||
+      e instanceof Mouse ||
+      e instanceof Penisman ||
+      e instanceof RollingHead ||
+      e instanceof GoldenRoach
+    ) {
       if (e.takeCorpseExplosion() && !dyingFxStarted.has(e)) {
         dyingFxStarted.add(e);
+        if (tryFreezeDeadEnemy(e)) {
+          rollGemKillLootIntoIce(e);
+          return;
+        }
         trySpawnGemKillCoin(e);
         const r = e.rect();
         explosions.push(new KillExplosion(r.x + r.w * 0.5, r.y + r.h));
@@ -2230,11 +2836,24 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     if (e instanceof Possessed) {
       if (e.suppressDeathExplosion()) return;
     }
+    if (e instanceof Multilimber) {
+      if (e.suppressDeathExplosion()) {
+        if (e.isDead() && !dyingFxStarted.has(e)) {
+          dyingFxStarted.add(e);
+          trySpawnGemKillCoin(e);
+        }
+        return;
+      }
+    }
     if (e instanceof Nephilim) {
       if (e.suppressDeathExplosion()) return;
     }
     if (e.isDead() && !dyingFxStarted.has(e)) {
       dyingFxStarted.add(e);
+      if (tryFreezeDeadEnemy(e)) {
+        rollGemKillLootIntoIce(e);
+        return;
+      }
       trySpawnGemKillCoin(e);
       const r = e.rect();
       explosions.push(new KillExplosion(r.x + r.w * 0.5, r.y + r.h));
@@ -2291,6 +2910,19 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         }
         b.beginHitlagThenRemove(Math.max(0.12, 4 / 60));
         e.addBulletDieFx(b.centerX(), b.centerY());
+      }
+    }
+  }
+
+  function applyJackBlueBoneHits(sess: RoomSession, pl: Player): void {
+    for (const e of sess.enemies) {
+      if (!(e instanceof JackBlue) || e.isDead()) continue;
+      for (const b of e.bonesCopy()) {
+        if (!b.alive || b.playerOverlapHandled()) continue;
+        const res = pl.hitArcingEnemyBullet(b.damagePose(), b.centerX());
+        if (res === "miss") continue;
+        spawnJackBlueBoneBreakChunks(b.centerX(), b.centerY(), jackBlueBoneBmp, brickChunks);
+        b.markPlayerHit();
       }
     }
   }
@@ -2397,7 +3029,10 @@ function currentMap(session: RoomSession): TileMap {
 
 /** Grounded enemies for ladder-below camera nudge (Possessed is never grounded). */
 function enemyIsOnGround(e: CombatEnemy): boolean {
-  if (e instanceof Crawler || e instanceof Mouse || e instanceof Penisman) return e.onGround;
+  if (e instanceof Crawler || e instanceof Mouse || e instanceof Penisman || e instanceof JackBlue || e instanceof Multilimber) {
+    return e.onGround;
+  }
+  if (e instanceof RollingHead) return e.onGround;
   if (e instanceof GoldenRoach) return e.isOnGround();
   if (e instanceof Nephilim) return e.isOnGround();
   return false;
@@ -2541,6 +3176,7 @@ function collectRoomPedestals(session: RoomSession): ItemPedestal[] {
   const primary = activePedestal(session);
   if (primary) out.push(primary);
   out.push(...activeShopPedestals(session));
+  out.push(...activeEnemyLootPedestals(session));
   return out;
 }
 
@@ -2704,6 +3340,40 @@ function drawLevelAscendPlayerOverlay(
   );
 }
 
+function drawPlayerGrabHold(
+  g: CanvasRenderingContext2D,
+  player: Player,
+  camera: WorldCamera,
+  sprites: PlayerSprites,
+  cx: number,
+  feet: number,
+  juice: {
+    shakeX: number;
+    shakeY: number;
+    scaleX: number;
+    scaleY: number;
+    solidRed: boolean;
+    hurtTintAlpha: number;
+    tintRgb?: number;
+  },
+): void {
+  const strip = sprites.grabbed ?? sprites.hurtAir;
+  if (!strip) return;
+  const frame = sprites.grabbed ? player.grabAnimFrameIndex() : 0;
+  drawFeetPinnedStrip(g, strip, frame, cx, feet, player.facing, camera, juice);
+}
+
+function isPlayerGrabDrawEmbeddedInNephilim(
+  player: Player,
+  enemies: readonly CombatEnemy[],
+): boolean {
+  if (!player.isGrabHeld()) return false;
+  for (const e of enemies) {
+    if (e instanceof Nephilim && !e.isDead() && e.isGrabHoldingPlayer()) return true;
+  }
+  return false;
+}
+
 function drawPlayer(
   g: CanvasRenderingContext2D,
   player: Player,
@@ -2713,6 +3383,8 @@ function drawPlayer(
   turnWindowOpen: boolean,
   doorPose: DoorTransitionPose = DoorTransitionPose.NONE,
   itemPickupPose = false,
+  costumeBundle: CostumeRenderBundle | null = null,
+  ownedPalette: ReadonlyMap<number, number> | undefined = undefined,
 ): void {
   // Invuln blink only when not in solid-red hitstun (Java: solid red wins).
   if (
@@ -2737,7 +3409,64 @@ function drawPlayer(
     solidRed: player.hitlagSolidRed,
     hurtTintAlpha: shyFlash > 0 ? shyFlash : player.hurtTintAlpha(),
     tintRgb: shyFlash > 0 ? player.shyMaskFlashRgb() : undefined,
+    ownedPalette,
   };
+
+  if (costumeBundle) {
+    let attackOverlay: AttackOverlayDraw | undefined;
+    if (player.isAttacking() && !player.headband.isActive()) {
+      const crouchSwing = player.isGroundCrouchAttack();
+      const body = crouchSwing
+        ? (sprites.crouchAttack ?? sprites.attack)
+        : player.attackUsesAirStrip() && sprites.airAttack
+          ? sprites.airAttack
+          : sprites.attack;
+      if (body) {
+        const visual = playerSwordVisual(player);
+        attackOverlay = {
+          sword: pickSwordOverlayStrip(sprites, visual, crouchSwing),
+          shield: player.hasShieldEquipped()
+            ? crouchSwing
+              ? sprites.crouchShieldAttack
+              : sprites.shieldAttack
+            : null,
+          stickCentered: visual === "stick",
+          frameIndex: player.attackAnimFrameIndex(),
+          bodyFrameW: body.frameW,
+        };
+      }
+    }
+    if (
+      tryRenderLayeredPlayer({
+        g,
+        player,
+        camera,
+        bundle: costumeBundle,
+        inventory: player.inventory,
+        renderFacing,
+        turnAnimFramesLeft: turnWindowOpen ? 1 : 0,
+        doorPose,
+        itemPickupPose,
+        juice,
+        attackOverlay,
+      })
+    ) {
+      const shieldFacing =
+        turnWindowOpen && player.onGround && !player.climbing ? renderFacing : player.facing;
+      drawPassiveShieldOverlay(
+        g,
+        player,
+        sprites,
+        cx,
+        feet,
+        shieldFacing,
+        camera,
+        juice,
+        player.climbing ? player.climbFrame() : 0,
+      );
+      return;
+    }
+  }
 
   if (doorPose === DoorTransitionPose.ENTER && sprites.doorEnter) {
     drawFeetPinnedStrip(g, sprites.doorEnter, 0, cx, feet, player.facing, camera, juice);
@@ -2754,6 +3483,39 @@ function drawPlayer(
     return;
   }
 
+  if (player.isCarryPlucking() && sprites.pluck) {
+    drawFeetPinnedStrip(
+      g,
+      sprites.pluck,
+      player.carryPluckFrameIndex(),
+      cx,
+      feet,
+      player.facing,
+      camera,
+      juice,
+    );
+    return;
+  }
+
+  if (player.isCarryThrowing()) {
+    const strip = player.carryThrowStartedOnGround()
+      ? sprites.throwCarry
+      : sprites.throwCarryAir;
+    if (strip) {
+      drawFeetPinnedStrip(
+        g,
+        strip,
+        player.carryThrowFrameIndex(),
+        cx,
+        feet,
+        player.facing,
+        camera,
+        juice,
+      );
+      return;
+    }
+  }
+
   if (player.isGetupLocked() && sprites.getup) {
     // Getup sheet is 48px tall; pin one tile lower so the pose sits on the deck (Java feetAnchorBodyH feel).
     drawFeetPinnedStrip(
@@ -2766,6 +3528,54 @@ function drawPlayer(
       camera,
       juice,
     );
+    return;
+  }
+
+  if (player.isGrabHeld()) {
+    drawPlayerGrabHold(g, player, camera, sprites, cx, feet, juice);
+    return;
+  }
+
+  if (player.isAirDodgeActive() && sprites.airDodge) {
+    const flash = player.airDodgeIntangibleFlashAlpha();
+    drawFeetPinnedStrip(
+      g,
+      sprites.airDodge,
+      player.airDodgeCostumeFrameIndex(),
+      cx,
+      feet,
+      player.facing,
+      camera,
+      flash > 0 ? { ...juice, hurtTintAlpha: Math.max(juice.hurtTintAlpha, flash / 255) } : juice,
+    );
+    return;
+  }
+
+  if (player.isSlideActive() && sprites.slide) {
+    drawFeetPinnedStrip(g, sprites.slide, 0, cx, feet, player.facing, camera, juice);
+    return;
+  }
+
+  if (player.isWallSlideActive() && sprites.wallSlide) {
+    drawFeetPinnedStrip(
+      g,
+      sprites.wallSlide,
+      Math.floor(performance.now() / 120) % 2,
+      cx,
+      feet,
+      player.wallSlideSide(),
+      camera,
+      juice,
+    );
+    return;
+  }
+
+  if (player.isHeavyAttackActive() && sprites.heavyAttack) {
+    const idx = player.heavyAttackFrameIndex();
+    drawFeetPinnedStrip(g, sprites.heavyAttack, idx, cx, feet, player.facing, camera, juice);
+    if (player.heavyAttackFromAir() && sprites.heavyAttackAirLegs) {
+      drawFeetPinnedStrip(g, sprites.heavyAttackAirLegs, idx, cx, feet, player.facing, camera, juice);
+    }
     return;
   }
 
@@ -2910,6 +3720,8 @@ function drawEnemy(
   e: CombatEnemy,
   camera: WorldCamera,
   sprites: EnemySprites,
+  player: Player,
+  playerSprites: PlayerSprites,
 ): void {
   if (e instanceof Possessed) {
     drawPossessedBoss(g, e, camera, {
@@ -2922,7 +3734,27 @@ function drawEnemy(
   }
 
   if (e instanceof Nephilim) {
-    drawNephilimBoss(g, e, camera, { strip: sprites.nephilim, healOverlay: sprites.nephilimHealFx });
+    const embedPlayer =
+      player.isGrabHeld() && e.isGrabHoldingPlayer()
+        ? {
+            beforePart: e.grabPlayerDrawBeforePart(),
+            drawPlayer: (g: CanvasRenderingContext2D) => {
+              const feet = player.spriteFeetWorldY();
+              const cx = player.x + player.w * 0.5;
+              const shyFlash = player.shyMaskFlashAlpha();
+              drawPlayerGrabHold(g, player, camera, playerSprites, cx, feet, {
+                shakeX: player.hitlagShakeX,
+                shakeY: player.hitlagShakeY,
+                scaleX: player.renderSquashScaleX(),
+                scaleY: player.renderSquashScaleY(),
+                solidRed: player.hitlagSolidRed,
+                hurtTintAlpha: shyFlash > 0 ? shyFlash : player.hurtTintAlpha(),
+                tintRgb: shyFlash > 0 ? player.shyMaskFlashRgb() : undefined,
+              });
+            },
+          }
+        : undefined;
+    drawNephilimBoss(g, e, camera, { strip: sprites.nephilim, healOverlay: sprites.nephilimHealFx }, embedPlayer);
     return;
   }
 
@@ -3012,6 +3844,96 @@ function drawEnemy(
   if (e instanceof GoldenRoach) {
     drawGoldenRoach(g, e, camera, sprites.goldenRoachWalk, sprites.goldenRoachFly);
     return;
+  }
+
+  if (e instanceof JackBlue) {
+    if (e.isDead() || e.isDeathScatterActive()) return;
+    if (sprites.jackBlue) {
+      const rect = e.rect();
+      const cx = rect.x + rect.w * 0.5;
+      const feet = rect.y + rect.h;
+      const juice = {
+        shakeX: e.hitlagShakeX,
+        shakeY: e.hitlagShakeY,
+        scaleX: e.squash.scaleX(),
+        scaleY: e.squash.scaleY(),
+        solidRed: e.hitlagSolidRed,
+        hurtTintAlpha: e.hurtTintAlpha(),
+      };
+      drawFeetPinnedStrip(
+        g,
+        sprites.jackBlue,
+        e.getAnimFrame(),
+        cx,
+        feet,
+        e.facingSign(),
+        camera,
+        juice,
+      );
+      if (sprites.jackBlueShield) {
+        drawFeetPinnedStrip(
+          g,
+          sprites.jackBlueShield,
+          e.getAnimFrame(),
+          cx,
+          feet,
+          e.facingSign(),
+          camera,
+          juice,
+        );
+      }
+      return;
+    }
+  }
+
+  if (e instanceof Multilimber) {
+    if (e.isDead()) return;
+    drawMultilimber(
+      g,
+      e,
+      camera,
+      {
+        body: sprites.multilimberBody,
+        head: sprites.multilimberHead,
+        eye: sprites.multilimberEye,
+      },
+      {
+        shakeX: e.hitlagShakeX,
+        shakeY: e.hitlagShakeY,
+        scaleX: e.squash.scaleX(),
+        scaleY: e.squash.scaleY(),
+        solidRed: e.hitlagSolidRed,
+        hurtTintAlpha: e.hurtTintAlpha(),
+      },
+    );
+    return;
+  }
+
+  if (e instanceof RollingHead) {
+    if (e.isDead()) return;
+    if (sprites.rollingHead) {
+      const rect = e.rect();
+      const cx = rect.x + rect.w * 0.5;
+      const feet = rect.y + rect.h;
+      drawFeetPinnedStrip(
+        g,
+        sprites.rollingHead,
+        e.getAnimFrame(),
+        cx,
+        feet,
+        e.facingSign(),
+        camera,
+        {
+          shakeX: e.hitlagShakeX,
+          shakeY: e.hitlagShakeY,
+          scaleX: e.squash.scaleX(),
+          scaleY: e.squash.scaleY(),
+          solidRed: e.hitlagSolidRed,
+          hurtTintAlpha: e.hurtTintAlpha(),
+        },
+      );
+      return;
+    }
   }
 
   const rect = e.rect();

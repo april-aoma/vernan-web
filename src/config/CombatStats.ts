@@ -42,6 +42,9 @@ export const CRAWLER_HOP_VY = 165;
 export const CRAWLER_HOP_COOLDOWN_MIN = 2.2;
 export const CRAWLER_HOP_COOLDOWN_MAX = 4.2;
 export const CRAWLER_JUMPSQUAT_FRAMES = 18;
+/** Hop ascent may phase through solids above the foot band (Java Enemy HOP_WALL_PASS_*). */
+export const CRAWLER_HOP_WALL_PASS_CHANCE = 0.18;
+export const CRAWLER_HOP_WALL_PASS_FOOT_BAND_PX = 2.0;
 
 /** Mouse (Java Mouse.java) — floor walker; spawn H matches RoomGenerator.ENEMY_SPAWN_HITBOX_H. */
 export const MOUSE_W = 12;
@@ -73,3 +76,19 @@ export const PENISMAN_SUPPRESS_LEDGE_AFTER_WALL_SEC = 0.35;
 export const GOLDEN_ROACH_MAX_HP = 1;
 export const GOLDEN_ROACH_SPAWN_W = 6;
 export const GOLDEN_ROACH_SPAWN_H = 6;
+
+/** Jack Blue (Java JackBlue.java) — shielded skirmisher / bone thrower. */
+export const JACK_BLUE_MAX_HP = 8;
+export const JACK_BLUE_SPAWN_H = 14;
+export const JACK_BLUE_PATROL_FLIP_COOLDOWN_SEC = 0.2;
+export const JACK_BLUE_SUPPRESS_LEDGE_AFTER_WALL_SEC = 0.35;
+
+/** Rolling head (Java RollingHead.java) — elastic airborne bouncer. */
+export const ROLLING_HEAD_MAX_HP = 6;
+export const ROLLING_HEAD_SPAWN_H = 14;
+
+/** Multilimber (Java Multilimber.java) — layered sawblade (eye/head/body). */
+export const MULTILIMBER_MAX_HP = 12;
+export const MULTILIMBER_SPAWN_H = 14;
+export const MULTILIMBER_PATROL_FLIP_COOLDOWN_SEC = 0.2;
+export const MULTILIMBER_SUPPRESS_LEDGE_AFTER_WALL_SEC = 0.35;

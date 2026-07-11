@@ -23,6 +23,7 @@ import {
 } from "./pedestal";
 import type { RoomSession } from "./roomTransition";
 import type { TileMap } from "./TileMap";
+import { PedestalSpawnKind } from "../item/PedestalSpawnKind";
 
 /** Head / body / tail frames sliced from the shopkeep sheet. */
 export type ShopKeeperFrames = {
@@ -84,10 +85,12 @@ export function ensureShopResolved(session: RoomSession): void {
   }
 
   const peds: ItemPedestal[] = [];
-  for (const tx of chosenTx) {
+  const shopItems = session.decks.drawDistinct(PedestalSpawnKind.SHOP, chosenTx.length);
+  for (let i = 0; i < chosenTx.length; i++) {
+    const tx = chosenTx[i]!;
     const groundTop = map.groundTopWorldYAtColumn(tx);
     const pos = pedestalWorldFromColumn(w, tx, groundTop);
-    const itemId = session.decks.drawShop();
+    const itemId = shopItems[i] ?? session.decks.drawShop();
     peds.push(makeItemPedestal(itemId, pos.anchorX, pos.groundTop, SHOP_PEDESTAL_PRICE));
   }
   session.shopPedestals[roomId] = peds;

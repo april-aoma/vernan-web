@@ -39,6 +39,8 @@ export type AutotileObject = {
   canHangFromCeiling: boolean;
   /** Java LogicalObjectLayout.canClingToWall — default false. */
   canClingToWall: boolean;
+  /** Java LogicalObjectLayout.isGardeningPluckable */
+  gardeningPluckable: boolean;
   memberGraphLayout: {
     cells: Array<{ tileId: string; x: number; y: number; quadrantComposite?: boolean }>;
   } | null;
@@ -428,6 +430,7 @@ export class TilesetProject {
         canSpawnInAir,
         canHangFromCeiling: bool(raw.canHangFromCeiling, false),
         canClingToWall: bool(raw.canClingToWall, false),
+        gardeningPluckable: bool(raw.gardeningPluckable, false),
         memberGraphLayout: layout,
         islands,
         usesMemberGraph,

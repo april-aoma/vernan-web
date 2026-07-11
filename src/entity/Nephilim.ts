@@ -18,12 +18,13 @@ import {
   type ProjectileStrike,
   type WeaponStrike,
 } from "../combat/CombatMath";
+import { BlackHeartBeatDeferral } from "../combat/BlackHeartBeatDeferral";
 import {
-  DEFAULT_SHAKE_AMPLITUDE_PX,
-  HURT_TINT_PEAK_ALPHA,
-  HURT_TINT_SECONDS,
-  sampleShake,
-} from "../combat/HitlagState";
+  queueBlackHeartBurstKnock,
+  releaseBlackHeartBeatKnockback,
+  tickBlackHeartEnemyHitstun,
+} from "../combat/BlackHeartEnemyCombat";
+import { HURT_TINT_PEAK_ALPHA, HURT_TINT_SECONDS } from "../combat/HitlagState";
 import {
   chainAttach,
   feetBelowAnchorFromRig,
@@ -66,7 +67,6 @@ const KNOCK_SPEED = 145;
 const KNOCK_UP = 58;
 const KNOCK_SPIN_DEG = 620;
 const LOOSE_MIN_SEC = 0.32;
-const LOOSE_K = 54;
 const ANCHOR_TRAIL_FRAC = 0.28;
 const BAND_URGED_HP_FRAC = 0.66;
 const BAND_DESPERATE_HP_FRAC = 0.33;
@@ -95,15 +95,21 @@ const DEATH_HEAD_FALL_DELAY_SEC = 2.6;
 const DEATH_CHUNK_SCATTER_HORZ = 28;
 const DEATH_CHUNK_SCATTER_UP = 16;
 const ROOM_MARGIN = 14;
-const WALL_REST = 0.7;
-const FLOOR_REST = 0.6;
 const CHAIN_SLACK = 1.14;
 const CHAIN_GRAVITY = GRAVITY * 0.42;
-const LOOSE_LINEAR_DAMP = 2.8;
-const LOOSE_LINEAR_DAMP_EXT = 2.2;
-const LOOSE_ANGLE_DAMP = 3.4;
-const LOOSE_ANGLE_DAMP_HEAD = 2.6;
-const LOOSE_ANGLE_DAMP_HAND = 3.0;
+const LOOSE_MAX_SEC = 1.45;
+const LOOSE_RECALL_K_HEAD = 78;
+const LOOSE_RECALL_K_HAND = 54;
+const LOOSE_RECALL_ANGLE_K = 130;
+const LOOSE_SETTLE_DIST_HEAD = 13;
+const LOOSE_SETTLE_DIST_HAND = 9;
+const LOOSE_LINEAR_DAMP = 1.4;
+const LOOSE_LINEAR_DAMP_EXT = 1.75;
+const LOOSE_ANGLE_DAMP = 0.55;
+const LOOSE_ANGLE_DAMP_HEAD = 3.1;
+const LOOSE_ANGLE_DAMP_HAND = 1.05;
+const LOOSE_WALL_REST = 0.7;
+const LOOSE_FLOOR_REST = 0.6;
 
 const GRAB_WINDUP_SEC = 0.62;
 const GRAB_WINDUP_AGG_SEC = 0.46;
@@ -236,6 +242,7 @@ export class Nephilim implements CombatEnemy {
   hitlagSolidRed = false;
   hitlagShakeX = 0;
   hitlagShakeY = 0;
+  readonly blackHeartBeat = new BlackHeartBeatDeferral();
 
   private lifePhase: LifePhase = "DORMANT";
   private awakenIdx = 0;
@@ -255,7 +262,7 @@ export class Nephilim implements CombatEnemy {
   private walkPhase = 0;
   private lastHorzStepPx = 0;
   private feetBelowAnchorPx = 20;
-  private hitstun = 0;
+  hitstun = 0;
   private hurtPoseTimer = 0;
   private hurtTintRemaining = 0;
   private knockbackContactTimer = 0;
@@ -429,15 +436,15 @@ export class Nephilim implements CombatEnemy {
       this.offensiveHitlagFrames--;
     }
 
-    if (this.hitstun > 0) {
-      this.hitstun = Math.max(0, this.hitstun - dt);
-      this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
+    if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
+      tickBlackHeartEnemyHitstun(dt, this);
     } else {
       this.hitlagShakeX = 0;
       this.hitlagShakeY = 0;
       this.hitlagSolidRed = false;
     }
+
+    const movementFrozen = this.hitstun > 0 || this.blackHeartBeat.isLocked();
 
     if (!this.deathStarted && this.hp <= 0) {
       this.startDeath(rig);
@@ -455,14 +462,14 @@ export class Nephilim implements CombatEnemy {
       if (this.isLiftActive()) {
         this.liftPhaseTimer = Math.max(0, this.liftPhaseTimer - dt);
       }
-      if (this.offensiveHitlagFrames <= 0) {
+      if (!movementFrozen && this.offensiveHitlagFrames <= 0) {
         this.tickAttack(dt, map, rig);
       } else if (!this.isLiftActive()) {
         this.vx = 0;
       }
       if (this.isLiftActive()) {
         this.tickLiftMovement(dt, map, rig);
-      } else if (this.offensiveHitlagFrames <= 0) {
+      } else if (!movementFrozen && this.offensiveHitlagFrames <= 0) {
         this.tickGroundMovement(dt, map, rig);
       }
     } else {
@@ -792,7 +799,11 @@ export class Nephilim implements CombatEnemy {
       let ang = pe.angleDeg;
       if (!p.loose && def.name === "head") ang += headTurnExtra;
       else if (!p.loose && def.name === "neck") ang += neckTurnExtra;
-      if (!p.loose && poseName.startsWith("walk")) {
+      if (
+        !p.loose &&
+        poseName.startsWith("walk") &&
+        !(this.armGuardActive() && this.isArmGuardWalkOverlayPart(def.name))
+      ) {
         const side = this.limbSideSign(def.name);
         const legStride =
           side !== 0 &&
@@ -839,8 +850,18 @@ export class Nephilim implements CombatEnemy {
         partK *= 0.34 - slumpU * 0.16;
         partC *= 0.55;
       }
-      const angleK = ANGLE_K * follow;
+      if (this.isGrabHoldPhase()) {
+        partK *= 2.4;
+        partC *= 1.35;
+      } else if (this.armGuardActive() && this.isArmGuardWalkOverlayPart(def.name)) {
+        partK *= 2.8;
+        partC *= 1.4;
+      }
+      let angleK = ANGLE_K * follow;
       const angleC = ANGLE_C * Math.sqrt(follow);
+      if (this.armGuardActive() && this.isArmGuardWalkOverlayPart(def.name)) {
+        angleK *= 2.4;
+      }
       p.vx += ((targetX[i]! - p.cx) * partK - p.vx * partC) * dt;
       p.vy += ((targetY[i]! - p.cy) * partK - p.vy * partC) * dt;
       p.angleVel += (this.angleDelta(targetAng[i]!, p.angleDeg) * angleK - p.angleVel * angleC) * dt;
@@ -1059,13 +1080,13 @@ export class Nephilim implements CombatEnemy {
     }
     const nx = p.cx + p.vx * dt;
     if (this.collisionHullHitsSolid(rig, index, nx, p.cy, p.angleDeg, map)) {
-      p.vx = -p.vx * WALL_REST;
+      p.vx = -p.vx * LOOSE_WALL_REST;
     } else {
       p.cx = nx;
     }
     const ny = p.cy + p.vy * dt;
     if (this.collisionHullHitsSolid(rig, index, p.cx, ny, p.angleDeg, map)) {
-      p.vy = -p.vy * FLOOR_REST;
+      p.vy = -p.vy * LOOSE_FLOOR_REST;
     } else {
       p.cy = ny;
     }
@@ -1334,6 +1355,14 @@ export class Nephilim implements CombatEnemy {
     this.offensiveHitlagFrames = 0;
     this.onDamaged(strike.freezeFrames);
     this.noteHitForArmGuard();
+    if (strike.knockKind === "black_heart_burst") {
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      if (this.hp <= 0 && !this.deathStarted) {
+        const rig = getNephilimRig();
+        if (rig) this.startDeath(rig);
+      }
+      return true;
+    }
     const attackerCx = strike.attackerX + strike.attackerW * 0.5;
     this.knockStruckParts(attackerCx, strike.damage, strike.facing);
     if (this.hp <= 0 && !this.deathStarted) {
@@ -1341,6 +1370,17 @@ export class Nephilim implements CombatEnemy {
       if (rig) this.startDeath(rig);
     }
     return true;
+  }
+
+  releaseBlackHeartBeatKnockback(): void {
+    releaseBlackHeartBeatKnockback(this.blackHeartBeat, (vx, vy) => {
+      this.vx = vx;
+      this.vy = vy;
+    });
+  }
+
+  isBlackHeartBeatLocked(): boolean {
+    return this.blackHeartBeat.isLocked();
   }
 
   intersectsProjectile(projectile: HitboxPose): boolean {
@@ -1379,7 +1419,7 @@ export class Nephilim implements CombatEnemy {
 
   hurtsPlayer(playerHurt: Aabb): boolean {
     if (!this.isLiftLandingContactActive()) return false;
-    if (this.hitstun > 0) return false;
+    if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) return false;
     const pose = this.contactDamagePose();
     return aabbOverlap(playerHurt, pose);
   }
@@ -1475,7 +1515,7 @@ export class Nephilim implements CombatEnemy {
   }
 
   isInCombatHitstun(): boolean {
-    return this.hitstun > 0 || this.knockbackContactTimer > 0;
+    return this.hitstun > 0 || this.knockbackContactTimer > 0 || this.blackHeartBeat.isLocked();
   }
 
   facingSign(): number {
@@ -2223,15 +2263,23 @@ export class Nephilim implements CombatEnemy {
     }
     if (this.isLiftPartsDetached()) return;
     if (partName !== "head" && !partName.startsWith("hand")) return;
-    const k = partName === "head" ? 78 : LOOSE_K;
+    const k = partName === "head" ? LOOSE_RECALL_K_HEAD : LOOSE_RECALL_K_HAND;
     p.vx += (targetX - p.cx) * k * dt;
     p.vy += (targetY - p.cy) * k * dt;
-    p.angleVel += this.angleDelta(targetAng, p.angleDeg) * 130 * dt;
+    p.angleVel += this.angleDelta(targetAng, p.angleDeg) * LOOSE_RECALL_ANGLE_K * dt;
+  }
+
+  private isLooseExtremity(partName: string): boolean {
+    return (
+      partName === "head" ||
+      partName.startsWith("hand") ||
+      partName.startsWith("foot")
+    );
   }
 
   private trySettleLoosePart(
     p: NephilimPartSim,
-    _partName: string,
+    partName: string,
     targetX: number,
     targetY: number,
   ): boolean {
@@ -2251,11 +2299,23 @@ export class Nephilim implements CombatEnemy {
     }
     const dist = Math.hypot(targetX - p.cx, targetY - p.cy);
     const sp = Math.hypot(p.vx, p.vy);
-    if (p.looseTimer <= 0 && dist < 9 && sp < 42) {
+    const angSettled = Math.abs(p.angleVel) < 140;
+    const movingSlow = sp < 26 && angSettled;
+    const settleDist =
+      partName === "head"
+        ? LOOSE_SETTLE_DIST_HEAD
+        : partName === "handL" || partName === "handR"
+          ? LOOSE_SETTLE_DIST_HAND
+          : 7;
+    if (movingSlow && dist < settleDist) {
       p.loose = false;
-      p.vx *= 0.2;
-      p.vy *= 0.2;
-      p.angleVel *= 0.2;
+      return true;
+    }
+    if (this.isLooseExtremity(partName) && p.looseAge >= LOOSE_MAX_SEC && sp < 38 && angSettled) {
+      p.loose = false;
+      p.vx *= 0.25;
+      p.vy *= 0.25;
+      p.angleVel *= 0.25;
       return true;
     }
     return false;

@@ -25,8 +25,15 @@ export function createLandingSnapState(): LandingSnapState {
   return { bestFloorY: Number.POSITIVE_INFINITY, snapLead: false, snapTrail: false };
 }
 
+/** Match Java {@code pose.parts() == HitboxValues.PLAYER_JUMP} (content, not only reference). */
 export function isJumpHullPose(pose: HitboxPose): boolean {
-  return pose.local === PLAYER_JUMP_LOCAL;
+  if (pose.local === PLAYER_JUMP_LOCAL) return true;
+  const local = pose.local;
+  if (local.length !== PLAYER_JUMP_LOCAL.length) return false;
+  for (let i = 0; i < local.length; i++) {
+    if (local[i] !== PLAYER_JUMP_LOCAL[i]) return false;
+  }
+  return true;
 }
 
 export function jumpFootLocalWorldX(pose: HitboxPose, localX: number): number {

@@ -70,6 +70,22 @@ export function pedestalItemAabb(p: ItemPedestal): Aabb | null {
   };
 }
 
+function isAllowedPedestalTileX(
+  tx: number,
+  ladderTx: number,
+  leftDoorTx: number,
+  rightDoorTx: number,
+): boolean {
+  if (leftDoorTx >= 0 && Math.abs(tx - leftDoorTx) <= 1) return false;
+  if (rightDoorTx >= 0 && Math.abs(tx - rightDoorTx) <= 1) return false;
+  if (ladderTx >= 0 && Math.abs(tx - ladderTx) <= 1) return false;
+  return true;
+}
+
+/**
+ * Door-aware pedestal anchor column (Java RoomGenerator.resolvePedestalTileX).
+ * Picks the closest valid column to {@link preferred}.
+ */
 export function resolvePedestalTileX(
   w: number,
   preferred: number,
@@ -77,19 +93,37 @@ export function resolvePedestalTileX(
   leftDoorTx: number,
   rightDoorTx: number,
 ): number {
-  let cx = Math.max(2, Math.min(w - 3, preferred));
-  const blocked = (tx: number) =>
-    (ladderTx >= 0 && Math.abs(tx - ladderTx) <= 1) ||
-    (leftDoorTx >= 0 && Math.abs(tx - leftDoorTx) <= 1) ||
-    (rightDoorTx >= 0 && Math.abs(tx - rightDoorTx) <= 1);
-  if (!blocked(cx)) return cx;
-  for (let d = 1; d < w; d++) {
-    for (const sign of [-1, 1]) {
-      const t = cx + sign * d;
-      if (t >= 2 && t <= w - 3 && !blocked(t)) return t;
+  const t = Math.max(2, Math.min(w - 3, preferred));
+  if (isAllowedPedestalTileX(t, ladderTx, leftDoorTx, rightDoorTx)) return t;
+  let best = t;
+  let bestDist = Number.MAX_SAFE_INTEGER;
+  const cands = [
+    ladderTx + 2,
+    ladderTx - 2,
+    ladderTx + 3,
+    ladderTx - 3,
+    t + 2,
+    t - 2,
+    t + 3,
+    t - 3,
+    2,
+    w - 3,
+  ];
+  for (const c0 of cands) {
+    const c = Math.max(2, Math.min(w - 3, c0));
+    if (!isAllowedPedestalTileX(c, ladderTx, leftDoorTx, rightDoorTx)) continue;
+    const d = Math.abs(c - preferred);
+    if (d < bestDist) {
+      bestDist = d;
+      best = c;
     }
   }
-  return cx;
+  if (!isAllowedPedestalTileX(best, ladderTx, leftDoorTx, rightDoorTx)) {
+    for (let c = 2; c <= w - 3; c++) {
+      if (isAllowedPedestalTileX(c, ladderTx, leftDoorTx, rightDoorTx)) return c;
+    }
+  }
+  return best;
 }
 
 export function pedestalWorldFromColumn(mapW: number, tx: number, groundTop: number): {

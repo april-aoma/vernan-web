@@ -1,4 +1,7 @@
 /** One row from data/items.json (Phase 4a subset of fields). */
+import type { ItemPaletteOverride } from "./ItemPaletteOverride";
+import { parseOwnedPaletteOverrides } from "./ItemPaletteOverride";
+
 export type ItemDefinition = {
   id: string;
   displayName: string;
@@ -32,6 +35,14 @@ export type ItemDefinition = {
   /** Seconds of HUD cooldown after firing (0 = no overlay band). */
   subweaponCooldownSeconds: number;
   poolFallback: boolean;
+  /** DISC01_SLIDE */
+  slideDistancePx: number;
+  slideSpeedMult: number;
+  slideKickDamageFixed: number;
+  slideKickDamageUsesAttackStat: boolean;
+  slideKickDamageAttackStatBonus: number;
+  /** Vernan sprite color remaps while owned (Java ownedPaletteOverrides). */
+  ownedPaletteOverrides: ItemPaletteOverride[];
 };
 
 export function parseItemRow(raw: Record<string, unknown>): ItemDefinition {
@@ -79,5 +90,11 @@ export function parseItemRow(raw: Record<string, unknown>): ItemDefinition {
     subweapon: bool("subweapon"),
     subweaponCooldownSeconds: num("subweaponCooldownSeconds"),
     poolFallback: bool("poolFallback"),
+    slideDistancePx: num("slideDistancePx"),
+    slideSpeedMult: num("slideSpeedMult", 1),
+    slideKickDamageFixed: num("slideKickDamageFixed"),
+    slideKickDamageUsesAttackStat: bool("slideKickDamageUsesAttackStat"),
+    slideKickDamageAttackStatBonus: num("slideKickDamageAttackStatBonus"),
+    ownedPaletteOverrides: parseOwnedPaletteOverrides(raw.ownedPaletteOverrides, str("id")),
   };
 }

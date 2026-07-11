@@ -1,5 +1,7 @@
 import type { AssetLoader } from "../assets/AssetLoader";
 import { parseItemRow, type ItemDefinition } from "./ItemDefinition";
+import { ItemPools } from "./ItemPools";
+import { PedestalSpawnKind } from "./PedestalSpawnKind";
 
 /**
  * Loads data/items.json (Java ItemCatalog).
@@ -7,10 +9,6 @@ import { parseItemRow, type ItemDefinition } from "./ItemDefinition";
 export class ItemCatalog {
   private readonly byId = new Map<string, ItemDefinition>();
   private fallbackId = "HEART_LT3";
-  private itemRoomPool: string[] = [];
-  private bossClearPool: string[] = [];
-  private shopPool: string[] = [];
-  private secretPool: string[] = [];
 
   static async load(assets: AssetLoader): Promise<ItemCatalog> {
     const raw = await assets.loadJson<{ items?: unknown[] }>("data/items.json");
@@ -21,10 +19,7 @@ export class ItemCatalog {
 
   private bind(root: { items?: unknown[] }): void {
     this.byId.clear();
-    this.itemRoomPool = [];
-    this.bossClearPool = [];
-    this.shopPool = [];
-    this.secretPool = [];
+    const defs: ItemDefinition[] = [];
     let fallback: string | null = null;
     const items = root.items;
     if (!Array.isArray(items)) throw new Error("items.json missing items array");
@@ -33,13 +28,11 @@ export class ItemCatalog {
       const def = parseItemRow(row as Record<string, unknown>);
       if (!def.id) continue;
       this.byId.set(def.id, def);
+      defs.push(def);
       if (def.poolFallback) fallback = def.id;
-      if (def.spawnItemRoom && !def.subweapon) this.itemRoomPool.push(def.id);
-      if (def.spawnBossClear && !def.subweapon) this.bossClearPool.push(def.id);
-      if (def.spawnShop && !def.subweapon) this.shopPool.push(def.id);
-      if (def.spawnSecret && !def.subweapon) this.secretPool.push(def.id);
     }
     if (fallback) this.fallbackId = fallback;
+    ItemPools.rebuild(defs);
   }
 
   def(id: string): ItemDefinition {
@@ -56,24 +49,28 @@ export class ItemCatalog {
     return this.fallbackId;
   }
 
-  /** Eligible ITEM_ROOM pool (non-subweapon). */
+  /** Eligible ITEM_ROOM pool. */
   itemRoomEligible(): string[] {
-    return this.itemRoomPool.slice();
+    return [...ItemPools.eligibleFor(PedestalSpawnKind.ITEM_ROOM)];
   }
 
   /** Eligible BOSS_CLEAR pool. */
   bossClearEligible(): string[] {
-    return this.bossClearPool.slice();
+    return [...ItemPools.eligibleFor(PedestalSpawnKind.BOSS_CLEAR)];
   }
 
-  /** Eligible SHOP pool (non-subweapon). */
+  /** Eligible SHOP pool. */
   shopEligible(): string[] {
-    return this.shopPool.slice();
+    return [...ItemPools.eligibleFor(PedestalSpawnKind.SHOP)];
   }
 
-  /** Eligible SECRET pedestal pool (non-subweapon). */
+  /** Eligible SECRET pedestal pool. */
   secretEligible(): string[] {
-    return this.secretPool.slice();
+    return [...ItemPools.eligibleFor(PedestalSpawnKind.SECRET)];
+  }
+
+  eligibleFor(kind: PedestalSpawnKind): string[] {
+    return [...ItemPools.eligibleFor(kind)];
   }
 
   allIds(): string[] {

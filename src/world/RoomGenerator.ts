@@ -35,7 +35,7 @@ import {
 } from "./SecretRoomMapBuild";
 import { enforceOnGrid, enforceOnMap } from "./TerrainSolidConnectivity";
 import { shouldExpandWest } from "./SecretRoomLayoutPlanner";
-import { TILE_SOLID, TileMap } from "./TileMap";
+import { TILE_DOOR, TILE_EMPTY, TILE_KEYBLOCK, TILE_KEYBLOCK_CONNECTOR, TILE_SOLID, TileMap } from "./TileMap";
 import type { TerrainTileBridge } from "../tileset/TerrainTileBridge";
 import type { ContextThemeRule } from "../tileset/ContextThemeSubstitution";
 import {
@@ -494,6 +494,22 @@ export function generateRoomShell(
       ladderTx >= 0 ? ladderTx : -1,
       maxReach,
     );
+    const pedestalTx = resolvePedestalTileX(
+      w,
+      Math.floor(w / 2),
+      ladderTx >= 0 ? ladderTx : -1,
+      conn.doorWest ? leftDoorX : -1,
+      conn.doorEast ? rightDoorX : -1,
+    );
+    ensureItemPedestalReachable(
+      map,
+      w,
+      h,
+      conn,
+      ladderTx >= 0 ? ladderTx : -1,
+      pedestalTx,
+      maxReach,
+    );
   }
 
   const finalGroundY = groundYFromMap(map);
@@ -559,6 +575,103 @@ export function generateRoomShell(
   }
 
   return room;
+}
+
+/** Re-seat ITEM/secret pedestal on finalized floor height (Java RoomGenerator.regroundItemPedestal). */
+export function regroundItemPedestal(g: GeneratedRoom): GeneratedRoom {
+  const ped = g.itemPedestal;
+  if (!ped) return g;
+  const map = g.map;
+  const w = map.getWidth();
+  const tx = clampInt(Math.floor(ped.anchorX / TILE_SIZE), 1, w - 2);
+  const groundY = groundYFromMap(map);
+  const groundTop = groundY[tx]! * TILE_SIZE;
+  if (Math.abs(groundTop - ped.groundTop) < 0.5) return g;
+  g.itemPedestal = {
+    ...ped,
+    groundTop,
+  };
+  return g;
+}
+
+/**
+ * ITEM rooms: west/east door approaches must reach the pedestal column with ≤ maxReach play-floor steps.
+ * (Java RoomGenerator.ensureItemPedestalReachable)
+ */
+function ensureItemPedestalReachable(
+  map: TileMap,
+  w: number,
+  h: number,
+  conn: RoomConnectivity,
+  ladderTx: number,
+  pedestalTx: number,
+  maxReach: number,
+): void {
+  for (let pass = 0; pass < w; pass++) {
+    if (itemPedestalReachableFromDoors(map, conn, w, pedestalTx, maxReach)) return;
+    const floor = groundYFromMap(map);
+    const next = floor.slice();
+    enforceMaxWalkableGroundYStep(next, maxReach);
+    let changed = false;
+    for (let x = 1; x < w - 1; x++) {
+      if (next[x] === floor[x]) continue;
+      if (ladderTx >= 0 && x === ladderTx) continue;
+      applyInteriorPlayFloorColumn(map, x, next[x]!, h);
+      changed = true;
+    }
+    if (!changed) break;
+  }
+}
+
+function itemPedestalReachableFromDoors(
+  map: TileMap,
+  conn: RoomConnectivity,
+  w: number,
+  pedestalTx: number,
+  maxReach: number,
+): boolean {
+  const floor = groundYFromMap(map);
+  const westOk = !conn.doorWest || columnReachable(floor, w, 2, pedestalTx, maxReach);
+  const eastOk = !conn.doorEast || columnReachable(floor, w, w - 3, pedestalTx, maxReach);
+  return westOk && eastOk;
+}
+
+function columnReachable(
+  floor: number[],
+  w: number,
+  fromTx: number,
+  toTx: number,
+  maxReach: number,
+): boolean {
+  if (fromTx < 1 || fromTx >= w - 1 || toTx < 1 || toTx >= w - 1) return false;
+  const seen = new Array<boolean>(w).fill(false);
+  const q: number[] = [fromTx];
+  seen[fromTx] = true;
+  while (q.length > 0) {
+    const x = q.shift()!;
+    if (x === toTx) return true;
+    for (let nx = x - 1; nx <= x + 1; nx++) {
+      if (nx < 1 || nx >= w - 1 || seen[nx]) continue;
+      if (Math.abs(floor[nx]! - floor[x]!) > maxReach) continue;
+      seen[nx] = true;
+      q.push(nx);
+    }
+  }
+  return false;
+}
+
+/** Rewrite one interior column to floorRow (Java applyInteriorPlayFloorColumn). */
+function applyInteriorPlayFloorColumn(
+  map: TileMap,
+  x: number,
+  floorRow: number,
+  h: number,
+): void {
+  for (let y = 1; y < h - 1; y++) {
+    const t = map.tileAt(x, y);
+    if (t === TILE_DOOR || t === TILE_KEYBLOCK || t === TILE_KEYBLOCK_CONNECTOR) continue;
+    map.setTile(x, y, y >= floorRow ? TILE_SOLID : TILE_EMPTY);
+  }
 }
 
 /**

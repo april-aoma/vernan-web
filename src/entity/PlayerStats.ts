@@ -75,6 +75,20 @@ export class PlayerStats {
   /** SHY_MASK: 1.0 = default gravity; higher = heavier fall. */
   shyMaskGravityMult = 1;
   shyMaskStacks = 0;
+  /** HEART_OF_DARKNESS: retaliate on every hit (burst when black HP empties). */
+  heartOfDarknessStacks = 0;
+  /** DISC01–04 ability discs. */
+  disc01SlideStacks = 0;
+  disc02WalljumpStacks = 0;
+  disc03AirDodgeStacks = 0;
+  disc04HeavyStacks = 0;
+  slideDistancePx = 0;
+  slideSpeedMult = 0;
+  slideKickDamageFixed = 0;
+  slideKickDamageUsesAttackStat = false;
+  slideKickDamageAttackStatBonus = 0;
+  /** HEELIES (stub until full skate port). */
+  heelysStacks = 0;
   readonly kaleidoscopeEye = new KaleidoscopeEyeState();
 
   get attackRecoverFrames(): number {
@@ -102,6 +116,7 @@ export class PlayerStats {
     this.kaleidoscopeGravityMult = 1;
     this.shyMaskGravityMult = 1;
     this.shyMaskStacks = 0;
+    this.heartOfDarknessStacks = 0;
 
     let groundFrictionFramesBonus = 0;
     let groundAccelFramesBonus = 0;
@@ -161,5 +176,25 @@ export class PlayerStats {
       Math.max(1, groundBrakeBaseFrames + groundBrakeFramesBonus);
 
     ItemEffects.contributeStats(inv, this);
+    this.heartOfDarknessStacks = inv.stacksOf("HEART_OF_DARKNESS");
+    this.disc01SlideStacks = inv.stacksOf("DISC01_SLIDE");
+    this.disc02WalljumpStacks = inv.stacksOf("DISC02_WALLJUMP");
+    this.disc03AirDodgeStacks = inv.stacksOf("DISC03_AIRDODGE");
+    this.disc04HeavyStacks = inv.stacksOf("DISC04_HEAVY");
+    this.heelysStacks = inv.stacksOf("HEELIES");
+    if (this.disc01SlideStacks > 0) {
+      const slideDef = catalog.def("DISC01_SLIDE");
+      this.slideDistancePx = slideDef.slideDistancePx;
+      this.slideSpeedMult = slideDef.slideSpeedMult;
+      this.slideKickDamageFixed = slideDef.slideKickDamageFixed;
+      this.slideKickDamageUsesAttackStat = slideDef.slideKickDamageUsesAttackStat;
+      this.slideKickDamageAttackStatBonus = slideDef.slideKickDamageAttackStatBonus;
+    } else {
+      this.slideDistancePx = 0;
+      this.slideSpeedMult = 0;
+      this.slideKickDamageFixed = 0;
+      this.slideKickDamageUsesAttackStat = false;
+      this.slideKickDamageAttackStatBonus = 0;
+    }
   }
 }

@@ -722,6 +722,21 @@ export class SecretSeam {
     return false;
   }
 
+  /** Tile revealed when hidden shell breakable is cleared (door/ladder), or -1. */
+  hiddenBreakableRestoreTile(rid: number, x: number, y: number): number {
+    for (let i = 0; i < this.roomId.length; i++) {
+      if (
+        this.cellRole[i] === ROLE_BREAKABLE &&
+        this.roomId[i] === rid &&
+        this.tx[i] === x &&
+        this.ty[i] === y
+      ) {
+        return this.restoreTileId[i] ?? TILE_EMPTY;
+      }
+    }
+    return -1;
+  }
+
   ladderTxInRoom(rid: number): number {
     for (let i = 0; i < this.roomId.length; i++) {
       if (this.cellRole[i] === ROLE_BREAKABLE && this.roomId[i] === rid) {

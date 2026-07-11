@@ -40,7 +40,7 @@ Do **not** start by translating `GamePanel` wholesale. Port in this order:
 3. Minimal player move / jump / climb *(Phase 1 — done)*
 4. Dungeon layout + room gen (RNG parity) *(Phase 2 — done)*
 5. Combat + enemies *(Phase 3 — done: sword + crawlers + Mouse + Penisman + Golden Roach)*
-6. Items / costumes / layered body *(Phase 4a — items + pedestals; costumes stubbed)*
+6. Items / costumes / layered body *(Phase 4a — items + pedestals; costumes live)*
 7. Bosses + FX *(Phase 5a — Possessed shell + kill FX + BOSS_CLEAR; full bosses stubbed)*
 8. Art + input feel *(Phase 6a — Vernan/enemy sprites + attack buffer)*
 9. Boss exit loop *(Phase 5b-thin — door seal + ascend → next floor)*
@@ -146,12 +146,15 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - Sword windup/active/recover **10 / 4 / 20** frames; AABB from `SWORD_ATTACK_ACTIVE` polygon
 - **Crouch attack** (latched at begin): ground crouch or air-Down (not crouch-jump); windup **−2**, recover early **−4** / late **−2**; damage **×0.8**; `SWORD_CROUCH_ATTACK_ACTIVE` hitbox; knock at 80° ×0.85 mag; art `vernan/sword crouch attack.png`
 - Contact damage **1**, i-frames **1.125 s**, knock `±74 / -98`, HP **6**
-- NORMAL/SECRET spawns via `EnemySpawnBudget` + `EnemyChallengeRegistry` (Crawler + Mouse + Penisman + Golden Roach; equal weight normal, Mouse-favored secret); budget from `contentSeed ^ 0x5DEECE66D`
+- NORMAL/SECRET spawns via `EnemySpawnBudget` + `EnemyChallengeRegistry` (Crawler + Mouse + Penisman + Golden Roach + Jack Blue + Rolling head + Multilimber; equal weight normal, Mouse-favored secret); budget from `contentSeed ^ 0x5DEECE66D`
 - **Mouse** (`Mouse.ts`): dormant half-speed ledge patrol → vision wake → full/damaged speed (64/80), falls off ledges when chasing; contact only when activated; HP **2**; art faces left (`mouse.png` / `mouse hurt.png`, 4 frames)
 - **Penisman** (`Penisman.ts`): floor patrol shooter; turns at walls/ledges; shoots arcing bullets when Vernan is ahead within ±192px and on-screen; HP **4**; walk speed **28**; art faces left (`penisman.png`, 4 frames; `penis bullet.png` + die strip)
 - **Golden Roach** (`GoldenRoach.ts`): ambient deco cluster walker / flier; 8-dir skitter on blobs, idle/chase takeoff with swoop pass; contact only while flying; **0.1×** frisbee damage; LOS vision at **0.75×** see radius; HP **1**; spawns on ambient clusters; center-anchored rotated draw (`golden roach2.png` 8×8 walk / `golden roach2 fly.png` 16×16 fly frames with padded art); `AmbientClusterMap` for locomotion + spawn
+- **Jack Blue** (`JackBlue.ts`): shielded skirmisher; dormant patrol → vision wake → keep-away wiggle + arcing bones; shield blocks sword/projectiles; death shard scatter + staggered pops + bone break debris; 0.5% shield pedestal drop; HP **8**; challenge tier **4**; art `jack blue.png` + `jack blue shield.png` + `bone.png` (3 frames, 32×32, faces left)
+- **Rolling head** (`RollingHead.ts`): spawns **5 tiles** above floor; elastic tile/peer bounces with squash-and-stretch; airborne horizontal drift; HP **6**; challenge tier **4**; art `rolling head cc.png` (4 frames, faces left)
+- **Multilimber** (`Multilimber.ts`): stacked eye/head/body parts with per-part HP; phase speeds + LOS steer + wall-jump/hop AI; staggered part-death explosions + body quadrant cull; HP **12**; challenge tier **5**; art `multilimber body/head/eye.png` (3 frames, 32×32, faces left)
 - **Peer platforms + separation** (`EnemyPeerPlatforms`, `EnemyPeerSeparation`, `EnemyPeerTick`): enemies stand on each other's hull tops (moving decks), crawlers `ride_deck` on carriers, horizontal bump pushes + patrol flip, vertical stack snap; Possessed + Golden Roach excluded
-- Stubbed: Jack Blue / etc., bosses beyond Possessed, other subweapons, heavy attacks
+- Stubbed: Multilimber ice-freeze part remnants, bosses beyond Possessed, other subweapons, heavy attacks
 
 ### Phase 4a notes
 
@@ -162,14 +165,18 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **Minimap reveal items**: MAP → unvisited ITEM/SHOP/BOSS in color; COMPASS → dark non-secret silhouette; EYE_OF_HORUS → secret/super-secret cells
 - Item sheets: left **16×16** on pedestals / pickup card; right **16×16** in HUD (`ItemSpriteArt`)
 - **Item pickup overlay**: full-frame dim + pickup art + name/flavor/effect; Vernan **item pose** (`vernan item.png`) with held item above head; auto-dismiss **2.75s**; freezes sim while active
-- **Soul / black hearts**: container `Health` (RED/SOUL/BLACK); grants from `soulHeartsOnPickup` / `blackHeartsOnPickup`; HUD uses `soul heart.png` / `black heart.png` (2 frames)
+- **Soul / black hearts**: container `Health` (RED/SOUL/BLACK); grants from `soulHeartsOnPickup` / `blackHeartsOnPickup`; HUD uses `soul heart.png` / `black heart.png` (2 frames); black-heart depletion beat (screen shake + overlay + room-wide burst knockback); **HEART_OF_DARKNESS** retaliates on every hit (enhanced burst when black containers empty)
 - **Subweapon HUD**: equip on pickup (`PlayerItemInventory.equippedSubweapon`); pickup icon in sub slot; cooldown tint/band via `SubweaponCooldowns`
 - **Frisbee subweapon**: C to throw (`FrisbeeAimSnapshot` wind-up aim + `FrisbeeProjectile` pierce/bounce/settle); special-attack strips; 6s cooldown; 1.5 dmg
+- **Gardening gloves subweapon**: C plucks `gardeningPluckable` grass deco / breakable floor / settled fruit / **frozen ice blocks**; hold overhead (`hold-` costume variants + carry pose); **pluck** (4f) / **throw** + **throw air-** (5f) strips (`resolvePlayerCostumePose` + legacy `drawPlayer`); throw or gentle drop (SMB2-style fruit physics + breakable/ice shatter); `subweaponsEverAcquired` tracked for synergy
+- **Ice block passive**: owned kills freeze eligible foes into room-persisted `IceBlock` (aqua tint snapshot, spawn invuln/shake); stand-on deck + **0.38× traction**; **live environment reflection** (`LiveReflectionEffect` fisheye sample from framebuffer); sword or thrown ice shatters into aqua shards + embedded loot; gem-sword kill coin can roll into last frozen block
+- **All-seeing eye passive**: 50% alpha ghost hidden shell doors/ladders; buried breakable loot preview; with gloves ever acquired, grass pluck loot preview on cell below deco (`AllSeeingEyeDraw` + `PluckLootRoll`); pluck-target overhead preview while gloves equipped
 - **Psychic Spoon subweapon**: C lifts visible brick debris (`float` telekinesis + psychic fire overlay); second C promotes to homing queue (nearest on-screen enemy, 15f inter-chunk delay); 0.5 dmg / `psychic_debris` knockback; 0.5s cooldown
 - **Brick chunks**: tile-break + possessed death debris (`BrickChunk` pivot sprites, rotated hull collision); `roomPersistedBrickChunks` per room; 8s possessed lifetime / blink at 7s
 - **Pause**: Enter/Esc or HUD left-shoulder **II** toggles `paused`; freezes sim; dim overlay + “PAUSE” + item grid menu (`PauseOverlay`); button highlights while paused
 - **ItemEffects** (Phase 4a+): registry + dispatch — `BOX`, `MYSTERY_GIFT`, `PLUG`, `IRON_LUNG`, `SKIRT`, `LEOTARD`, `SHY_MASK` (gravity + charge/superjump), `KALEIDOSCOPE_EYE` (temp/perm stats + scratch palette + pedestal color-swap + 2× incoming), `AUTISM` (HP bars + damage floaters), `FUZZY_HAT` (body-contact electrocution), `SHIELD_BREAKER` (penetration when enemy shields exist)
-- Stubbed: costumes/layered body, full spatial-distort palette op, Jack Blue shield hulls, other subweapons (Warp Orb / K_Candy), full touch-control chrome, K_CANDY uses badge
+- **Costumes / layered body** (`src/costume/`): mirrors Java `game/costume/` — `CostumeProfile` stack/resolve, `CostumeArtCache`, slot interleave with `VernanBodyLibrary` layered body; multipart routing (hoodie, cat ears, fuzzy hat, …); `costume_layers.json` + `costume_slots.json`
+- Stubbed: full spatial-distort palette op, other subweapons (Warp Orb / K_Candy), full touch-control chrome, K_CANDY uses badge
 
 ### Phase shop notes (Shop A)
 
@@ -182,7 +189,7 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 
 ### Phase 5a notes
 
-- BOSS rooms spawn **Possessed** (32 HP) at mid-room ~40% height; float A→C→B phases; AABB combat
+- BOSS rooms spawn **Possessed** (32 HP) at mid-room ~40% height; float A→C→B phases; AABB combat; **50%** seeded chance for two flank **Crawlers** (3 HP) at ±`w/5` columns
 - `roomCombatCleared` prevents respawn; death waits **4 s** (`DEATH_REWARD_DELAY_SEC`) before clear
 - On clear: kill explosion + **BOSS_CLEAR** pedestal (`PedestalItemDecks.drawBossClear`)
 - HUD: boss HP bar (Java parity: 52% width, red fill + top highlight, label above; hidden while dying)
@@ -199,7 +206,9 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **BACKPACK**: Shift+X cycles owned primaries (+ vanilla sword); Shift+C cycles owned subweapons; queues until not attacking / subweapon anim / lemon pose; clears psychic telekinesis on subweapon swap; HUD weapon slot shows active weapon pickup icon
 - Jump buffer already existed; presses also latch during hitlag
 - **Browser input machine** (Java `Input` parity): press edges survive key-up; lag-stash when sim skips a frame; `primeLagInputBuffers` during timestop; window capture listeners
-- Stubbed: layered body/costumes (climb+hurt use base/hair composites), turn/hurt/airdodge full costume routes, **WHIP**, heavy attacks, backpack HUD preview ghosts
+- **Costumes**: layered body + costume slot interleave for idle/walk/jump/crouch/turn/climb/hurt/attack/special/headband/carry/door/getup; lemon + hold-overhead variants; fuzzy hat → hat-hair body override
+- Stubbed: turn/hurt/airdodge full routes where layered anims missing, **WHIP**, backpack HUD preview ghosts
+  - **DISC01–04**: slide / wall-jump / air-dodge (Shift) / heavy (X+C) — `DiscMechanics.ts` + layered `vernan/` strips
   - Room terrain art: Phase C++ (object-based bridge + MemberGraph + full-object deco + step breakables)
 
 ### Phase 5b-thin notes
@@ -246,7 +255,8 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **Landing collision**: jump-hull feet snap → `finishJumpLandingCollision` stand align; landing-lock crouch is **visual only** (stand `h` kept); `resolveVertical` uses Java crossed-from-above / platform slack + polygon∩tile
 - **Horizontal deck exemption**: leading-column wall scan; landing/resting decks defer to vertical (no `vx` kill on floor lips); `poseForFeetSupport` for jump-hull thin-deck probes
 - **One-ways**: stay solid while crouching; mouth drop-through only via `walkOffLedgeActive` + ladder under tile (or getup mount)
-- Stubbed: air dodge / wavedash, walk-off ledge strip asset, landing dust FX, costumes, keyblock shaft *logic* beyond solid tiles
+- Stubbed: wavedash platform pin (ice/heelys merge), walk-off ledge strip asset, keyblock shaft *logic* beyond solid tiles
+  - **DISC01–04** movement discs ported (see Phase 6a)
 
 ### Phase juice notes (combat feel)
 
@@ -256,7 +266,7 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **Squash/stretch**: feet-anchored volume-conserving; jump Y 1.2, land X 1.2 (recover = landing lock), crouch enter X 1.1/4f; crawler hop/land too
 - **Kill explosions**: feet-centered (top = feetY − dh); crawler waits until death hitstun ends
 - **Hit sparks**: sword `HitVfx` slash (2-frame hitlag→fade rotate); pickup collect strips rise + sine wobble
-- Stubbed: landing dust, heavy-attack camera shake, black-heart overlay, non-slash HitVfx kinds
+- Stubbed: heavy-attack camera shake, non-slash HitVfx kinds
 
 ### Phase terrain-core notes
 

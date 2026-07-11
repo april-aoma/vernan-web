@@ -12,6 +12,7 @@ import {
   applySecretPostGenerationContent,
   connectivityFromNode,
   generateRoomShell,
+  regroundItemPedestal,
   type GeneratedRoom,
   type SecretGenFinishOptions,
 } from "./RoomGenerator";
@@ -98,6 +99,11 @@ export function buildDungeon(runSeed: bigint, floorOrdinal = 1): BuiltDungeon {
   let roomKeyblockSeals = placeKeyblockEntrances(layout, filled, floorOrdinal);
   stripKeyblocksFromSecretRooms(layout, filled);
   roomKeyblockSeals = reconcileKeyblocksWithSeams(roomKeyblockSeals, secretSeams);
+
+  // Java DecoPlacementRules.regroundToFinalTerrain (pedestal half; deco regrounds in enrichDungeonArt).
+  for (let i = 0; i < n; i++) {
+    regroundItemPedestal(filled[i]!);
+  }
 
   // Enemies after terrain final (Java applyPostGenerationEnemies).
   for (let i = 0; i < n; i++) {

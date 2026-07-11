@@ -40,6 +40,11 @@ export class SquashStretch {
     this.holdFramesRemaining = Math.max(1, holdFrames);
   }
 
+  applyStretchYWallAnchored(scaleY: number, recoverFrames: number, wallSide: number): void {
+    this._anchorColumnSign = wallSide < 0 ? -1 : wallSide > 0 ? 1 : 0;
+    this.applyPeak(scaleY - 1, true, recoverFrames);
+  }
+
   private applyPeak(mag: number, vertical: boolean, recoverFrames: number): void {
     if (Math.abs(mag) < 1e-9) return;
     this.peakMag = mag;
