@@ -26,6 +26,12 @@ const vernanVersion =
     process.env.VITE_VERNAN_VERSION.trim()) ||
   `0.1.${gitCommitCount()}`;
 
+/** Live scores Worker — used whenever env is unset (local + Pages). */
+const scoresApi =
+  (typeof process.env.VITE_SCORES_API === "string" &&
+    process.env.VITE_SCORES_API.trim()) ||
+  "https://vernan-scores.henrysbasu.workers.dev";
+
 /** Dev-only: serve repo `data/scores.json` without putting it in the Pages artifact. */
 function repoScoresDevPlugin(): Plugin {
   return {
@@ -59,6 +65,7 @@ export default defineConfig({
   plugins: [repoScoresDevPlugin()],
   define: {
     "import.meta.env.VITE_VERNAN_VERSION": JSON.stringify(vernanVersion),
+    "import.meta.env.VITE_SCORES_API": JSON.stringify(scoresApi),
   },
   resolve: {
     alias: {

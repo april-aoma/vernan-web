@@ -1148,7 +1148,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       const summary = currentRunSummary();
       const result = await openSubmitDialog(summary);
       if (result.action !== "submit") return;
-      await submitScore(summary, result.playerName);
+      await submitScore(summary, result.playerName, { asGuest: result.asGuest });
       options.onScoreSubmitted?.(summary);
       // Brief delay so a mirror download (no remote API) is not cancelled by navigation.
       await new Promise((r) => setTimeout(r, 400));
