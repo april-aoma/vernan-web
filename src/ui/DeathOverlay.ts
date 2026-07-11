@@ -69,7 +69,7 @@ export function drawDeathOverlay(
     g.fillText(locked, boxX + (boxW - g.measureText(locked).width) / 2, y + 12);
     y += 18;
   } else {
-    submit = drawAccentButton(g, btnX, y, btnW, 16, "Q — Submit & quit", "rgba(120,170,255,0.18)", "rgb(120,170,255)");
+    submit = drawAccentButton(g, btnX, y, btnW, 16, "SUBMIT SCORE", "rgba(120,170,255,0.18)", "rgb(120,170,255)");
     y += 22;
   }
 

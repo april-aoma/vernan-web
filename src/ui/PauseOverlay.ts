@@ -76,23 +76,18 @@ export function drawPauseMenu(
     y += 10;
   }
 
-  // Order: Login → View Leaderboard → Submit Score
-  g.fillStyle = "rgba(40, 70, 50, 0.9)";
-  g.fillRect(btnX, y, btnW, btnH);
-  g.strokeStyle = "rgba(93, 207, 110, 0.55)";
-  g.strokeRect(btnX + 0.5, y + 0.5, btnW - 1, btnH - 1);
-  g.fillStyle = "#d7eefc";
-  g.fillText("Login", btnX + 6, y + 12);
-  const login = { x: btnX, y, w: btnW, h: btnH };
+  // Order: Login → View Leaderboard → Submit Score (parity with Java pause menu).
+  const login = drawOverlayButton(g, btnX, y, btnW, btnH, "LOGIN", "rgb(93,207,110)");
   y += btnH + 4;
-
-  g.fillStyle = "rgba(50, 55, 65, 0.9)";
-  g.fillRect(btnX, y, btnW, btnH);
-  g.strokeStyle = "rgba(180, 190, 210, 0.55)";
-  g.strokeRect(btnX + 0.5, y + 0.5, btnW - 1, btnH - 1);
-  g.fillStyle = "#d7eefc";
-  g.fillText("View Leaderboard", btnX + 6, y + 12);
-  const viewBoard = { x: btnX, y, w: btnW, h: btnH };
+  const viewBoard = drawOverlayButton(
+    g,
+    btnX,
+    y,
+    btnW,
+    btnH,
+    "VIEW LEADERBOARD",
+    "rgb(180,190,210)",
+  );
   y += btnH + 4;
 
   let submit = { x: 0, y: 0, w: 0, h: 0 };
@@ -101,18 +96,36 @@ export function drawPauseMenu(
       g.fillStyle = "#a07878";
       g.fillText("Submit locked (not leaderboard-viable)", btnX, y + 12);
     } else {
-      g.fillStyle = "rgba(30, 90, 130, 0.85)";
-      g.fillRect(btnX, y, btnW, btnH);
-      g.strokeStyle = "rgba(110, 200, 255, 0.55)";
-      g.strokeRect(btnX + 0.5, y + 0.5, btnW - 1, btnH - 1);
-      g.fillStyle = "#d7eefc";
-      g.fillText("Q — Submit & quit", btnX + 6, y + 12);
-      submit = { x: btnX, y, w: btnW, h: btnH };
+      submit = drawOverlayButton(g, btnX, y, btnW, btnH, "SUBMIT SCORE", "rgb(120,170,255)");
     }
   }
 
   drawPauseMenuItemGrid(g, PAUSE_MENU_Y + boxH, player, catalog, itemBitmaps, swordPickup);
   return { login, viewBoard, submit };
+}
+
+/** Matches Java GamePanel.drawOverlayButton (centered label + accent chrome). */
+function drawOverlayButton(
+  g: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  label: string,
+  accent: string,
+): { x: number; y: number; w: number; h: number } {
+  const m = /^rgb\((\d+),(\d+),(\d+)\)$/.exec(accent);
+  const r = m?.[1] ?? "120";
+  const gch = m?.[2] ?? "170";
+  const b = m?.[3] ?? "255";
+  g.fillStyle = `rgba(${r},${gch},${b},0.18)`;
+  g.fillRect(x, y, w, h);
+  g.strokeStyle = `rgb(${r},${gch},${b})`;
+  g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  g.fillStyle = "#ffffff";
+  g.font = "10px monospace";
+  g.fillText(label, x + (w - g.measureText(label).width) / 2, y + h * 0.5 + 3.5);
+  return { x, y, w, h };
 }
 
 function drawPauseMenuItemGrid(

@@ -60,6 +60,9 @@
         gap: 0.5rem 0.75rem;
         margin-top: 8px;
       }
+      .page-footer .nav-btn {
+        margin: 0;
+      }
       .report-crash-btn {
         appearance: none;
         margin: 0;
@@ -129,19 +132,16 @@
   </head>
   <body>
     <h1>Vernan</h1>
-    <nav class="nav-row" aria-label="Site">
-      <a class="nav-btn" href="./leaderboard.html">Leaderboard</a>
-      <a class="nav-btn" href="./crashes.html">Crashes</a>
-    </nav>
     <div id="vernan-root" tabindex="0" aria-label="Vernan game"></div>
     <p class="hint">
       Click the canvas for keyboard focus. Move with arrows/WASD, jump Z/Space,
       attack X, crouch Down, climb ladders with Up/Down. Stand in a door and press
-      Up/W to change rooms. Pause with Enter/Esc, then <code>Q</code> to submit &amp; quit
-      (also available on the death screen).
-      F3 toggles debug. Seed via <code>?seed=12345</code>.
+      Up/W to change rooms. Pause with Enter/Esc — Login, View Leaderboard, and
+      Submit Score are in the pause menu. F3 toggles debug. Seed via
+      <code>?seed=12345</code>.
     </p>
     <div class="page-footer">
+      <a class="nav-btn" href="./crashes.html">Crashes</a>
       <button type="button" class="report-crash-btn" id="report-crash-btn">
         Report crash
       </button>
