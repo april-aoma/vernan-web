@@ -7,6 +7,8 @@ export type GameLoopCallbacks = {
   render: (renderAlpha: number) => void;
   onFpsUpdate?: (fps: number, ups: number) => void;
   endInputFrameAfterSimBatch?: (ranAnyFixedSteps: boolean, lagSimFrozen: boolean) => void;
+  /** Called once when update/render throws; the loop stops scheduling frames. */
+  onFatalError?: (err: unknown) => void;
 };
 
 /**
@@ -40,7 +42,14 @@ export class GameLoop {
     this.accumulator = 0;
     const tick = (now: number) => {
       if (!this.running) return;
-      this.frame(now);
+      try {
+        this.frame(now);
+      } catch (err) {
+        this.running = false;
+        this.raf = 0;
+        this.callbacks.onFatalError?.(err);
+        return;
+      }
       this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);

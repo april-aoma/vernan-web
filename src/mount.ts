@@ -157,6 +157,7 @@ import { HudEconomyDisplay } from "./ui/HudEconomy";
 import { openSubmitDialog } from "./ranking/SubmitDialog";
 import { submitScore } from "./ranking/scoresStore";
 import type { RunSummary } from "./ranking/types";
+import { reportUnknownCrash, setCrashContext } from "./diagnostics/crashReporter";
 import { BrickChunk, spawnBreakableBrickChunks } from "./fx/BrickChunk";
 import {
   drawAllSeeingEyeOverlays,
@@ -225,7 +226,9 @@ import {
   drawShopPriceLabel,
   ensureShopResolved,
   loadShopKeeperFrames,
+  mountShopWorldPickups,
   tryBuyShopPedestal,
+  tryBuyShopPickups,
   type ShopKeeperFrames,
 } from "./world/Shop";
 import {
@@ -332,6 +335,7 @@ import {
   onRoomEnteredWithKeyblockBypass,
   loadRoomBrickChunks,
   persistRoomBrickChunks,
+  resyncRoomEnemies,
   type RoomSession,
 } from "./world/roomTransition";
 import type { LevelAscendState } from "./world/roomFade";
@@ -522,7 +526,7 @@ async function loadImageSafe(assets: AssetLoader, path: string): Promise<ImageBi
 export function mount(root: string | HTMLElement, options: MountOptions = {}): VernanHandle {
   const parent = resolveRoot(root);
   const assetBase = options.assetBase ?? "/assets/";
-  const seed =
+  let seed =
     options.seed ??
     seedFromUrl() ??
     (Math.floor(Math.random() * 0x7fffffff) | 0);
@@ -533,7 +537,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   fb.mount(parent);
   input.attach(fb.canvas);
 
-  const dungeon = buildDungeon(BigInt(seed), 1, 0);
+  let dungeon = buildDungeon(BigInt(seed), 1, 0);
   let floorOrdinal = 1;
   /** Mirrors Java GamePanel.enemiesKilledThisRun. */
   let enemiesKilledThisRun = 0;
@@ -544,12 +548,26 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   let enemiesKillDifficultyThisRun = 0;
   /** True once the player has died this run. */
   let runReachedDeath = false;
-  /** True if the player became alive again after dying this run (Z/X room retry). */
-  let runDiedAndRespawned = false;
+  /**
+   * When true, score submit is blocked (Z/X room retry after death, or RETRY SAME SEED).
+   * Cleared by RESTART (NEW SEED).
+   */
+  let leaderboardLocked = false;
   let submitDialogOpen = false;
   let pauseSubmitPending = false;
+  let deathViewBoardPending = false;
+  let deathRestartPending: "new" | "same" | null = null;
+  let dungeonRestartInProgress = false;
   let pauseMenuHits: PauseMenuHitRects = { submit: { x: 0, y: 0, w: 0, h: 0 } };
-  let deathMenuHits: DeathOverlayHitRects = { submit: { x: 0, y: 0, w: 0, h: 0 } };
+  let deathMenuHits: DeathOverlayHitRects = {
+    submit: { x: 0, y: 0, w: 0, h: 0 },
+    viewBoard: { x: 0, y: 0, w: 0, h: 0 },
+    restartNew: { x: 0, y: 0, w: 0, h: 0 },
+    retrySame: { x: 0, y: 0, w: 0, h: 0 },
+  };
+  let itemCatalog: ItemCatalog | null = null;
+  let pedestalDecks: PedestalItemDecks | null = null;
+  let runItemPool: RunItemPool | null = null;
   const player = new Player();
   player.stats.money = RUN_START_MONEY;
   player.onBlackHeartBurstHit = (enemy, strike) => {
@@ -892,6 +910,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   let session: RoomSession | null = null;
   let bootError: string | null = null;
+  let runtimeCrash: string | null = null;
   let debug = false;
   /** Java GamePanel.paused — freezes sim; Enter/Esc or HUD pause button toggles. */
   let paused = false;
@@ -987,14 +1006,27 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       pauseSubmitPending = true;
       return;
     }
-    if (
-      player.health.isDead &&
-      deathMenuHits.submit.w > 0 &&
-      hitTestRect(ix, iy, deathMenuHits.submit)
-    ) {
-      e.preventDefault();
-      pauseSubmitPending = true;
-      return;
+    if (player.health.isDead) {
+      if (deathMenuHits.submit.w > 0 && hitTestRect(ix, iy, deathMenuHits.submit)) {
+        e.preventDefault();
+        pauseSubmitPending = true;
+        return;
+      }
+      if (deathMenuHits.viewBoard.w > 0 && hitTestRect(ix, iy, deathMenuHits.viewBoard)) {
+        e.preventDefault();
+        deathViewBoardPending = true;
+        return;
+      }
+      if (deathMenuHits.restartNew.w > 0 && hitTestRect(ix, iy, deathMenuHits.restartNew)) {
+        e.preventDefault();
+        deathRestartPending = "new";
+        return;
+      }
+      if (deathMenuHits.retrySame.w > 0 && hitTestRect(ix, iy, deathMenuHits.retrySame)) {
+        e.preventDefault();
+        deathRestartPending = "same";
+        return;
+      }
     }
 
     const geo = computeTouchControlsGeometry(INTERNAL_WIDTH, hudY0, HUD_HEIGHT);
@@ -1083,10 +1115,27 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     };
   }
 
+  function leaderboardPageUrl(): URL {
+    const leaderboardUrl = new URL("leaderboard.html", window.location.href);
+    try {
+      const api = new URLSearchParams(window.location.search).get("scoresApi");
+      if (api) leaderboardUrl.searchParams.set("scoresApi", api);
+    } catch {
+      /* ignore */
+    }
+    return leaderboardUrl;
+  }
+
+  function openLeaderboardView(): void {
+    window.open(leaderboardPageUrl().href, "_blank", "noopener,noreferrer");
+  }
+
   async function beginSubmitAndQuit(): Promise<void> {
     if (submitDialogOpen) return;
-    if (runDiedAndRespawned) {
-      window.alert("Scores cannot be submitted after dying and respawning this run.");
+    if (leaderboardLocked) {
+      window.alert(
+        "Scores cannot be submitted for this run (respawned in-room, or restarted on the same seed).",
+      );
       return;
     }
     submitDialogOpen = true;
@@ -1100,17 +1149,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       if (result.action !== "submit") return;
       await submitScore(summary, result.playerName);
       options.onScoreSubmitted?.(summary);
-      const leaderboardUrl = new URL("leaderboard.html", window.location.href);
-      // Preserve optional scoresApi query for remote boards.
-      try {
-        const api = new URLSearchParams(window.location.search).get("scoresApi");
-        if (api) leaderboardUrl.searchParams.set("scoresApi", api);
-      } catch {
-        /* ignore */
-      }
       // Brief delay so a mirror download (no remote API) is not cancelled by navigation.
       await new Promise((r) => setTimeout(r, 400));
-      window.location.assign(leaderboardUrl.href);
+      window.location.assign(leaderboardPageUrl().href);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Submit failed";
       window.alert(msg);
@@ -1118,6 +1159,108 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       submitDialogOpen = false;
       pauseSubmitPending = false;
       input.clearHardwareState();
+    }
+  }
+
+  /**
+   * Full run restart (Java GamePanel.requestRestart).
+   * NEW SEED → leaderboard-viable; SAME SEED → locked.
+   */
+  function requestRestart(mode: "new" | "same"): void {
+    if (dungeonRestartInProgress || !itemCatalog || !pedestalDecks || !runItemPool) return;
+    dungeonRestartInProgress = true;
+    try {
+      const newSeed =
+        mode === "new" ? (Math.floor(Math.random() * 0x7fffffff) | 0) : seed;
+      seed = newSeed;
+      leaderboardLocked = mode === "same";
+      runReachedDeath = false;
+      enemiesKilledThisRun = 0;
+      enemiesKillDifficultyThisRun = 0;
+      lastEnemyDeathFeetCenterX = 0;
+      lastEnemyDeathFeetY = 0;
+      floorOrdinal = 1;
+      paused = false;
+      submitDialogOpen = false;
+      pauseSubmitPending = false;
+      deathViewBoardPending = false;
+      deathRestartPending = null;
+
+      runItemPool.clear();
+      pedestalDecks.reset(BigInt(seed));
+      dungeon = buildDungeon(
+        BigInt(seed),
+        1,
+        player.inventory.stacksOf("EYE_OF_RA"),
+        tilesetProject,
+      );
+      // Clear inventory after eye-of-ra stack read for dungeon gen.
+      player.inventory.clear();
+      player.stats.resetForNewRun();
+      player.stats.applyItemPassives(player.inventory, itemCatalog);
+      player.health.clearSoulHearts();
+      player.health.clearBlackHearts();
+      player.health.max = player.stats.maxHealth;
+      player.health.healFull();
+      player.facing = 1;
+      player.resetSubweaponAnim();
+      player.dropCarryForSubweaponSwitch();
+
+      session = createSession(dungeon, itemCatalog, pedestalDecks);
+      floorOrdinal = dungeon.floorOrdinal;
+      miniMapState = createMiniMapState(dungeon.layout.roomCount());
+
+      brickChunks.length = 0;
+      frisbeeProjectiles.length = 0;
+      warpOrbProjectiles.length = 0;
+      clearWeaponProjectiles();
+      worldPickups.length = 0;
+      pickupCollectFx.length = 0;
+      hitVfxList.length = 0;
+      risingDustFx.length = 0;
+      explosions.length = 0;
+      pendingJackDeathExplosions.length = 0;
+      iceBlocks.length = 0;
+      roomPersistedIceBlocks.clear();
+      settledFruitByRoom.clear();
+      gardeningGlovesSupport?.clearForNewRun();
+      possessedHead.clear();
+      psychicSpoon.reset();
+      familiarTrail.clearAll();
+      subweaponCooldowns.clearAll();
+      backpackWeaponSwitch.reset();
+      kCandyUsesRemaining = 0;
+      kCandyForgetHud.reset();
+      kCandyHealSequence.cancel();
+      kCandyVision.reset();
+      kCandyHudRedDisplayed = -1;
+      pickupOverlay.dismiss();
+      pickupOverlayBonusLine = "";
+      hudEconomy.sync(player.stats.money, player.stats.keys);
+      softPointerControls.clear();
+      clearCirclePad();
+      input.clearHardwareState();
+
+      if (tilesetProject) {
+        enrichDungeonArt(session.dungeon, tilesetProject, contentSeedsOf(session.dungeon));
+      }
+      applyRoomAndSpawn(session, 0, SpawnKind.INITIAL, player);
+      applySwordProfileIfPresent();
+      mountDeferredRoomPickups(session.dungeon.rooms[session.roomId]!, worldPickups);
+      mountShopWorldPickups(session, worldPickups, player.stats.luck);
+      if (bgRegistry) {
+        roomMathBackgroundPresetId = assignRoomMathBackgroundPresets(
+          session.dungeon.layout,
+          bgRegistry,
+        );
+      }
+      playerWasOnGround = player.onGround;
+      snapCameraToPlayer(session);
+      revealMiniMapForRoom(session.dungeon.layout, session.roomId, miniMapState);
+      renderFacing = player.facing;
+      turnAnimFramesLeft = 0;
+    } finally {
+      dungeonRestartInProgress = false;
     }
   }
   let pedestalBmp: ImageBitmap | null = null;
@@ -1325,16 +1468,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         dungeon.layout,
         bgRegistry,
       );
-      const runItemPool = new RunItemPool();
-      const decks = new PedestalItemDecks(catalog, runItemPool, BigInt(seed));
-      session = createSession(dungeon, catalog, decks);
-      floorOrdinal = dungeon.floorOrdinal;
-      miniMapState = createMiniMapState(dungeon.layout.roomCount());
-      applyRoomAndSpawn(session, 0, SpawnKind.INITIAL, player);
-      mountDeferredRoomPickups(session.dungeon.rooms[session.roomId]!, worldPickups);
-      revealMiniMapForRoom(session.dungeon.layout, session.roomId, miniMapState);
-      playerWasOnGround = player.onGround;
-      snapCameraToPlayer(session);
+      const runItemPoolLocal = new RunItemPool();
+      const decks = new PedestalItemDecks(catalog, runItemPoolLocal, BigInt(seed));
+      itemCatalog = catalog;
+      pedestalDecks = decks;
+      runItemPool = runItemPoolLocal;
 
       try {
         tilesetProject = await TilesetProject.load(assets);
@@ -1342,15 +1480,32 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         await sheetAtlas.loadSheets(assets, [...tilesetProject.sheetPaths.keys()]);
         tileWorldRenderer = new TileWorldRenderer(sheetAtlas, tilesetProject);
         bossDoorLayout = resolveBossDoorLayout(tilesetProject);
-        if (session) {
-          enrichDungeonArt(session.dungeon, tilesetProject, contentSeedsOf(session.dungeon));
+        // Rebuild with tileset so ambient deco uses room RNG (Java RoomGenerator).
+        dungeon = buildDungeon(BigInt(seed), 1, 0, tilesetProject);
+        if (bgRegistry) {
+          roomMathBackgroundPresetId = assignRoomMathBackgroundPresets(
+            dungeon.layout,
+            bgRegistry,
+          );
         }
+        enrichDungeonArt(dungeon, tilesetProject, contentSeedsOf(dungeon));
       } catch {
         tilesetProject = null;
         sheetAtlas = null;
         tileWorldRenderer = null;
         bossDoorLayout = null;
       }
+
+      session = createSession(dungeon, catalog, decks);
+      floorOrdinal = dungeon.floorOrdinal;
+      miniMapState = createMiniMapState(dungeon.layout.roomCount());
+
+      applyRoomAndSpawn(session, 0, SpawnKind.INITIAL, player);
+      mountDeferredRoomPickups(session.dungeon.rooms[session.roomId]!, worldPickups);
+      mountShopWorldPickups(session, worldPickups, player.stats.luck);
+      revealMiniMapForRoom(session.dungeon.layout, session.roomId, miniMapState);
+      playerWasOnGround = player.onGround;
+      snapCameraToPlayer(session);
 
       keyblockStrip = await loadStrip(assets, "sprites/keyblock.png", KEYBLOCK_STRIP_FRAME_COUNT);
       keyblockConnectorStrip = await loadStrip(
@@ -1729,6 +1884,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       );
     } catch (err) {
       bootError = err instanceof Error ? err.message : String(err);
+      reportUnknownCrash(err, "boot");
     }
   })();
 
@@ -2037,6 +2193,23 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   }
 
 
+  function snapFamiliarsThroughRoomTransition(): void {
+    const px = player.x + player.w * 0.5;
+    const py = player.y + player.h * 0.5;
+    const { newPossessed, newMiners } = familiarTrail.syncStacks(
+      player.inventory.stacksOf("LIL_POSSESSED"),
+      player.inventory.stacksOf("LIL_MINER"),
+      { x: px, y: py },
+      () => new LilPossessed(px, py),
+      () => new LilMiner(px, py),
+    );
+    familiarTrail.snapToPlayer(px, py, player.facing);
+    void (async () => {
+      for (const f of newPossessed) await f.loadRig(assets);
+      for (const m of newMiners) await m.loadRig(assets);
+    })();
+  }
+
   function tickFamiliarSystems(map: TileMap): void {
     if (!session) return;
     const px = player.x + player.w * 0.5;
@@ -2052,15 +2225,22 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       for (const f of newPossessed) await f.loadRig(assets);
       for (const m of newMiners) await m.loadRig(assets);
     })();
+    if (familiarTrail.totalFamiliars() === 0) {
+      familiarTrail.clearTrail();
+      familiarTrail.consumeAttackFireEdge(
+        player.attackPhase !== 0 || player.disc.isHeavyActive(),
+      );
+      return;
+    }
     familiarTrail.pushLead(px, py, player.facing);
     const fireEdge = familiarTrail.consumeAttackFireEdge(
       player.attackPhase !== 0 || player.disc.isHeavyActive(),
     );
-    let nearest = { x: px + player.facing * 40, y: py };
+    let nearest = { x: px + (player.facing >= 0 ? 1 : -1) * 1000, y: py };
     let best = Infinity;
     for (const e of session.enemies) {
       if (e.isDead()) continue;
-      const r = e.rect();
+      const r = e.damageReceivePose();
       const cx = r.x + r.w * 0.5;
       const cy = r.y + r.h * 0.5;
       const d = (cx - px) * (cx - px) + (cy - py) * (cy - py);
@@ -2069,41 +2249,44 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         nearest = { x: cx, y: cy };
       }
     }
-    for (let i = 0; i < familiarTrail.lilPossessed.length; i++) {
-      const f = familiarTrail.lilPossessed[i]!;
-      const follow = familiarTrail.followPoint(familiarTrail.slotFollowIndex("possessed", i));
-      f.update(FIXED_DT, follow.x, follow.y, fireEdge, nearest.x, nearest.y, map);
-      for (const b of f.bulletsCopy()) {
-        const stacks = player.inventory.stacksOf("TAMIL_OM");
-        const v = applyTamilOmAuraToBullet(stacks, px, py, b.x, b.y, b.vx, b.vy);
-        b.vx = v.vx;
-        b.vy = v.vy;
-        for (const e of session.enemies) {
-          if (e.isDead()) continue;
-          const hurt = e.damageReceivePose();
-          if (b.x < hurt.x || b.x > hurt.x + hurt.w || b.y < hurt.y || b.y > hurt.y + hurt.h) continue;
-          const strike = {
-            damage: LIL_POSSESSED_BULLET_DAMAGE,
-            freezeFrames: Math.max(1, Math.ceil(5 + LIL_POSSESSED_BULLET_DAMAGE)),
-            projectileVelX: b.vx,
-            projectileVelY: b.vy,
-            knockKind: "lemon_shot" as const,
-            debrisCenterWorldX: b.x,
-            debrisCenterWorldY: b.y,
-          };
-          if (e.applyProjectileStrike(strike)) b.dead = true;
+    familiarTrail.forEachSlot(player.facing, (kind, instanceIndex, follow) => {
+      if (kind === "LIL_POSSESSED") {
+        const f = familiarTrail.lilPossessed[instanceIndex];
+        if (!f) return;
+        f.update(FIXED_DT, follow.x, follow.y, fireEdge, nearest.x, nearest.y, map);
+        for (const b of f.bulletsCopy()) {
+          const stacks = player.inventory.stacksOf("TAMIL_OM");
+          const v = applyTamilOmAuraToBullet(stacks, px, py, b.x, b.y, b.vx, b.vy);
+          b.vx = v.vx;
+          b.vy = v.vy;
+          for (const e of session!.enemies) {
+            if (e.isDead()) continue;
+            const hurt = e.damageReceivePose();
+            if (b.x < hurt.x || b.x > hurt.x + hurt.w || b.y < hurt.y || b.y > hurt.y + hurt.h) {
+              continue;
+            }
+            const strike = {
+              damage: LIL_POSSESSED_BULLET_DAMAGE,
+              freezeFrames: Math.max(1, Math.ceil(5 + LIL_POSSESSED_BULLET_DAMAGE)),
+              projectileVelX: b.vx,
+              projectileVelY: b.vy,
+              knockKind: "lemon_shot" as const,
+              debrisCenterWorldX: b.x,
+              debrisCenterWorldY: b.y,
+            };
+            if (e.applyProjectileStrike(strike)) b.dead = true;
+          }
+        }
+      } else {
+        const m = familiarTrail.lilMiners[instanceIndex];
+        if (!m) return;
+        m.update(FIXED_DT, follow.x, follow.y, px);
+        if (m.drainCoinThrow()) {
+          const [cx, cy] = m.coinThrowOrigin();
+          worldPickups.push(WorldPickup.createFromBreakable(PickupKind.COIN_1, cx, cy, Math.random));
         }
       }
-    }
-    for (let i = 0; i < familiarTrail.lilMiners.length; i++) {
-      const m = familiarTrail.lilMiners[i]!;
-      const follow = familiarTrail.followPoint(familiarTrail.slotFollowIndex("miner", i));
-      m.update(FIXED_DT, follow.x, follow.y, px);
-      if (m.drainCoinThrow()) {
-        const [cx, cy] = m.coinThrowOrigin();
-        worldPickups.push(WorldPickup.createFromBreakable(PickupKind.COIN_1, cx, cy, Math.random));
-      }
-    }
+    });
   }
 
   function wireFlintIgniteCallback(): void {
@@ -2222,6 +2405,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   const loop = new GameLoop({
     update: () => {
+      setCrashContext({ seed, floorReached: floorOrdinal });
       if (input.debugTogglePressed) debug = !debug;
       if (!session) return;
 
@@ -2251,9 +2435,19 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
 
       if (player.health.isDead) {
+        if (deathViewBoardPending) {
+          deathViewBoardPending = false;
+          openLeaderboardView();
+        }
+        if (deathRestartPending) {
+          const mode = deathRestartPending;
+          deathRestartPending = null;
+          requestRestart(mode);
+          return;
+        }
         paused = false;
       } else if (runReachedDeath) {
-        runDiedAndRespawned = true;
+        leaderboardLocked = true;
       }
 
       const map = currentMap(session);
@@ -2263,7 +2457,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         if (!submitDialogOpen && (input.jumpPressed || input.attackPressed)) {
           player.health.max = player.stats.maxHealth;
           player.health.refill();
-          runDiedAndRespawned = true;
+          leaderboardLocked = true;
           applyRoomAndSpawn(session, session.roomId, SpawnKind.INITIAL, player);
           worldPickups.length = 0;
           frisbeeProjectiles.length = 0;
@@ -2271,6 +2465,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           clearWeaponProjectiles();
           player.resetSubweaponAnim();
           mountDeferredRoomPickups(session.dungeon.rooms[session.roomId]!, worldPickups);
+          mountShopWorldPickups(session, worldPickups, player.stats.luck);
           playerWasOnGround = player.onGround;
           snapCameraToPlayer(session);
         } else {
@@ -2360,6 +2555,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         floorOrdinal = s.dungeon.floorOrdinal;
         if (tilesetProject) {
           enrichDungeonArt(s.dungeon, tilesetProject, contentSeedsOf(s.dungeon));
+          resyncRoomEnemies(s, player);
         }
         if (sheetAtlas && tilesetProject && tileWorldRenderer) {
           tileWorldRenderer.syncSheets(sheetAtlas, tilesetProject);
@@ -2417,8 +2613,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           );
         }
         mountDeferredRoomPickups(s.dungeon.rooms[s.roomId]!, worldPickups);
+        mountShopWorldPickups(s, worldPickups, player.stats.luck);
         resolveSuperSecretKCandyRefill(s, player.inventory.equippedSubweapon());
         refreshRoomArtAndCamera();
+        // Teleport familiars with Vernan once her new-room position is final (Java snapFamiliarsToPlayer).
+        snapFamiliarsThroughRoomTransition();
         revealMiniMapForRoom(s.dungeon.layout, s.roomId, miniMapState);
       };
       const ascendHooks = {
@@ -2444,14 +2643,17 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
             session!.dungeon.layout.roomCount(),
           ).fill(null);
           mountDeferredRoomPickups(session!.dungeon.rooms[session!.roomId]!, worldPickups);
+          mountShopWorldPickups(session!, worldPickups, player.stats.luck);
           miniMapState = createMiniMapState(session!.dungeon.layout.roomCount());
           refreshRoomArtAndCamera();
+          snapFamiliarsThroughRoomTransition();
           revealMiniMapForRoom(session!.dungeon.layout, session!.roomId, miniMapState);
         },
         screenAnchor: (p: Player, cam: WorldCamera) => ({
           feetY: Math.round(CAMERA_ZOOM * p.spriteFeetWorldY() + cam.ty),
           centerX: Math.round(CAMERA_ZOOM * (p.x + p.w * 0.5) + cam.tx),
         }),
+        tileset: tilesetProject,
       };
 
       // Fade / door-pose / ascend blackout freezes gameplay (Java transitionPhase != NONE).
@@ -2623,21 +2825,31 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       if (refillBuy) {
         hudEconomy.startCoinDrain(refillBuy.price, player.stats.money);
       } else if (nodeKind === RoomKind.SHOP) {
-        ensureShopResolved(session);
-        const bought = tryBuyShopPedestal(
-          session,
-          player,
-          upPressed,
-          itemPickupHost,
-        );
-        if (bought) {
-          hudEconomy.startCoinDrain(bought.price, player.stats.money);
-          if (bought.itemId === "KALEIDOSCOPE_EYE") ensureKaleidoscopePalette();
-          if (bought.itemId === "K_CANDY") grantKCandyOnFirstAcquire();
-          pickupOverlay.begin(bought.itemId, pickupOverlayBonusLine);
-          pickupOverlayBonusLine = "";
-          applySwordProfileIfPresent();
-          void ensureItemArt(session.catalog.def(bought.itemId).spriteFileName);
+        ensureShopResolved(session, player.stats.luck);
+        const pickupBuy = tryBuyShopPickups(session, player, upPressed, worldPickups);
+        if (pickupBuy === "blocked") {
+          // Up consumed; skip pedestal.
+        } else if (pickupBuy) {
+          hudEconomy.startCoinDrain(pickupBuy.price, player.stats.money);
+          if (pickupBuy.kind === PickupKind.KEY) {
+            hudEconomy.startResourceGain(0, 1, player.stats.money, player.stats.keys);
+          }
+        } else {
+          const bought = tryBuyShopPedestal(
+            session,
+            player,
+            upPressed,
+            itemPickupHost,
+          );
+          if (bought) {
+            hudEconomy.startCoinDrain(bought.price, player.stats.money);
+            if (bought.itemId === "KALEIDOSCOPE_EYE") ensureKaleidoscopePalette();
+            if (bought.itemId === "K_CANDY") grantKCandyOnFirstAcquire();
+            pickupOverlay.begin(bought.itemId, pickupOverlayBonusLine);
+            pickupOverlayBonusLine = "";
+            applySwordProfileIfPresent();
+            void ensureItemArt(session.catalog.def(bought.itemId).spriteFileName);
+          }
         }
       } else {
         const collected = tryCollectPedestal(session, player, itemPickupHost);
@@ -2872,6 +3084,20 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       fb.clear("#0e1218");
       const g = fb.internalCtx;
 
+      if (runtimeCrash) {
+        g.fillStyle = "#1a222c";
+        g.fillRect(0, 0, INTERNAL_WIDTH, WORLD_VIEWPORT_H);
+        g.fillStyle = "#f0a0a0";
+        g.font = "12px monospace";
+        g.fillText("crashed — report sent (see Crashes page)", 16, 40);
+        g.fillStyle = "#c8d2dc";
+        g.fillText(runtimeCrash.slice(0, 72), 16, 58);
+        g.fillStyle = "#12161c";
+        g.fillRect(0, WORLD_VIEWPORT_H, INTERNAL_WIDTH, HUD_HEIGHT);
+        fb.present();
+        return;
+      }
+
       if (!session) {
         g.fillStyle = "#1a222c";
         g.fillRect(0, 0, INTERNAL_WIDTH, WORLD_VIEWPORT_H);
@@ -2997,7 +3223,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       };
       preloadPedestalItem(activePedestal(session));
       if (node.kind === RoomKind.SHOP) {
-        ensureShopResolved(session);
+        ensureShopResolved(session, player.stats.luck);
         for (const sp of activeShopPedestals(session)) preloadPedestalItem(sp);
       }
       for (const ep of activeEnemyLootPedestals(session)) preloadPedestalItem(ep);
@@ -3013,7 +3239,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         kaleidoscopePedestalSprite,
       );
       if (node.kind === RoomKind.SHOP) {
-        ensureShopResolved(session);
+        ensureShopResolved(session, player.stats.luck);
         for (const sp of activeShopPedestals(session)) {
           drawPedestal(
             g,
@@ -3032,6 +3258,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
               drawShopPriceLabel(g, labelX, labelY, sp.priceCoins ?? SHOP_PEDESTAL_PRICE);
             }
           }
+        }
+        for (const p of worldPickups) {
+          if (p.priceCoins <= 0) continue;
+          const labelX = camera.worldToDeviceX(p.renderCenterX());
+          const labelY = camera.worldToDeviceY(p.hitbox().y) - 4;
+          drawShopPriceLabel(g, labelX, labelY, p.priceCoins);
         }
         const keeper = activeShopKeeper(session);
         if (keeper && shopKeeperFrames) {
@@ -3277,7 +3509,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           itemBitmaps,
           hudSprites.swordPickup,
           currentRunSummary(),
-          runDiedAndRespawned,
+          leaderboardLocked,
         );
       } else {
         pauseMenuHits = { submit: { x: 0, y: 0, w: 0, h: 0 } };
@@ -3339,9 +3571,14 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
 
       if (player.health.isDead) {
-        deathMenuHits = drawDeathOverlay(g, currentRunSummary(), runDiedAndRespawned);
+        deathMenuHits = drawDeathOverlay(g, currentRunSummary(), leaderboardLocked);
       } else {
-        deathMenuHits = { submit: { x: 0, y: 0, w: 0, h: 0 } };
+        deathMenuHits = {
+          submit: { x: 0, y: 0, w: 0, h: 0 },
+          viewBoard: { x: 0, y: 0, w: 0, h: 0 },
+          restartNew: { x: 0, y: 0, w: 0, h: 0 },
+          retrySame: { x: 0, y: 0, w: 0, h: 0 },
+        };
       }
 
       if (pickupOverlay.isActive()) {
@@ -3373,6 +3610,27 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       fps = f;
       ups = u;
     },
+    onFatalError: (err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      runtimeCrash = msg;
+      reportUnknownCrash(err, "gameloop");
+      try {
+        fb.clear("#0e1218");
+        const g = fb.internalCtx;
+        g.fillStyle = "#1a222c";
+        g.fillRect(0, 0, INTERNAL_WIDTH, WORLD_VIEWPORT_H);
+        g.fillStyle = "#f0a0a0";
+        g.font = "12px monospace";
+        g.fillText("crashed — report sent (see Crashes page)", 16, 40);
+        g.fillStyle = "#c8d2dc";
+        g.fillText(msg.slice(0, 72), 16, 58);
+        g.fillStyle = "#12161c";
+        g.fillRect(0, WORLD_VIEWPORT_H, INTERNAL_WIDTH, HUD_HEIGHT);
+        fb.present();
+      } catch {
+        /* ignore secondary paint failures */
+      }
+    },
     endInputFrameAfterSimBatch: (ranAnyFixedSteps, lagSimFrozen) => {
       // Java GamePanel.endInputFrameAfterSimBatch: stash taps when sim skipped,
       // only flush edges after a batch that actually ran.
@@ -3387,6 +3645,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
     },
   });
+
+  setCrashContext({ seed, floorReached: floorOrdinal });
 
   function tickTurnAnim(pl: Player): void {
     const cur = pl.facing >= 0 ? 1 : -1;
@@ -3673,7 +3933,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   fb.canvas.focus({ preventScroll: true });
 
   return {
-    seed,
+    get seed() {
+      return seed;
+    },
     getRunSummary: () => currentRunSummary(),
     destroy: () => {
       loop.stop();
@@ -5108,6 +5370,7 @@ function collectWorldPickups(
   const hurtPose = player.hurtboxPose();
   for (let i = pickups.length - 1; i >= 0; i--) {
     const p = pickups[i]!;
+    if (p.priceCoins > 0) continue; // shop inventory: press-to-buy
     if (!p.intersectsPlayerHurt(hurtPose)) continue;
     if (p.kind === PickupKind.HEART) {
       if (player.health.isAtFullHealth) continue;

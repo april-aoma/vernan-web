@@ -1,4 +1,7 @@
+import { installCrashHandlers } from "./diagnostics/crashReporter";
 import { mount } from "./mount";
+
+installCrashHandlers();
 
 const root = document.querySelector("#vernan-root");
 if (!(root instanceof HTMLElement)) {

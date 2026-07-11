@@ -1,5 +1,6 @@
 import { JavaRandom, toJavaLong } from "../util/JavaRandom";
 import { javaShuffle } from "../util/javaCollections";
+import { javaHashSetIterationOrder } from "../util/javaHashMap";
 import {
   cellKey,
   RoomKind,
@@ -28,8 +29,8 @@ export function meetsTargets(
 
 /**
  * Insert SECRET / SUPER_SECRET cells (Java SecretRoomGraphPlacer).
- * Candidate enumeration sorts keys before expanding so HashSet order does not
- * break cross-runtime parity after shuffle.
+ * Candidate enumeration follows Java {@code new HashSet<>(cell.keySet())} order
+ * so {@code Collections.shuffle} sees the same list as desktop.
  */
 export function insertSecrets(
   base: DungeonLayout,
@@ -139,9 +140,8 @@ function degree(cell: Map<string, number>, gx: number, gy: number): number {
 function emptyAdjacentCandidates(cell: Map<string, number>): number[][] {
   const seen = new Set<string>();
   const out: number[][] = [];
-  // Stabilize vs Java HashSet: sort occupied keys before expanding neighbors.
-  const keys = [...cell.keys()].sort();
-  for (const k of keys) {
+  // JS Map is insertion-ordered; Java iterates new HashSet<>(cell.keySet()).
+  for (const k of javaHashSetIterationOrder(cell.keys())) {
     const comma = k.indexOf(",");
     const gx = Number(k.slice(0, comma));
     const gy = Number(k.slice(comma + 1));

@@ -42,6 +42,8 @@ export class WorldPickup {
   /** Animation timer (Java animTime) — heart strip at 12 FPS. */
   animTime = 0;
   ageSec = 0;
+  /** Shop inventory price; >0 skips auto-collect (Java WorldPickup.priceCoins). */
+  priceCoins = 0;
 
   constructor(kind: PickupKind, anchorX: number, anchorY: number, vx: number, vy: number) {
     this.kind = kind;
@@ -78,6 +80,18 @@ export class WorldPickup {
       0,
       0,
     );
+  }
+
+  /** Shop heart/key: stationary, priced (Java WorldPickup.createShopPickup). */
+  static createShopPickup(
+    kind: PickupKind,
+    feetCenterX: number,
+    feetY: number,
+    priceCoins: number,
+  ): WorldPickup {
+    const p = WorldPickup.createFromDeferred(kind, feetCenterX, feetY);
+    p.priceCoins = Math.max(0, priceCoins);
+    return p;
   }
 
   /** Room-clear reward pop (Java WorldPickup.create ROOM_CLEAR arc). */
@@ -128,6 +142,8 @@ export class WorldPickup {
   update(dt: number, map: TileMap): void {
     this.ageSec += dt;
     this.animTime += dt;
+    // Priced shop inventory sits still (Java staticNoPhysics).
+    if (this.priceCoins > 0) return;
     this.angle += this.omega * dt;
     this.vy = Math.min(MAX_DOWN, this.vy + GRAVITY * dt);
 

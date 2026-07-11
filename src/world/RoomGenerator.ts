@@ -44,6 +44,10 @@ import {
 } from "./VerticalSeamGeometry";
 import type { PlacedRoomObject } from "./PlacedRoomObject";
 import { WorldPickup } from "./WorldPickup";
+import type { DecoStamp } from "../tileset/placeAmbientDeco";
+import { placeAmbientDecoClusters } from "../tileset/placeAmbientDeco";
+import { resolveBiome } from "../tileset/NormalRoomBiomes";
+import type { TilesetProject } from "../tileset/TilesetProject";
 
 export const PLAYER_STAND_SPAWN_H = 18;
 const GOLDEN = 0x9e3779b97f4a7c15n;
@@ -71,6 +75,8 @@ export type RoomArtData = {
     ty: number;
     tileId: string;
     channel: 0 | 1;
+    /** Procedural ARGB tag — required for AmbientClusterMap (red/blue blobs). */
+    argb?: number;
     breakableDeco?: boolean;
     groundHugging?: boolean;
   }>;
@@ -105,6 +111,7 @@ export type GeneratedRoom = {
   ladderFromSouthSpawnX: number;
   ladderFromSouthSpawnY: number;
   enemySpawns: EnemySpawn[];
+  genAmbientDecoStamps?: DecoStamp[];
   /** ITEM / secret pedestal rooms: deferred item id (null until decks resolve). */
   itemPedestal: ItemPedestal | null;
   /** SECRET / SUPER_SECRET deferred floor pickups (spawned on enter; cleared when mounted). */
@@ -147,6 +154,7 @@ export function generateRoomShell(
   kind: RoomKind,
   finishOpts?: SecretGenFinishOptions | null,
   gridY: number = UNKNOWN_DUNGEON_GRID_Y,
+  decoCtx?: { project: TilesetProject; floorOrdinal: number } | null,
 ): GeneratedRoom {
   const largeArena = kind === RoomKind.NORMAL || kind === RoomKind.SECRET;
   const w = Math.max(largeArena ? 24 : 10, widthTiles);
@@ -392,6 +400,23 @@ export function generateRoomShell(
     stripSpuriousLaddersFromGrid(grid, w, h, ladderTx, groundY);
   }
 
+  // Java: ambient deco on ascii grid before enforce / step breakables, continuing room rng.
+  let genAmbientDecoStamps: DecoStamp[] | undefined;
+  if (decoCtx?.project) {
+    const earlyMap = TileMap.fromAscii(grid.map((row) => row.join("")));
+    const biome = resolveBiome(decoCtx.project, kind, seed, decoCtx.floorOrdinal);
+    genAmbientDecoStamps = placeAmbientDecoClusters(
+      decoCtx.project,
+      earlyMap,
+      seed,
+      biome,
+      ladderTx >= 0 ? ladderTx : -1,
+      decoCtx.floorOrdinal,
+      kind,
+      rng,
+    );
+  }
+
   if (kind === RoomKind.NORMAL || kind === RoomKind.BOSS || kind === RoomKind.ITEM) {
     enforceOnGrid(grid, w, h, groundY);
   }
@@ -545,6 +570,7 @@ export function generateRoomShell(
     ladderFromSouthSpawnX,
     ladderFromSouthSpawnY,
     enemySpawns: [],
+    genAmbientDecoStamps,
     itemPedestal,
     deferredFloorPickups: [],
   };

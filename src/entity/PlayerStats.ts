@@ -108,6 +108,25 @@ export class PlayerStats {
     return this.attackDamage * (1 + this.damageMultiplierBonus);
   }
 
+  /** Clear run-progress fields before a full restart (Java Player.resetForNewRun economy/stats). */
+  resetForNewRun(): void {
+    this.money = 0;
+    this.keys = 0;
+    this.mysteryGiftRoll = MysteryGiftRoll.NONE;
+    this.plugDamageBonus = 0;
+    this.plugBonusFramesRemaining = 0;
+    this.leotardDamageBonus = 0;
+    this.skirtGroundTraction = 0;
+    this.ironLungRoomsCleared = 0;
+    this.jumpVel = JUMP_VEL;
+    this.groundAccel = GROUND_ACCEL;
+    this.groundBrake = GROUND_BRAKE;
+    this.groundFriction = GROUND_FRICTION;
+    this.airAccel = AIR_ACCEL;
+    this.airBrake = AIR_BRAKE;
+    this.kaleidoscopeEye.reset();
+  }
+
   applyItemPassives(inv: PlayerItemInventory, catalog: ItemCatalog): void {
     this.maxHealth = MAX_HEALTH;
     this.attackDamage = ATTACK_DAMAGE;

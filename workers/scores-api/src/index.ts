@@ -1,5 +1,7 @@
 /**
- * Vernan live scores API — GET/POST /api/scores for the static game client.
+ * Vernan live scores + crash reports API for the static game client.
+ *   GET/POST /api/scores
+ *   GET/POST /api/crashes
  */
 
 export interface Env {
@@ -22,10 +24,26 @@ type ScoreEntry = {
   createdAt: string;
 };
 
+type CrashEntry = {
+  id: string;
+  message: string;
+  stack: string;
+  source: string;
+  pageUrl: string;
+  client: string;
+  seed: number | null;
+  floorReached: number | null;
+  userAgent: string;
+  createdAt: string;
+};
+
 const SCORES_KEY = "scores";
+const CRASHES_KEY = "crashes";
 const MAX_SCORES = 200;
+const MAX_CRASHES = 100;
 const RATE_LIMIT_WINDOW_SEC = 60;
 const RATE_LIMIT_MAX = 12;
+const CRASH_RATE_LIMIT_MAX = 8;
 
 const ALLOWED_ORIGINS = new Set([
   "https://april-aoma.github.io",
@@ -69,6 +87,10 @@ function compareScores(a: ScoreEntry, b: ScoreEntry): number {
   return a.createdAt.localeCompare(b.createdAt);
 }
 
+function compareCrashes(a: CrashEntry, b: CrashEntry): number {
+  return b.createdAt.localeCompare(a.createdAt);
+}
+
 function sanitizePlayerName(raw: unknown): string {
   const s = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim().slice(0, 20) : "";
   return s.length > 0 ? s : "Anonymous";
@@ -84,6 +106,11 @@ function sanitizeClient(raw: unknown): string {
   const s = raw.trim().slice(0, 32);
   if (/^(web|desktop)_0\.\d+\.\d+$/.test(s)) return s;
   return "";
+}
+
+function sanitizeText(raw: unknown, max: number): string {
+  if (typeof raw !== "string") return "";
+  return raw.replace(/\0/g, "").slice(0, max);
 }
 
 function formatUtcTimestamp(iso: string): string {
@@ -111,9 +138,33 @@ function isScoreEntry(v: unknown): v is ScoreEntry {
   );
 }
 
+function isCrashEntry(v: unknown): v is CrashEntry {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.id === "string" &&
+    typeof o.message === "string" &&
+    typeof o.stack === "string" &&
+    typeof o.source === "string" &&
+    typeof o.pageUrl === "string" &&
+    typeof o.client === "string" &&
+    typeof o.userAgent === "string" &&
+    typeof o.createdAt === "string" &&
+    (o.seed === null || typeof o.seed === "number") &&
+    (o.floorReached === null || typeof o.floorReached === "number")
+  );
+}
+
 function normalizeKillDifficulty(v: unknown): number {
   if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return 0;
   return Math.floor(v);
+}
+
+function optionalInt(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.floor(n);
 }
 
 async function readScores(env: Env): Promise<ScoreEntry[]> {
@@ -144,7 +195,38 @@ async function writeScores(env: Env, entries: ScoreEntry[]): Promise<void> {
   await env.SCORES.put(SCORES_KEY, JSON.stringify(trimmed));
 }
 
-function validateBody(body: Record<string, unknown>): Omit<ScoreEntry, "id" | "createdAt"> {
+async function readCrashes(env: Env): Promise<CrashEntry[]> {
+  const raw = await env.SCORES.get(CRASHES_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(isCrashEntry)
+      .map((e) => ({
+        ...e,
+        message: sanitizeText(e.message, 500),
+        stack: sanitizeText(e.stack, 8000),
+        source: sanitizeText(e.source, 64) || "unknown",
+        pageUrl: sanitizeText(e.pageUrl, 500),
+        client: sanitizeClient(e.client),
+        seed: optionalInt(e.seed),
+        floorReached: optionalInt(e.floorReached),
+        userAgent: sanitizeText(e.userAgent, 300),
+        createdAt: formatUtcTimestamp(e.createdAt),
+      }))
+      .sort(compareCrashes);
+  } catch {
+    return [];
+  }
+}
+
+async function writeCrashes(env: Env, entries: CrashEntry[]): Promise<void> {
+  const trimmed = entries.sort(compareCrashes).slice(0, MAX_CRASHES);
+  await env.SCORES.put(CRASHES_KEY, JSON.stringify(trimmed));
+}
+
+function validateScoreBody(body: Record<string, unknown>): Omit<ScoreEntry, "id" | "createdAt"> {
   const seed = Number(body.seed);
   const floorReached = Number(body.floorReached);
   const coins = Number(body.coins);
@@ -184,13 +266,148 @@ function validateBody(body: Record<string, unknown>): Omit<ScoreEntry, "id" | "c
   };
 }
 
-async function rateLimited(env: Env, ip: string): Promise<boolean> {
-  const key = `rl:${ip}`;
+function validateCrashBody(body: Record<string, unknown>): Omit<CrashEntry, "id" | "createdAt"> {
+  const message = sanitizeText(body.message, 500).trim();
+  if (!message) throw new Error("Invalid message");
+  const source = sanitizeText(body.source, 64).trim() || "unknown";
+  const seed = optionalInt(body.seed);
+  const floorReached = optionalInt(body.floorReached);
+  if (floorReached !== null && (floorReached < 0 || floorReached > 500)) {
+    throw new Error("Invalid floor");
+  }
+
+  return {
+    message,
+    stack: sanitizeText(body.stack, 8000),
+    source,
+    pageUrl: sanitizeText(body.pageUrl ?? body.url, 500),
+    client: sanitizeClient(body.client),
+    seed,
+    floorReached,
+    userAgent: sanitizeText(body.userAgent, 300),
+  };
+}
+
+async function rateLimited(
+  env: Env,
+  ip: string,
+  prefix: string,
+  max: number,
+): Promise<boolean> {
+  const key = `${prefix}:${ip}`;
   const raw = await env.SCORES.get(key);
   const count = raw ? Number(raw) : 0;
-  if (count >= RATE_LIMIT_MAX) return true;
+  if (count >= max) return true;
   await env.SCORES.put(key, String(count + 1), { expirationTtl: RATE_LIMIT_WINDOW_SEC });
   return false;
+}
+
+function clientIp(request: Request): string {
+  return (
+    request.headers.get("CF-Connecting-IP") ??
+    request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ??
+    "unknown"
+  );
+}
+
+async function handleScores(
+  request: Request,
+  env: Env,
+  origin: string | null,
+  url: URL,
+): Promise<Response> {
+  if (request.method === "GET") {
+    const limitRaw = Number(url.searchParams.get("limit") ?? "50");
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(Math.max(Math.floor(limitRaw), 1), MAX_SCORES)
+      : 50;
+    const rows = (await readScores(env)).slice(0, limit);
+    return json(rows, 200, origin);
+  }
+
+  if (request.method === "POST") {
+    if (await rateLimited(env, clientIp(request), "rl", RATE_LIMIT_MAX)) {
+      return json({ error: "Too many requests" }, 429, origin);
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      return json({ error: "Invalid JSON" }, 400, origin);
+    }
+
+    let fields: Omit<ScoreEntry, "id" | "createdAt">;
+    try {
+      fields = validateScoreBody(body);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Invalid score";
+      return json({ error: msg }, 400, origin);
+    }
+
+    const entry: ScoreEntry = {
+      id: crypto.randomUUID(),
+      ...fields,
+      createdAt: utcNow(),
+    };
+
+    const existing = await readScores(env);
+    existing.push(entry);
+    await writeScores(env, existing);
+    return json(entry, 201, origin);
+  }
+
+  return json({ error: "Method not allowed" }, 405, origin);
+}
+
+async function handleCrashes(
+  request: Request,
+  env: Env,
+  origin: string | null,
+  url: URL,
+): Promise<Response> {
+  if (request.method === "GET") {
+    const limitRaw = Number(url.searchParams.get("limit") ?? "50");
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(Math.max(Math.floor(limitRaw), 1), MAX_CRASHES)
+      : 50;
+    const rows = (await readCrashes(env)).slice(0, limit);
+    return json(rows, 200, origin);
+  }
+
+  if (request.method === "POST") {
+    if (await rateLimited(env, clientIp(request), "rl:crash", CRASH_RATE_LIMIT_MAX)) {
+      return json({ error: "Too many requests" }, 429, origin);
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      return json({ error: "Invalid JSON" }, 400, origin);
+    }
+
+    let fields: Omit<CrashEntry, "id" | "createdAt">;
+    try {
+      fields = validateCrashBody(body);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Invalid crash";
+      return json({ error: msg }, 400, origin);
+    }
+
+    const entry: CrashEntry = {
+      id: crypto.randomUUID(),
+      ...fields,
+      createdAt: utcNow(),
+    };
+
+    const existing = await readCrashes(env);
+    existing.unshift(entry);
+    await writeCrashes(env, existing);
+    return json({ id: entry.id, createdAt: entry.createdAt }, 201, origin);
+  }
+
+  return json({ error: "Method not allowed" }, 405, origin);
 }
 
 export default {
@@ -202,55 +419,13 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    if (url.pathname !== "/api/scores") {
-      return json({ error: "Not found" }, 404, origin);
+    if (url.pathname === "/api/scores") {
+      return handleScores(request, env, origin, url);
+    }
+    if (url.pathname === "/api/crashes") {
+      return handleCrashes(request, env, origin, url);
     }
 
-    if (request.method === "GET") {
-      const limitRaw = Number(url.searchParams.get("limit") ?? "50");
-      const limit = Number.isFinite(limitRaw)
-        ? Math.min(Math.max(Math.floor(limitRaw), 1), MAX_SCORES)
-        : 50;
-      const rows = (await readScores(env)).slice(0, limit);
-      return json(rows, 200, origin);
-    }
-
-    if (request.method === "POST") {
-      const ip =
-        request.headers.get("CF-Connecting-IP") ??
-        request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ??
-        "unknown";
-      if (await rateLimited(env, ip)) {
-        return json({ error: "Too many requests" }, 429, origin);
-      }
-
-      let body: Record<string, unknown>;
-      try {
-        body = (await request.json()) as Record<string, unknown>;
-      } catch {
-        return json({ error: "Invalid JSON" }, 400, origin);
-      }
-
-      let fields: Omit<ScoreEntry, "id" | "createdAt">;
-      try {
-        fields = validateBody(body);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Invalid score";
-        return json({ error: msg }, 400, origin);
-      }
-
-      const entry: ScoreEntry = {
-        id: crypto.randomUUID(),
-        ...fields,
-        createdAt: utcNow(),
-      };
-
-      const existing = await readScores(env);
-      existing.push(entry);
-      await writeScores(env, existing);
-      return json(entry, 201, origin);
-    }
-
-    return json({ error: "Method not allowed" }, 405, origin);
+    return json({ error: "Not found" }, 404, origin);
   },
 };

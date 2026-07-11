@@ -13,6 +13,7 @@ import {
 } from "../world/TileMap";
 import type { BiomeResolution } from "./NormalRoomBiomes";
 import type { AutotileObject, DecoClusterFallback, DecoPlacementRule, TilesetProject } from "./TilesetProject";
+import { FLOOR_SCOPE_ALL } from "./TilesetProject";
 import type { TerrainTileBridge } from "./TerrainTileBridge";
 import { groundYFromMap } from "../world/SecretRoomMapBuild";
 
@@ -33,6 +34,11 @@ export type DecoStamp = {
   tileId: string;
   /** 0 = red channel tint hint, 1 = blue */
   channel: 0 | 1;
+  /**
+   * Procedural ARGB tag (Java DecoTile.argb). Ambient cluster maps only count
+   * {@link AMBIENT_DECO_ARGB_RED} / {@link AMBIENT_DECO_ARGB_BLUE}.
+   */
+  argb?: number;
   /** Rolled at gen from canBreakAsDeco chance (Java DecoTile.breakableDeco). */
   breakableDeco?: boolean;
   /** Ground-hugging (scatter grass etc.) — Java DecoTile.groundHugging. */
@@ -51,40 +57,24 @@ export function placeAmbientDecoClusters(
   contentSeed: bigint,
   biome: BiomeResolution,
   ladderColumnTx: number,
-  floorOrdinal = 1,
+  _floorOrdinal = 1,
   roomKind: RoomKind = RoomKind.NORMAL,
+  /** Continue room-gen RNG (Java); default salted stream for legacy enrich-only path. */
+  rng: JavaRandom = new JavaRandom(contentSeed ^ 0xdec07een),
 ): DecoStamp[] {
   const w = map.getWidth();
   const h = map.getHeight();
-  const rng = new JavaRandom(contentSeed ^ 0xdec07een);
   let cmin = biome.decoClusterCountMin;
   let cmax = biome.decoClusterCountMax;
   if (cmax < cmin) [cmin, cmax] = [cmax, cmin];
   const clusters = cmin + (cmax > cmin ? rng.nextInt(cmax - cmin + 1) : 0);
 
-  const groundScatter = project.groundScatterTileIds();
-  const poolMembers = project.decoPoolMemberTileIds(biome.decoPool);
-  const poolRed = expandDecoPoolEntries(
-    project,
-    biome.decoPool,
-    biome.decoClusterFallback,
-    "red",
-    groundScatter,
-    floorOrdinal,
-    poolMembers,
+  // Java SeedParityDump: mergedDecoTilePoolForRoomKind(..., ALL_FLOORS) — same list for red+blue.
+  const poolTiles = project.mergedDecoTilePoolForRoomKind(
     roomKind,
+    FLOOR_SCOPE_ALL,
+    /* mergeRoot */ true,
   );
-  const poolBlue = expandDecoPoolEntries(
-    project,
-    biome.decoPool,
-    biome.decoClusterFallback,
-    "blue",
-    groundScatter,
-    floorOrdinal,
-    poolMembers,
-    roomKind,
-  );
-  if (!poolRed.length && !poolBlue.length) return [];
 
   const stamps: DecoStamp[] = [];
   const occupied = new Set<string>();
@@ -92,8 +82,7 @@ export function placeAmbientDecoClusters(
   for (let i = 0; i < clusters; i++) {
     const red = rng.nextBoolean();
     const channel: 0 | 1 = red ? 0 : 1;
-    const pool = red ? poolRed : poolBlue;
-    if (!pool.length) continue;
+    const argb = red ? AMBIENT_DECO_ARGB_RED : AMBIENT_DECO_ARGB_BLUE;
     const cx = 2 + rng.nextInt(Math.max(1, w - 4));
     const baseY = 2 + rng.nextInt(Math.max(1, h - 6));
     const cw = 3 + rng.nextInt(5);
@@ -103,46 +92,102 @@ export function placeAmbientDecoClusters(
         const tx = cx + dx;
         const ty = baseY + dy;
         if (tx <= 1 || tx >= w - 1) continue;
-        if (ty <= 1 || ty >= h - 1) continue;
         if (ladderColumnTx >= 0 && tx === ladderColumnTx) continue;
-        if (map.tileAt(tx, ty) !== TILE_EMPTY) continue;
+        if (ty <= 1 || ty >= h - 1) continue;
         const nx = dx / cw;
         const ny = dy / ch;
         if (nx * nx + ny * ny > 1.0) continue;
         if (rng.nextInt(7) === 0) continue;
-        const key = `${tx},${ty}`;
-        if (occupied.has(key)) continue;
-
-        const entry = pool[rng.nextInt(pool.length)]!;
-        if (entry.kind === "full" && entry.obj) {
-          const placed = stampFullObject(
-            project,
-            map,
-            entry.obj,
-            tx,
-            ty,
-            channel,
-            occupied,
-            ladderColumnTx,
-            rng,
-          );
-          stamps.push(...placed);
-        } else if (entry.tileId && project.cell(entry.tileId)) {
-          occupied.add(key);
-          stamps.push({
-            tx,
-            ty,
-            tileId: entry.tileId,
-            channel,
-            breakableDeco: rollBreakableDeco(project, entry.tileId, rng),
-            groundHugging: false,
-          });
-        }
+        addAmbientDecoBlobFromTilePool(
+          project,
+          map,
+          stamps,
+          occupied,
+          tx,
+          ty,
+          channel,
+          argb,
+          poolTiles,
+          biome.decoClusterFallback,
+          ladderColumnTx,
+          rng,
+        );
       }
     }
   }
 
   return stamps;
+}
+
+/**
+ * Java RoomGenerator.addDecoBlob ambient path with List&lt;String&gt; pool
+ * (mergedDecoTilePoolForRoomKind).
+ */
+function addAmbientDecoBlobFromTilePool(
+  project: TilesetProject,
+  map: TileMap,
+  stamps: DecoStamp[],
+  occupied: Set<string>,
+  tx: number,
+  ty: number,
+  channel: 0 | 1,
+  argb: number,
+  pool: string[],
+  fallback: DecoClusterFallback,
+  ladderColumnTx: number,
+  rng: JavaRandom,
+): void {
+  if (pool.length) {
+    const tileId = pool[rng.nextInt(pool.length)]!;
+    const owner = project.objectByTileId.get(tileId);
+    // Java DecoCellOccupancy.isOrphanFullObjectMemberTile — skip non-anchor full-object members.
+    if (owner?.isFullObject) {
+      const anchor = owner.anchorTileId || owner.tileIds[0];
+      if (anchor && tileId !== anchor) return;
+    }
+    if (owner?.isFullObject && owner.memberGraphLayout) {
+      const placed = stampFullObject(
+        project,
+        map,
+        owner,
+        tx,
+        ty,
+        channel,
+        argb,
+        occupied,
+        ladderColumnTx,
+        rng,
+      );
+      stamps.push(...placed);
+      return;
+    }
+    if (project.cell(tileId)) {
+      occupied.add(`${tx},${ty}`);
+      stamps.push({
+        tx,
+        ty,
+        tileId,
+        channel,
+        argb,
+        breakableDeco: rollBreakableDeco(project, tileId, rng),
+        groundHugging: false,
+      });
+      return;
+    }
+    return;
+  }
+  const fb = argb === AMBIENT_DECO_ARGB_BLUE ? fallback.blue : fallback.red;
+  if (!fb || !project.cell(fb)) return;
+  occupied.add(`${tx},${ty}`);
+  stamps.push({
+    tx,
+    ty,
+    tileId: fb,
+    channel,
+    argb,
+    breakableDeco: rollBreakableDeco(project, fb, rng),
+    groundHugging: false,
+  });
 }
 
 /**
@@ -651,68 +696,6 @@ function neighborDisplayId(
   );
 }
 
-type PoolEntry =
-  | { kind: "tile"; tileId: string }
-  | { kind: "full"; obj: AutotileObject; tileId: string };
-
-function expandDecoPoolEntries(
-  project: TilesetProject,
-  pool: Array<{ objectId: string; weight: number }>,
-  fallback: DecoClusterFallback,
-  channel: "red" | "blue",
-  groundScatter: Set<string>,
-  floorOrdinal: number,
-  poolMembers: Set<string>,
-  roomKind: RoomKind,
-): PoolEntry[] {
-  const out: PoolEntry[] = [];
-  for (const entry of pool) {
-    const count = Math.max(0, Math.round(entry.weight * 10));
-    if (count <= 0) continue;
-    const obj = project.objectById.get(entry.objectId);
-    if (obj && !objectAllowedInRoomKind(obj, roomKind)) continue;
-    if (obj?.isFullObject && obj.memberGraphLayout && obj.tileIds.length) {
-      if (!objectMatchesChannel(obj, channel)) continue;
-      const anchor = obj.tileIds[0]!;
-      if (!tileEligibleForAmbient(project, anchor, groundScatter, floorOrdinal, poolMembers, roomKind)) continue;
-      for (let i = 0; i < count; i++) {
-        out.push({ kind: "full", obj, tileId: anchor });
-      }
-      continue;
-    }
-    if (obj?.tileIds.length) {
-      if (!objectMatchesChannel(obj, channel)) continue;
-      const members =
-        obj.objectType === "tile+variations" || !obj.objectType
-          ? obj.tileIds
-          : [obj.tileIds[0]!];
-      for (const mid of members) {
-        if (!tileEligibleForAmbient(project, mid, groundScatter, floorOrdinal, poolMembers, roomKind)) continue;
-        for (let i = 0; i < count; i++) out.push({ kind: "tile", tileId: mid });
-      }
-      continue;
-    }
-    if (project.cell(entry.objectId)) {
-      const ch = project.decoBlobChannelForTile(entry.objectId);
-      if (ch !== "all" && ch !== channel) continue;
-      if (!tileEligibleForAmbient(project, entry.objectId, groundScatter, floorOrdinal, poolMembers, roomKind)) continue;
-      for (let i = 0; i < count; i++) out.push({ kind: "tile", tileId: entry.objectId });
-    }
-  }
-  if (!out.length) {
-    const fb = channel === "red" ? fallback.red : fallback.blue;
-    if (tileEligibleForAmbient(project, fb, groundScatter, floorOrdinal, poolMembers, roomKind, true)) {
-      out.push({ kind: "tile", tileId: fb });
-    }
-  }
-  return out;
-}
-
-function objectMatchesChannel(obj: AutotileObject, channel: "red" | "blue"): boolean {
-  return obj.decoBlobClusterChannel === "all" || obj.decoBlobClusterChannel === channel;
-}
-
-/** Java LogicalObjectLayout.roomKindsWhitelist — object-level allow list. */
 function objectAllowedInRoomKind(obj: AutotileObject, roomKind: RoomKind): boolean {
   if (!obj.roomKinds.length) return true;
   const rk = (RoomKind[roomKind] ?? "NORMAL").toUpperCase();
@@ -822,6 +805,7 @@ function stampFullObject(
   anchorTx: number,
   anchorTy: number,
   channel: 0 | 1,
+  argb: number,
   occupied: Set<string>,
   ladderColumnTx: number,
   rng: JavaRandom,
@@ -873,6 +857,7 @@ function stampFullObject(
       ty,
       tileId: c.tileId,
       channel,
+      argb,
       breakableDeco: rollBreakableDeco(project, c.tileId, rng),
       groundHugging: groundHug,
     });
@@ -885,6 +870,7 @@ function stampFullObject(
     anchorTx,
     resolvedTy,
     channel,
+    argb,
     layoutAnchor,
     cells,
     rng,
@@ -1019,7 +1005,8 @@ export function placeRoomKindDecoOverlays(
       occupied,
       cx - 1,
       gyc,
-      1,
+      0,
+      ITEM_DECO_OVERLAY_ARGB,
       ladderColumnTx,
       rng,
     );
@@ -1050,7 +1037,8 @@ export function placeRoomKindDecoOverlays(
       occupied,
       baseGx + 2,
       gyc,
-      1,
+      0,
+      SHOP_DECO_OVERLAY_ARGB,
       ladderColumnTx,
       rng,
     );
@@ -1084,6 +1072,7 @@ function stampItemShopBackdropWall(
   backdropLeftTx: number,
   groundRowTy: number,
   channel: 0 | 1,
+  argb: number,
   ladderColumnTx: number,
   rng: JavaRandom,
 ): void {
@@ -1104,6 +1093,7 @@ function stampItemShopBackdropWall(
     anchorTx,
     anchorTy,
     channel,
+    argb,
     occupied,
     ladderColumnTx,
     rng,
@@ -1144,7 +1134,8 @@ function stampOverlayBlobCell(
           owner,
           tx,
           ty,
-          argb === ITEM_DECO_OVERLAY_ARGB || argb === SHOP_DECO_OVERLAY_ARGB ? 0 : 1,
+          argb === AMBIENT_DECO_ARGB_BLUE ? 1 : 0,
+          argb,
           occupied,
           ladderColumnTx,
           rng,
@@ -1166,6 +1157,7 @@ function stampOverlayBlobCell(
     ty,
     tileId,
     channel: argb === AMBIENT_DECO_ARGB_BLUE ? 1 : 0,
+    argb,
     groundHugging: proceduralDecoEligibleGroundCell(map, tx, ty),
   });
 }
@@ -1231,6 +1223,7 @@ function tryStampStatuePedestalCompanion(
   anchorTx: number,
   anchorTy: number,
   channel: 0 | 1,
+  argb: number,
   layoutAnchorTileId: string,
   stamp: FootprintCell[],
   rng: JavaRandom,
@@ -1261,6 +1254,7 @@ function tryStampStatuePedestalCompanion(
       ty: baseTy,
       tileId: STATUE_PEDESTAL_TILE_ID,
       channel,
+      argb,
       breakableDeco: rollBreakableDeco(project, STATUE_PEDESTAL_TILE_ID, rng),
       groundHugging: true,
     });
@@ -1479,6 +1473,7 @@ export function scatterEligibleGroundDeco(
           ty,
           tileId,
           channel: 0,
+          argb: 0,
           breakableDeco: false,
           groundHugging: true,
         });

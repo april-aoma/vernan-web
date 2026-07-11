@@ -20,17 +20,12 @@ import {
   CRAWLER_SPAWN_H,
   GOLDEN_ROACH_SPAWN_H,
   GOLDEN_ROACH_SPAWN_W,
-  JACK_BLUE_SPAWN_H,
-  MULTILIMBER_SPAWN_H,
-  MOUSE_SPAWN_H,
-  PENISMAN_SPAWN_H,
-  ROLLING_HEAD_SPAWN_H,
 } from "../config/CombatStats";
 import { TILE_SIZE } from "../specs";
 import { AmbientClusterMap } from "./AmbientClusterMap";
 import { RoomKind } from "./DungeonTypes";
 import type { GeneratedRoom } from "./RoomGenerator";
-import { TileMap } from "./TileMap";
+import { TILE_EMPTY, TileMap } from "./TileMap";
 
 export type BossSpawnKind = "possessed" | "nephilim";
 export type EnemySpawnKind = ChallengeSpawnKind | BossSpawnKind;
@@ -102,12 +97,37 @@ export function rollEnemySpawns(
   return out;
 }
 
-/** Cluster map for golden roach — prefers stamped deco, falls back to predicted cells. */
+/** Cluster map for golden roach — prefers stamped ambient deco (Java AmbientClusterMap.build). */
 export function clustersForRoom(g: GeneratedRoom, contentSeed: bigint): AmbientClusterMap {
+  // Gen-time ambient (Java decoTiles before/after enrich) — prefer over predicted.
+  // After enrich, art.decoStamps include placement-rule filters + scatter (non-ambient ARGB).
   if (g.art?.decoStamps?.length) {
     return AmbientClusterMap.buildFromDeco(g.map, g.art.decoStamps);
   }
+  if (g.genAmbientDecoStamps?.length) {
+    return AmbientClusterMap.buildFromDeco(g.map, g.genAmbientDecoStamps);
+  }
   return AmbientClusterMap.buildPredicted(g.map, contentSeed, g.ladderColumnTx);
+}
+
+/**
+ * Java {@code RoomGenerator.applyPostGenerationEnemies} — re-roll after deco is final
+ * so golden-roach clusters match desktop.
+ */
+export function applyPostGenerationEnemies(
+  rooms: GeneratedRoom[],
+  layout: { room(i: number): { contentSeed: bigint; kind: RoomKind } },
+  floorOrdinal: number,
+): void {
+  for (let i = 0; i < rooms.length; i++) {
+    const node = layout.room(i);
+    rooms[i]!.enemySpawns = rollEnemySpawns(
+      rooms[i]!,
+      node.contentSeed,
+      node.kind,
+      floorOrdinal,
+    );
+  }
 }
 
 function pickDistinctTypes(
@@ -228,32 +248,19 @@ function tryFloorColumn(
   map: TileMap,
   g: GeneratedRoom,
   rng: JavaRandom,
-  kind: ChallengeSpawnKind,
+  _kind: ChallengeSpawnKind,
 ): { x: number; y: number } | null {
   const w = map.getWidth();
   const margin = Math.min(8, Math.max(2, Math.floor(w / 5)));
   const ladderTx = g.ladderColumnTx;
-  const spawnH =
-    kind === "mouse"
-      ? MOUSE_SPAWN_H
-      : kind === "penisman"
-        ? PENISMAN_SPAWN_H
-        : kind === "jack_blue"
-          ? JACK_BLUE_SPAWN_H
-          : kind === "rolling_head"
-            ? ROLLING_HEAD_SPAWN_H
-            : kind === "multilimber"
-              ? MULTILIMBER_SPAWN_H
-              : CRAWLER_SPAWN_H;
   for (let attempt = 0; attempt < 24; attempt++) {
     const x = margin + rng.nextInt(Math.max(1, w - margin * 2));
     if (ladderTx >= 0 && Math.abs(x - ladderTx) <= 1) continue;
     if (isDoorColumn(g, x)) continue;
     if (!canSpawnEnemyAt(map, x)) continue;
-    const groundTop = map.groundTopWorldYAtColumn(x);
     return {
       x: x * TILE_SIZE,
-      y: groundTop - spawnH,
+      y: enemySpawnAnchorYPx(map, x),
     };
   }
   return null;
@@ -284,10 +291,12 @@ function isDoorColumn(g: GeneratedRoom, tx: number): boolean {
 }
 
 function canSpawnEnemyAt(map: TileMap, tx: number): boolean {
-  if (tx <= 0 || tx >= map.getWidth() - 1) return false;
-  const groundTop = map.groundTopWorldYAtColumn(tx);
-  const footTy = Math.floor(groundTop / TILE_SIZE);
-  if (!map.isStandableFloorTile(tx, footTy) && !map.isSolidTile(tx, footTy)) return false;
-  if (map.isSolidTile(tx, footTy - 1)) return false;
-  return true;
+  // Java RoomGenerator.canSpawnEnemyAt
+  const yPx = enemySpawnAnchorYPx(map, tx);
+  if (yPx < TILE_SIZE) return false;
+  const floorRow = Math.floor((yPx + CRAWLER_SPAWN_H) / TILE_SIZE);
+  if (floorRow < 1 || floorRow >= map.getHeight() - 1) return false;
+  if (!map.isStandableFloorTile(tx, floorRow)) return false;
+  const headRow = Math.floor(yPx / TILE_SIZE);
+  return headRow >= 1 && map.tileAt(tx, headRow) === TILE_EMPTY;
 }

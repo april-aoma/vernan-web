@@ -19,6 +19,7 @@ import {
 } from "./placeProceduralPlacedProps";
 import type { TilesetProject } from "./TilesetProject";
 import type { BuiltDungeon } from "../world/buildDungeon";
+import { applyPostGenerationEnemies } from "../world/EnemySpawnBudget";
 import type { GeneratedRoom, RoomArtData } from "../world/RoomGenerator";
 import { regroundItemPedestal } from "../world/RoomGenerator";
 
@@ -27,9 +28,10 @@ import { regroundItemPedestal } from "../world/RoomGenerator";
  * Order mirrors Java: ambient clusters → placed props → DecoPlacementRules.apply
  * (spawn surface / spawnWeight / preferAdjacent / preferAbove) → ground scatter →
  * drop incomplete packaged footprints → refresh ground-hugging → flank bake →
- * evict deco under props.
+ * evict deco under props → {@link applyPostGenerationEnemies}.
  * Idempotent: skips re-stamp when art.decoStamps already present (regrounds only);
  * still re-places props when pools are empty / missing so art stays consistent.
+ * Enemy spawns are always re-rolled after deco so golden-roach clusters match Java.
  */
 export function enrichDungeonArt(
   dungeon: BuiltDungeon,
@@ -41,6 +43,8 @@ export function enrichDungeonArt(
     const seed = contentSeeds[i] ?? 0n;
     enrichRoomArt(room, project, seed, dungeon.floorOrdinal);
   }
+  // Java: deco finalized in generate + DecoPlacementRules.apply, then applyPostGenerationEnemies.
+  applyPostGenerationEnemies(dungeon.rooms, dungeon.layout, dungeon.floorOrdinal);
 }
 
 export function enrichRoomArt(
@@ -97,16 +101,19 @@ export function enrichRoomArt(
     return room.art;
   }
 
-  // Java order: clusters → props → apply (spawn/adjacent/prefer-above) → scatter → cleanup.
-  let decoStamps = placeAmbientDecoClusters(
-    project,
-    room.map,
-    contentSeed,
-    biome,
-    room.ladderColumnTx,
-    floorOrdinal,
-    room.kind,
-  );
+  // Java order: gen-time ambient clusters (or salted enrich fallback) → props → apply → scatter.
+  let decoStamps =
+    room.genAmbientDecoStamps?.length
+      ? room.genAmbientDecoStamps.slice()
+      : placeAmbientDecoClusters(
+          project,
+          room.map,
+          contentSeed,
+          biome,
+          room.ladderColumnTx,
+          floorOrdinal,
+          room.kind,
+        );
   const placedRoomObjects = placeProceduralPlacedProps(
     project,
     room.map,

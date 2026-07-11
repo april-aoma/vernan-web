@@ -78,6 +78,14 @@ export class GardeningGlovesSupport implements GardeningGlovesHost {
     return this.thrown;
   }
 
+  /** Drop in-flight throws / pending pluck for a full run restart. */
+  clearForNewRun(): void {
+    this.thrown.length = 0;
+    this.pendingGrassOutcome = null;
+    this.pendingGrassItem = null;
+    this.pluckBreakableSnap = null;
+  }
+
   equippedSubweapon(): string | null {
     return this.world.equippedSubweapon();
   }

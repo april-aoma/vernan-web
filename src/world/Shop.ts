@@ -17,13 +17,13 @@ import { RoomKind } from "./DungeonTypes";
 import {
   makeItemPedestal,
   pedestalItemAabb,
-  pedestalWorldFromColumn,
   PEDESTAL_DRAW_W,
   type ItemPedestal,
 } from "./pedestal";
 import type { RoomSession } from "./roomTransition";
 import type { TileMap } from "./TileMap";
 import { PedestalSpawnKind } from "../item/PedestalSpawnKind";
+import { PickupKind, WorldPickup } from "./WorldPickup";
 
 /** Head / body / tail frames sliced from the shopkeep sheet. */
 export type ShopKeeperFrames = {
@@ -35,34 +35,50 @@ export type ShopKeeperFrames = {
 /** Java GamePanel.SHOP_PEDESTAL_PRICE. */
 export const SHOP_PEDESTAL_PRICE = 15;
 
+/** Java shop heart/key world pickup price. */
+export const SHOP_PICKUP_PRICE = 5;
+
 /** Run-start coins (Java PlayerStats.money defaults to 0). */
 export const RUN_START_MONEY = 0;
 
 /** World-px size of the shopkeep composite frame (Java shopKeeperFramePx @ scale 1). */
 export const SHOPKEEP_FRAME_PX = 32;
 
-const SHOP_LAYOUT_SALT = 0x5104_0ac7_beef_5babn;
+/** Salt used by GamePanel pre-xor and again inside {@link rollShopLayout}. */
+export const SHOP_LAYOUT_SALT = 0x5104_0ac7_beef_5babn;
+
+/** Heart/key slot from {@link rollShopLayout} (Java RoomGenerator.ShopWorldPickup). */
+export type ShopWorldPickupSpec = {
+  kind: PickupKind.HEART | PickupKind.KEY;
+  feetCenterX: number;
+  feetWorldY: number;
+  priceCoins: number;
+  collected: boolean;
+};
+
+export type ShopLayout = {
+  pedestals: { anchorX: number; groundTop: number }[];
+  pickups: Omit<ShopWorldPickupSpec, "collected">[];
+};
 
 /**
- * Lazy SHOP pedestal resolve + Up-to-buy (Shop A + shopkeep).
- * Pedestals live on session.shopPedestals — not itemPedestal / activePedestal.
+ * Java {@code RoomGenerator.rollShopLayout}: 1–6 slots, weighted KEY/HEART/PEDESTAL draws
+ * with caps {KEY=1, HEART=3, PEDESTAL=2}. {@code seed} is already pre-xored once by the caller;
+ * this xors {@link SHOP_LAYOUT_SALT} again (GamePanel + rollShopLayout double-xor).
  */
-export function ensureShopResolved(session: RoomSession): void {
-  const roomId = session.roomId;
-  const node = session.dungeon.layout.room(roomId);
-  if (node.kind !== RoomKind.SHOP) return;
-  if (session.shopPedestals[roomId] != null) return;
-
-  const g = session.dungeon.rooms[roomId]!;
-  const map = g.map;
-  const w = map.getWidth();
-  const ladderTxs = g.ladderColumnTx >= 0 ? [g.ladderColumnTx] : [];
-  const doorTxs: number[] = [];
-  if (g.leftDoorTileX >= 0) doorTxs.push(g.leftDoorTileX);
-  if (g.rightDoorTileX >= 0) doorTxs.push(g.rightDoorTileX);
-
-  const rng = new JavaRandom(node.contentSeed ^ SHOP_LAYOUT_SALT);
-  const pedCount = 1 + rng.nextInt(2); // 1..2
+export function rollShopLayout(
+  seed: bigint,
+  w: number,
+  groundY: number[],
+  ladderTxs: number[],
+  doorTxs: number[],
+  luck: number,
+): ShopLayout {
+  const rng = new JavaRandom(seed ^ SHOP_LAYOUT_SALT);
+  const totalSlots = 1 + rng.nextInt(6); // 1..6
+  const keyCap = 1;
+  const heartCap = 3;
+  const pedCap = 2;
 
   const candidates: number[] = [];
   for (let tx = 2; tx <= w - 3; tx++) {
@@ -73,7 +89,7 @@ export function ensureShopResolved(session: RoomSession): void {
 
   const chosenTx: number[] = [];
   for (const tx of candidates) {
-    if (chosenTx.length >= pedCount) break;
+    if (chosenTx.length >= totalSlots) break;
     let ok = true;
     for (const prev of chosenTx) {
       if (Math.abs(prev - tx) < 2) {
@@ -84,17 +100,109 @@ export function ensureShopResolved(session: RoomSession): void {
     if (ok) chosenTx.push(tx);
   }
 
-  const peds: ItemPedestal[] = [];
-  const shopItems = session.decks.drawDistinct(PedestalSpawnKind.SHOP, chosenTx.length);
-  for (let i = 0; i < chosenTx.length; i++) {
-    const tx = chosenTx[i]!;
-    const groundTop = map.groundTopWorldYAtColumn(tx);
-    const pos = pedestalWorldFromColumn(w, tx, groundTop);
-    const itemId = shopItems[i] ?? session.decks.drawShop();
-    peds.push(makeItemPedestal(itemId, pos.anchorX, pos.groundTop, SHOP_PEDESTAL_PRICE));
+  const pedWeight = Math.max(0, 1 + luck);
+  const heartWeight = Math.max(0, 3 + 0.25 * luck);
+  const keyWeight = 5;
+
+  let keys = 0;
+  let hearts = 0;
+  let peds = 0;
+  const pedList: ShopLayout["pedestals"] = [];
+  const pickList: ShopLayout["pickups"] = [];
+  for (const tx of chosenTx) {
+    const effKey = keys < keyCap ? keyWeight : 0;
+    const effHeart = hearts < heartCap ? heartWeight : 0;
+    const effPed = peds < pedCap ? pedWeight : 0;
+    const total = effKey + effHeart + effPed;
+    if (total <= 1e-9) break;
+    const r = rng.nextDouble() * total;
+    const gyc = groundY[clampInt(tx, 1, w - 2)]!;
+    const anchorX = tx * TILE_SIZE + TILE_SIZE * 0.5;
+    const groundTop = gyc * TILE_SIZE;
+    if (r < effKey) {
+      pickList.push({
+        kind: PickupKind.KEY,
+        feetCenterX: anchorX,
+        feetWorldY: groundTop,
+        priceCoins: SHOP_PICKUP_PRICE,
+      });
+      keys++;
+    } else if (r < effKey + effHeart) {
+      pickList.push({
+        kind: PickupKind.HEART,
+        feetCenterX: anchorX,
+        feetWorldY: groundTop,
+        priceCoins: SHOP_PICKUP_PRICE,
+      });
+      hearts++;
+    } else {
+      pedList.push({ anchorX, groundTop });
+      peds++;
+    }
   }
+  return { pedestals: pedList, pickups: pickList };
+}
+
+/**
+ * Lazy SHOP layout resolve (Java resolveDeferredShopLayoutForRoom) + shopkeep.
+ * Pedestals on session.shopPedestals; heart/key specs on session.shopWorldPickups.
+ */
+export function ensureShopResolved(session: RoomSession, luck = 0): void {
+  const roomId = session.roomId;
+  const node = session.dungeon.layout.room(roomId);
+  if (node.kind !== RoomKind.SHOP) return;
+  if (session.shopPedestals[roomId] != null) return;
+
+  const g = session.dungeon.rooms[roomId]!;
+  const map = g.map;
+  const w = map.getWidth();
+  const groundY: number[] = [];
+  for (let x = 0; x < w; x++) {
+    groundY.push(Math.round(map.groundTopWorldYAtColumn(x) / TILE_SIZE));
+  }
+  const ladderTxs = g.ladderColumnTx >= 0 ? [g.ladderColumnTx] : [];
+  const doorTxs: number[] = [];
+  if (g.leftDoorTileX >= 0) doorTxs.push(g.leftDoorTileX);
+  if (g.rightDoorTileX >= 0) doorTxs.push(g.rightDoorTileX);
+
+  // GamePanel pre-xor; rollShopLayout xors the salt again.
+  const shopSeed = node.contentSeed ^ SHOP_LAYOUT_SALT;
+  const layout = rollShopLayout(shopSeed, w, groundY, ladderTxs, doorTxs, luck);
+
+  const shopItems = session.decks.drawDistinct(PedestalSpawnKind.SHOP, layout.pedestals.length);
+  const peds: ItemPedestal[] = [];
+  for (let i = 0; i < shopItems.length; i++) {
+    const slot = layout.pedestals[i]!;
+    const itemId = shopItems[i]!;
+    peds.push(makeItemPedestal(itemId, slot.anchorX, slot.groundTop, SHOP_PEDESTAL_PRICE));
+  }
+  const picks: ShopWorldPickupSpec[] = layout.pickups.map((p) => ({ ...p, collected: false }));
   session.shopPedestals[roomId] = peds;
-  session.shopKeepers[roomId] = placeShopKeeper(map, peds);
+  session.shopWorldPickups[roomId] = picks;
+  session.shopKeepers[roomId] = placeShopKeeper(map, peds, picks);
+}
+
+/** Mount uncollected shop heart/key pickups into the live world list (per room enter). */
+export function mountShopWorldPickups(
+  session: RoomSession,
+  worldPickups: WorldPickup[],
+  luck = 0,
+): void {
+  const roomId = session.roomId;
+  if (session.dungeon.layout.room(roomId).kind !== RoomKind.SHOP) return;
+  ensureShopResolved(session, luck);
+  const specs = session.shopWorldPickups[roomId];
+  if (!specs) return;
+  for (const sp of specs) {
+    if (sp.collected) continue;
+    worldPickups.push(
+      WorldPickup.createShopPickup(sp.kind, sp.feetCenterX, sp.feetWorldY, sp.priceCoins),
+    );
+  }
+}
+
+export function activeShopWorldPickups(session: RoomSession): ShopWorldPickupSpec[] {
+  return session.shopWorldPickups[session.roomId] ?? [];
 }
 
 export function activeShopPedestals(session: RoomSession): ItemPedestal[] {
@@ -107,6 +215,62 @@ export function activeShopKeeper(session: RoomSession): ShopKeeper | null {
 }
 
 export type ShopBuyResult = { itemId: string; price: number };
+export type ShopPickupBuyResult = { kind: PickupKind; price: number };
+
+/**
+ * Press Up/W while overlapping a priced shop heart/key (Java tryBuyShopPickups).
+ * Returns `"blocked"` when overlapping but full HP / can't afford (skip pedestal buy).
+ */
+export function tryBuyShopPickups(
+  session: RoomSession,
+  player: Player,
+  upPressed: boolean,
+  worldPickups: WorldPickup[],
+): ShopPickupBuyResult | "blocked" | null {
+  if (!upPressed) return null;
+  const node = session.dungeon.layout.room(session.roomId);
+  if (node.kind !== RoomKind.SHOP) return null;
+
+  ensureShopResolved(session, player.stats.luck);
+  const specs = session.shopWorldPickups[session.roomId];
+  if (!specs) return null;
+
+  const hurtPose = player.hurtboxPose();
+  for (let i = 0; i < worldPickups.length; i++) {
+    const p = worldPickups[i]!;
+    if (p.priceCoins <= 0) continue;
+    if (!p.intersectsPlayerHurt(hurtPose)) continue;
+
+    if (p.kind === PickupKind.HEART && player.health.isAtFullHealth) return "blocked";
+    if (player.stats.money < p.priceCoins) return "blocked";
+
+    const price = p.priceCoins;
+    if (p.kind === PickupKind.HEART) player.health.heal(2);
+    else if (p.kind === PickupKind.KEY) player.stats.keys++;
+
+    player.stats.money -= price;
+    markShopPickupCollected(specs, p);
+    worldPickups.splice(i, 1);
+    return { kind: p.kind, price };
+  }
+  return null;
+}
+
+function markShopPickupCollected(specs: ShopWorldPickupSpec[], p: WorldPickup): void {
+  for (const sp of specs) {
+    if (sp.collected || sp.kind !== p.kind) continue;
+    if (Math.abs(sp.feetCenterX - p.renderCenterX()) < TILE_SIZE) {
+      sp.collected = true;
+      return;
+    }
+  }
+  for (const sp of specs) {
+    if (!sp.collected && sp.kind === p.kind) {
+      sp.collected = true;
+      return;
+    }
+  }
+}
 
 /**
  * Press Up/W while overlapping a shop pedestal to buy for {@link SHOP_PEDESTAL_PRICE}.
@@ -122,7 +286,7 @@ export function tryBuyShopPedestal(
   const node = session.dungeon.layout.room(session.roomId);
   if (node.kind !== RoomKind.SHOP) return null;
 
-  ensureShopResolved(session);
+  ensureShopResolved(session, player.stats.luck);
   const peds = session.shopPedestals[session.roomId];
   if (!peds) return null;
 
@@ -145,13 +309,20 @@ export function tryBuyShopPedestal(
   return null;
 }
 
-/** Place cat left of leftmost pedestal, clearing ware footprints (Java spawnShopKeeperForRoom). */
-function placeShopKeeper(map: TileMap, peds: ItemPedestal[]): ShopKeeper {
+/** Place cat left of leftmost pedestal (or west wall), clearing ware footprints. */
+function placeShopKeeper(
+  map: TileMap,
+  peds: ItemPedestal[],
+  picks: ShopWorldPickupSpec[],
+): ShopKeeper {
   const frame = SHOPKEEP_FRAME_PX;
   const catHalf = frame * 0.5;
   const clearMargin = 2;
   const pedHalf = Math.max(PEDESTAL_DRAW_W, TILE_SIZE) * 0.5;
   const wares = peds.map((p) => ({ cx: p.anchorX, half: pedHalf }));
+  for (const sp of picks) {
+    if (sp.priceCoins > 0) wares.push({ cx: sp.feetCenterX, half: TILE_SIZE * 0.5 });
+  }
 
   let preferredX: number;
   if (peds.length > 0) {

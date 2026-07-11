@@ -33,6 +33,12 @@ export class SubweaponCooldowns {
     this.total.delete(id);
   }
 
+  /** Clear all cooldowns (full run restart). */
+  clearAll(): void {
+    this.remaining.clear();
+    this.total.clear();
+  }
+
   remainingOf(id: string | null): number {
     if (!id) return 0;
     return this.remaining.get(id) ?? 0;

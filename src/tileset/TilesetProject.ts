@@ -11,6 +11,9 @@ import {
 import { rebuildTerrainBridgeFromObjects } from "./rebuildTerrainBridge";
 import { allowsRoomKind, type TileRoomScope } from "./RoomScope";
 
+/** Java FloorScope.ALL_FLOORS — disables sheet floorRange gating. */
+export const FLOOR_SCOPE_ALL = -2147483648;
+
 export type SheetCell = { sheetId: string; row: number; col: number };
 
 export type WeightedDisplayChoice = { tileId: string; weight: number };
@@ -74,6 +77,10 @@ export type BiomePoolEntry = {
   z?: number;
   /** Legacy: require at least one SOLID mapTerrain member. */
   solidsOnly?: boolean;
+  /** Optional member filter (Java decoPoolsByRoomKind.tileIds). */
+  tileIds?: string[];
+  /** Optional member index filter (Java decoPoolsByRoomKind.memberIndices). */
+  memberIndices?: number[];
 };
 
 export type DecoClusterFallback = {
@@ -170,6 +177,8 @@ export class TilesetProject {
     { decoClusterCountMin: number; decoClusterCountMax: number }
   >();
   readonly decoClusterFallbackByRoomKind = new Map<string, DecoClusterFallback>();
+  /** Root tileset.json decoTilePool (merged into ambient pick lists). */
+  readonly decoTilePool: string[] = [];
   /** Tile id → breakable-deco roll probability (only tiles with canBreakAsDeco). */
   readonly decoBreakableChanceByTileId = new Map<string, number>();
   /** Tile ids with sceneRoles containing `background` — excluded from ambient blobs. */
@@ -196,19 +205,23 @@ export class TilesetProject {
   private readonly tileBridgeWeight = new Map<string, number>();
   private readonly tileConnectAnchor = new Set<string>();
 
-  static async load(assets: AssetLoader, path = "tileset/tileset.json"): Promise<TilesetProject> {
-    const raw = await assets.loadJson<Record<string, unknown>>(path);
+  static fromJson(raw: Record<string, unknown>): TilesetProject {
     const proj = new TilesetProject();
     proj.loadSheets(raw.sheets as RawSheet[] | undefined);
     proj.loadTiles(raw.tiles as RawTile[] | undefined);
     proj.loadObjects(raw.objects as Array<Record<string, unknown>> | undefined);
     proj.loadTerrainBridge(raw.terrainBridge as Record<string, unknown> | undefined);
     proj.loadProcedural(raw.proceduralRoomGen as Record<string, unknown> | undefined);
+    proj.loadDecoTilePool(raw.decoTilePool);
     proj.loadDecoPlacementRules(raw.decoTilePlacementRules as Record<string, unknown> | undefined);
     proj.contextThemeRulesRaw = parseContextThemeRulesRaw(raw.contextThemeRules);
-    // Java TilesetRuntime.load always rebuilds from objects (anchors only).
     rebuildTerrainBridgeFromObjects(proj);
     return proj;
+  }
+
+  static async load(assets: AssetLoader, path = "tileset/tileset.json"): Promise<TilesetProject> {
+    const raw = await assets.loadJson<Record<string, unknown>>(path);
+    return TilesetProject.fromJson(raw);
   }
 
   /** Tile ids owned by scatterOnEligibleGround rules — excluded from ambient blob pools. */
@@ -250,6 +263,7 @@ export class TilesetProject {
 
   /** Java FloorScope / TilesetRuntime.tileAllowedOnFloor — sheet floorRange gate. */
   tileAllowedOnFloor(tileId: string, floorOrdinal: number): boolean {
+    if (floorOrdinal === FLOOR_SCOPE_ALL) return true;
     const cell = this.tileCells.get(tileId);
     if (!cell) return false;
     const range = this.sheetFloorRanges.get(cell.sheetId);
@@ -516,6 +530,206 @@ export class TilesetProject {
     }
   }
 
+  private loadDecoTilePool(raw: unknown): void {
+    if (!Array.isArray(raw)) return;
+    for (const x of raw) {
+      const s = str(x);
+      if (s) this.decoTilePool.push(s);
+    }
+  }
+
+  /**
+   * Java ProceduralRoomGen.mergedDecoTilePoolForRoomKind — weighted decoPoolsByRoomKind
+   * multiset plus optional root decoTilePool (SeedParityDump / default biome path).
+   */
+  mergedDecoTilePoolForRoomKind(
+    roomKind: RoomKind,
+    floorOrdinal = 1,
+    mergeRootDecoTilePool = true,
+  ): string[] {
+    const kindName = (RoomKind[roomKind] ?? "NORMAL").toUpperCase();
+    const poolEntries = this.decoPoolsByRoomKind.get(kindName) ?? [];
+    const poolMembers = this.decoPoolMemberTileIds(poolEntries);
+    const groundScatter = this.groundScatterTileIds();
+    const procedural = this.expandDecoPoolFiltered(roomKind, floorOrdinal, poolMembers);
+    const proceduralSet = new Set(procedural);
+    const out = [...procedural];
+    if (!mergeRootDecoTilePool) {
+      return out.filter((tid) => !groundScatter.has(tid));
+    }
+    for (const tid of this.decoTilePool) {
+      if (proceduralSet.has(tid)) continue;
+      if (groundScatter.has(tid)) continue;
+      if (
+        !this.proceduralDecoTileEligibleForRoomKindPublic(
+          tid,
+          roomKind,
+          floorOrdinal,
+          poolMembers,
+          groundScatter,
+        )
+      ) {
+        continue;
+      }
+      out.push(tid);
+    }
+    return out.filter((tid) => !groundScatter.has(tid));
+  }
+
+  /** Java ProceduralRoomGen.expandDecoPoolFiltered. */
+  private expandDecoPoolFiltered(
+    roomKind: RoomKind,
+    floorOrdinal: number,
+    poolMembers: Set<string>,
+  ): string[] {
+    const raw = this.expandDecoPoolRaw(roomKind, floorOrdinal);
+    const groundScatter = this.groundScatterTileIds();
+    const out: string[] = [];
+    for (const tid of raw) {
+      if (
+        this.proceduralDecoTileEligibleForRoomKindPublic(
+          tid,
+          roomKind,
+          floorOrdinal,
+          poolMembers,
+          groundScatter,
+        )
+      ) {
+        out.push(tid);
+      }
+    }
+    return out;
+  }
+
+  /** Java ProceduralRoomGen.expandDecoPoolRaw — weighted multiset of member tile ids. */
+  private expandDecoPoolRaw(roomKind: RoomKind, floorOrdinal: number): string[] {
+    const kindName = (RoomKind[roomKind] ?? "NORMAL").toUpperCase();
+    const entries = this.decoPoolsByRoomKind.get(kindName) ?? [];
+    const totalPicksByObjectId = new Map<string, number>();
+    const firstEntryByObjectId = new Map<string, BiomePoolEntry>();
+    for (const entry of entries) {
+      if (!this.objectAllowedOnFloor(entry.objectId, floorOrdinal)) continue;
+      const picks = Math.max(0, Math.round(entry.weight * 10));
+      if (picks <= 0) continue;
+      totalPicksByObjectId.set(
+        entry.objectId,
+        (totalPicksByObjectId.get(entry.objectId) ?? 0) + picks,
+      );
+      // Java entryByObjectId.putIfAbsent — first entry's tileIds/memberIndices win.
+      if (!firstEntryByObjectId.has(entry.objectId)) {
+        firstEntryByObjectId.set(entry.objectId, entry);
+      }
+    }
+    const out: string[] = [];
+    for (const [objectId, picks] of totalPicksByObjectId) {
+      const members = this.decoPoolExpansionMembers(objectId);
+      if (!members.length) continue;
+      const selected = this.selectDecoPoolMembers(firstEntryByObjectId.get(objectId), members);
+      if (!selected.length) continue;
+      for (const tid of selected) {
+        for (let w = 0; w < picks; w++) out.push(tid);
+      }
+    }
+    return out;
+  }
+
+  /** Java ProceduralRoomGen.selectMembers. */
+  private selectDecoPoolMembers(
+    entry: BiomePoolEntry | undefined,
+    members: string[],
+  ): string[] {
+    if (!entry) return [...members];
+    if (entry.tileIds?.length) {
+      const allow = new Set(entry.tileIds);
+      return members.filter((m) => allow.has(m));
+    }
+    if (entry.memberIndices?.length) {
+      const out: string[] = [];
+      for (const idx of entry.memberIndices) {
+        if (idx >= 0 && idx < members.length) out.push(members[idx]!);
+      }
+      return out;
+    }
+    return [...members];
+  }
+
+  /**
+   * Members that enter the deco pick multiset (Java buildObjectMembers):
+   * full object / autotile / candle → tileIds[0] only; else all tileIds.
+   */
+  private decoPoolExpansionMembers(objectId: string): string[] {
+    const obj = this.objectById.get(objectId);
+    if (!obj?.tileIds.length) {
+      return this.cell(objectId) ? [objectId] : [];
+    }
+    const t = obj.objectType.toLowerCase();
+    if (t === "full object" || t === "fullobject" || t === "autotile" || t === "candle") {
+      return [obj.tileIds[0]!];
+    }
+    return [...obj.tileIds];
+  }
+
+  private objectAllowedOnFloor(objectId: string, floorOrdinal: number): boolean {
+    const obj = this.objectById.get(objectId);
+    if (!obj) return !!this.cell(objectId);
+    // Floor gating via first member tile when present.
+    const tid = obj.tileIds[0] ?? objectId;
+    return this.tileAllowedOnFloor(tid, floorOrdinal);
+  }
+
+  /** Exposed for merged pool eligibility (mirrors placeAmbientDeco helpers). */
+  proceduralDecoTileEligibleForRoomKindPublic(
+    tileId: string,
+    roomKind: RoomKind,
+    floorOrdinal: number,
+    poolMembers: Set<string>,
+    groundScatter: Set<string>,
+  ): boolean {
+    if (!this.cell(tileId)) return false;
+    if (groundScatter.has(tileId)) return false;
+    if (!this.tileAllowedInRoomKind(tileId, roomKind)) return false;
+    if (!this.tileAllowedOnFloor(tileId, floorOrdinal)) return false;
+    if (!this.emptyMapTerrainTileIds.has(tileId)) return false;
+    if (this.backgroundSceneTileIds.has(tileId)) {
+      return poolMembers.has(tileId);
+    }
+    if (!this.tileIdAllowedInMergedDecoRootPool(tileId)) return false;
+    const owner = this.objectByTileId.get(tileId);
+    if (owner) {
+      if (owner.roomKinds.length) {
+        const rk = (RoomKind[roomKind] ?? "NORMAL").toUpperCase();
+        let ok = false;
+        for (const raw of owner.roomKinds) {
+          const t = raw.trim().toUpperCase();
+          if (t === rk) ok = true;
+          if (
+            t === "SECRET_ROOM" &&
+            (roomKind === RoomKind.SECRET || roomKind === RoomKind.SUPER_SECRET)
+          ) {
+            ok = true;
+          }
+        }
+        if (!ok) return false;
+      }
+      if (poolMembers.has(tileId)) return true;
+      for (const mid of owner.tileIds) {
+        if (poolMembers.has(mid)) return true;
+      }
+      return false;
+    }
+    return true;
+  }
+
+  private tileIdAllowedInMergedDecoRootPool(tileId: string): boolean {
+    const owner = this.objectByTileId.get(tileId);
+    if (!owner) return true;
+    if (owner.isHorizontalStripAutotile) return false;
+    const anchor = owner.tileIds[0];
+    if (!anchor || tileId === anchor) return true;
+    if (owner.isFullObject || owner.objectType === "autotile") return false;
+    return true;
+  }
+
   /** Member tile ids referenced by a room-kind deco pool (Java decoPoolMemberTileIds). */
   decoPoolMemberTileIds(pool: Array<{ objectId: string; weight: number }>): Set<string> {
     const out = new Set<string>();
@@ -744,6 +958,16 @@ function parsePoolEntries(raw: unknown): BiomePoolEntry[] {
     const entry: BiomePoolEntry = { objectId, weight };
     if (row.z != null) entry.z = Math.floor(num(row.z, 0));
     if (row.solidsOnly === true) entry.solidsOnly = true;
+    if (Array.isArray(row.tileIds)) {
+      const tids = row.tileIds.map((x) => str(x)).filter(Boolean);
+      if (tids.length) entry.tileIds = tids;
+    }
+    if (Array.isArray(row.memberIndices)) {
+      const idxs = row.memberIndices
+        .map((x) => (typeof x === "number" ? Math.floor(x) : -1))
+        .filter((i) => i >= 0);
+      if (idxs.length) entry.memberIndices = idxs;
+    }
     out.push(entry);
   }
   return out;

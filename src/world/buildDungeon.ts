@@ -1,4 +1,5 @@
 import { TILE_SIZE, WORLD_VIEWPORT_H, WORLD_VIEWPORT_W } from "../specs";
+import type { TilesetProject } from "../tileset/TilesetProject";
 import { DungeonLayout } from "./DungeonLayout";
 import { RoomKind, type RoomNode } from "./DungeonTypes";
 import { rollEnemySpawns } from "./EnemySpawnBudget";
@@ -45,11 +46,15 @@ export type BuiltDungeon = {
  * Mirror GamePanel.buildDungeonContent / Java GEN-ORDER-1:
  * layout → planned W/H → Pass A → Pass B → secret content → ladder align →
  * placeSecretEntrances → final shaft → keyblocks → enemies last.
+ *
+ * When {@link tileset} is provided, ambient deco clusters are stamped during room
+ * gen on the room RNG (Java RoomGenerator), so golden-roach clusters match desktop.
  */
 export function buildDungeon(
   runSeed: bigint,
   floorOrdinal = 1,
   eyeOfRaStacks = 0,
+  tileset: TilesetProject | null = null,
 ): BuiltDungeon {
   const layoutSeed = floorLayoutSeed(runSeed, floorOrdinal);
   const targetRooms = targetRoomCount(layoutSeed);
@@ -68,6 +73,7 @@ export function buildDungeon(
   const n = layout.roomCount();
   const plannedW = plannedWidths(layout, combatW, oneScreenW);
   const plannedH = plannedHeights(layout, combatH, oneScreenH);
+  const decoCtx = tileset ? { project: tileset, floorOrdinal } : null;
 
   const rooms: (GeneratedRoom | null)[] = new Array(n).fill(null);
 
@@ -78,7 +84,7 @@ export function buildDungeon(
     const finish: SecretGenFinishOptions = {
       neighborFaces: neighborFaces(layout, i),
     };
-    rooms[i] = generateForNode(node, plannedW[i]!, plannedH[i]!, finish);
+    rooms[i] = generateForNode(node, plannedW[i]!, plannedH[i]!, finish, decoCtx);
   }
 
   // Pass B — SECRET/SUPER (door tops from Pass A neighbors).
@@ -88,7 +94,7 @@ export function buildDungeon(
     const finish: SecretGenFinishOptions = {
       secretSeams: secretRoomSeams(layout, i, rooms),
     };
-    rooms[i] = generateForNode(node, plannedW[i]!, plannedH[i]!, finish);
+    rooms[i] = generateForNode(node, plannedW[i]!, plannedH[i]!, finish, decoCtx);
   }
 
   const filled = rooms as GeneratedRoom[];
@@ -116,6 +122,8 @@ export function buildDungeon(
   }
 
   // Enemies after terrain final (Java applyPostGenerationEnemies).
+  // When tileset was available, genAmbientDecoStamps feed golden-roach clusters;
+  // enrichDungeonArt re-rolls again after full deco finalize.
   for (let i = 0; i < n; i++) {
     const node = layout.room(i);
     filled[i]!.enemySpawns = rollEnemySpawns(
@@ -146,9 +154,19 @@ function generateForNode(
   rw: number,
   rh: number,
   finish: SecretGenFinishOptions,
+  decoCtx: { project: TilesetProject; floorOrdinal: number } | null,
 ): GeneratedRoom {
   const conn = connectivityFromNode(node, rw);
-  return generateRoomShell(node.contentSeed, rw, rh, conn, node.kind, finish, node.gridY);
+  return generateRoomShell(
+    node.contentSeed,
+    rw,
+    rh,
+    conn,
+    node.kind,
+    finish,
+    node.gridY,
+    decoCtx,
+  );
 }
 
 export function roomKindLabel(kind: RoomKind): string {

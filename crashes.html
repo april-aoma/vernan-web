@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vernan — Crash reports</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0d10;
+        --ink: #d7dde5;
+        --muted: #7d8a98;
+        --faint: #5a6570;
+        --accent: #6ec8ff;
+        --danger: #f0a0a0;
+        --panel: #121820;
+        --font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--font);
+      }
+
+      body {
+        min-height: 100dvh;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        justify-items: center;
+        align-content: start;
+        padding: 24px 16px 32px;
+        gap: 16px;
+        background:
+          radial-gradient(ellipse 80% 50% at 50% 0%, rgba(240, 160, 160, 0.06), transparent 55%),
+          var(--bg);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #9aa7b5;
+        text-align: center;
+      }
+
+      .title-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+      }
+
+      .title-icon {
+        width: 32px;
+        height: 32px;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        flex-shrink: 0;
+      }
+
+      .nav-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+      }
+
+      .nav-btn {
+        display: inline-block;
+        padding: 0.5rem 0.85rem;
+        border: 1px solid rgba(110, 200, 255, 0.45);
+        background: rgba(110, 200, 255, 0.12);
+        color: var(--accent);
+        font-family: var(--font);
+        font-size: 0.8rem;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-decoration: none;
+        text-transform: uppercase;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+
+      .nav-btn:hover {
+        background: rgba(110, 200, 255, 0.22);
+        border-color: var(--accent);
+      }
+
+      .nav-btn[aria-current="page"] {
+        background: rgba(110, 200, 255, 0.22);
+        border-color: var(--accent);
+        color: #d7eefc;
+      }
+
+      .nav-btn:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 3px;
+      }
+
+      .list {
+        width: min(52rem, 100%);
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        min-height: 0;
+        max-height: 100%;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(110, 200, 255, 0.45) rgba(5, 6, 8, 0.8);
+      }
+
+      .crash {
+        border: 1px solid rgba(240, 160, 160, 0.28);
+        background: var(--panel);
+        padding: 0.85rem 1rem;
+      }
+
+      .crash-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem 0.85rem;
+        margin: 0 0 0.55rem;
+        font-size: 0.72rem;
+        color: var(--muted);
+        letter-spacing: 0.02em;
+      }
+
+      .crash-meta strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      .crash-source {
+        color: var(--danger);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .crash-message {
+        margin: 0 0 0.55rem;
+        font-size: 0.9rem;
+        line-height: 1.4;
+        color: var(--ink);
+        word-break: break-word;
+      }
+
+      .crash-stack {
+        margin: 0;
+        padding: 0.65rem 0.75rem;
+        max-height: 14rem;
+        overflow: auto;
+        border: 1px solid rgba(110, 200, 255, 0.15);
+        background: #0a0d11;
+        color: var(--faint);
+        font-size: 0.7rem;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .empty,
+      .error {
+        padding: 2rem 1rem;
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.85rem;
+        line-height: 1.5;
+      }
+
+      .error {
+        color: var(--danger);
+      }
+
+      .hint {
+        margin: 0;
+        max-width: 40rem;
+        font-size: 0.75rem;
+        line-height: 1.45;
+        color: var(--faint);
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="title-row">
+      <img
+        class="title-icon"
+        src="./assets/sprites/vernan idle.png"
+        width="32"
+        height="32"
+        alt=""
+        aria-hidden="true"
+      />
+      <h1>Crash reports</h1>
+    </div>
+    <nav class="nav-row" aria-label="Site">
+      <a class="nav-btn" href="./index.html">Play</a>
+      <a class="nav-btn" href="./leaderboard.html">Leaderboard</a>
+      <a class="nav-btn" href="./crashes.html" aria-current="page">Crashes</a>
+    </nav>
+    <p class="hint">
+      Automatic mid-game crash reports from the live site. Newest first.
+    </p>
+    <div class="list" id="crash-list" aria-live="polite">
+      <div class="empty">Loading…</div>
+    </div>
+    <script type="module" src="/src/crashes/main.ts"></script>
+  </body>
+</html>

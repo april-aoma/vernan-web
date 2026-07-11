@@ -1,4 +1,8 @@
 import type { DecoStamp } from "../tileset/placeAmbientDeco";
+import {
+  AMBIENT_DECO_ARGB_BLUE,
+  AMBIENT_DECO_ARGB_RED,
+} from "../tileset/placeAmbientDeco";
 import { JavaRandom } from "../util/JavaRandom";
 import { TILE_SIZE } from "../specs";
 import type { Aabb } from "../combat/CombatMath";
@@ -45,7 +49,9 @@ export class AmbientClusterMap {
     const h = map.getHeight();
     const ambient = new Set<string>();
     for (const d of deco ?? []) {
-      if (d.groundHugging) continue;
+      // Java AmbientClusterMap.isAmbientDecoCell — red/blue blob ARGB only.
+      const argb = d.argb ?? 0;
+      if (argb !== AMBIENT_DECO_ARGB_RED && argb !== AMBIENT_DECO_ARGB_BLUE) continue;
       if (d.tx < 0 || d.ty < 0 || d.tx >= w || d.ty >= h) continue;
       if (map.tileAt(d.tx, d.ty) !== TILE_EMPTY) continue;
       ambient.add(`${d.tx},${d.ty}`);
@@ -102,37 +108,39 @@ export class AmbientClusterMap {
     const ids = new Int32Array(w * h);
     ids.fill(-1);
     const components: Array<Array<readonly [number, number]>> = [];
-    const pending = [...ambient];
     let nextId = 0;
 
-    while (pending.length > 0) {
-      const start = pending.pop()!;
-      const [sx, sy] = start.split(",").map(Number) as [number, number];
-      const idx = sy * w + sx;
-      if (ids[idx]! >= 0) continue;
+    // Java AmbientClusterMap.build — discover components in row-major scan order.
+    for (let sy = 0; sy < h; sy++) {
+      for (let sx = 0; sx < w; sx++) {
+        const startKey = `${sx},${sy}`;
+        if (!ambient.has(startKey)) continue;
+        const startIdx = sy * w + sx;
+        if (ids[startIdx]! >= 0) continue;
 
-      const cells: Array<readonly [number, number]> = [];
-      const stack: Array<readonly [number, number]> = [[sx, sy]];
-      ids[idx] = nextId;
+        const cells: Array<readonly [number, number]> = [];
+        const stack: Array<readonly [number, number]> = [[sx, sy]];
+        ids[startIdx] = nextId;
 
-      while (stack.length > 0) {
-        const [tx, ty] = stack.pop()!;
-        cells.push([tx, ty]);
-        for (const [ox, oy] of NEIGH8) {
-          const nx = tx + ox;
-          const ny = ty + oy;
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-          const nkey = `${nx},${ny}`;
-          if (!ambient.has(nkey)) continue;
-          const nidx = ny * w + nx;
-          if (ids[nidx]! >= 0) continue;
-          ids[nidx] = nextId;
-          stack.push([nx, ny]);
+        while (stack.length > 0) {
+          const [tx, ty] = stack.pop()!;
+          cells.push([tx, ty]);
+          for (const [ox, oy] of NEIGH8) {
+            const nx = tx + ox;
+            const ny = ty + oy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const nkey = `${nx},${ny}`;
+            if (!ambient.has(nkey)) continue;
+            const nidx = ny * w + nx;
+            if (ids[nidx]! >= 0) continue;
+            ids[nidx] = nextId;
+            stack.push([nx, ny]);
+          }
         }
-      }
-      if (cells.length > 0) {
-        components.push(cells);
-        nextId++;
+        if (cells.length > 0) {
+          components.push(cells);
+          nextId++;
+        }
       }
     }
 

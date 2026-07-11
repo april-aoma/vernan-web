@@ -73,7 +73,7 @@ export function drawPauseMenu(
     const btnH = 16;
     if (submitLocked) {
       g.fillStyle = "#a07878";
-      g.fillText("Submit locked (respawned)", btnX, btnY + 12);
+      g.fillText("Submit locked (not leaderboard-viable)", btnX, btnY + 12);
     } else {
       g.fillStyle = "rgba(30, 90, 130, 0.85)";
       g.fillRect(btnX, btnY, btnW, btnH);

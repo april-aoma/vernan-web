@@ -11,6 +11,7 @@ import { Possessed } from "../entity/Possessed";
 import { Nephilim } from "../entity/Nephilim";
 import type { CombatEnemy } from "../entity/CombatEnemy";
 import type { ShopKeeper } from "../entity/ShopKeeper";
+import type { ShopWorldPickupSpec } from "./Shop";
 import { aabbOverlap } from "../combat/CombatMath";
 import { CLIMB_ANIM_FPS, VERNAN_CLIMB_FRAMES } from "../config/AnimStats";
 import type { ItemCatalog } from "../item/ItemCatalog";
@@ -22,6 +23,7 @@ import { CAMERA_ZOOM, FIXED_DT, HUD_HEIGHT, INTERNAL_HEIGHT, TILE_SIZE } from ".
 import type { WorldCamera } from "../camera/WorldCamera";
 import { buildDungeon, type BuiltDungeon } from "./buildDungeon";
 import { clustersForRoom } from "./EnemySpawnBudget";
+import type { TilesetProject } from "../tileset/TilesetProject";
 import {
   makeItemPedestal,
   pedestalItemAabb,
@@ -98,6 +100,8 @@ export type RoomSession = {
   bossClearPedestals: (ItemPedestal | null)[];
   /** SHOP priced pedestals (lazy-resolved; separate from free ITEM/boss). */
   shopPedestals: (ItemPedestal[] | null)[];
+  /** SHOP heart/key world pickup specs (lazy with pedestals). */
+  shopWorldPickups: (ShopWorldPickupSpec[] | null)[];
   /** Enemy death loot pedestals (e.g. Jack Blue shield drop). */
   enemyLootPedestals: (ItemPedestal[] | null)[];
   /** SUPER_SECRET $30 k-candy refill (lazy; null = no spawn). */
@@ -141,6 +145,7 @@ export function createSession(
     roomSpawnEnemyCount: 0,
     bossClearPedestals: new Array(n).fill(null),
     shopPedestals: new Array(n).fill(null),
+    shopWorldPickups: new Array(n).fill(null),
     enemyLootPedestals: new Array(n).fill(null),
     superSecretKCandyRefill: new Array(n).fill(null),
     superSecretKCandyRefillResolved: new Array(n).fill(false),
@@ -183,6 +188,7 @@ export function rebindSessionToDungeon(session: RoomSession, dungeon: BuiltDunge
   session.roomSpawnEnemyCount = 0;
   session.bossClearPedestals = new Array(n).fill(null);
   session.shopPedestals = new Array(n).fill(null);
+  session.shopWorldPickups = new Array(n).fill(null);
   session.enemyLootPedestals = new Array(n).fill(null);
   session.superSecretKCandyRefill = new Array(n).fill(null);
   session.superSecretKCandyRefillResolved = new Array(n).fill(false);
@@ -297,6 +303,15 @@ function spawnEnemiesForRoom(session: RoomSession, playerCenterX: number): Comba
     }
   }
   return out;
+}
+
+/**
+ * Re-bind live enemies from {@link GeneratedRoom.enemySpawns} after deco enrich
+ * re-rolls the spawn list (Java order: deco → enemies → enter room).
+ */
+export function resyncRoomEnemies(session: RoomSession, player: Player): void {
+  session.enemies = spawnEnemiesForRoom(session, player.x + player.w * 0.5);
+  maybeBeginBossDoorSealAnim(session);
 }
 
 function anyEnemyBlocksRoomClear(session: RoomSession): boolean {
@@ -526,6 +541,8 @@ export type AscendFloorHooks = {
   onFloorApplied?: () => void;
   /** Device-space feet Y / center X for level-trans overlay anchors. */
   screenAnchor: (player: Player, camera: WorldCamera) => { feetY: number; centerX: number };
+  /** Tileset for in-gen ambient deco (Java RoomGenerator). */
+  tileset?: TilesetProject | null;
 };
 
 /**
@@ -563,7 +580,7 @@ export function tickSessionRoomTransition(
     beginLevelLoadBlack(t);
     input.clearHardwareStateForRoomTransition();
   } else if (result === "ascend_apply" && !t.levelAscend.newFloorApplied) {
-    applyNextFloorAscend(session, player);
+    applyNextFloorAscend(session, player, ascendHooks?.tileset ?? null);
     // Java finalizeLevelEntrySpawn: face right for climb/strip draw.
     player.facing = 1;
     // Camera/art must refresh before end-screen anchors are sampled.
@@ -582,7 +599,11 @@ export function tickSessionRoomTransition(
 }
 
 /** Rebuild dungeon at next floor and spawn at INITIAL (boss ascend). */
-export function applyNextFloorAscend(session: RoomSession, player: Player): void {
+export function applyNextFloorAscend(
+  session: RoomSession,
+  player: Player,
+  tileset: TilesetProject | null = null,
+): void {
   // Preserve fade/blackout machine across rebind (Java keeps LEVEL_LOAD_BLACK).
   const savedTransition = session.transition;
   const nextFloor = session.dungeon.floorOrdinal + 1;
@@ -590,6 +611,7 @@ export function applyNextFloorAscend(session: RoomSession, player: Player): void
     session.dungeon.runSeed,
     nextFloor,
     player.inventory.stacksOf("EYE_OF_RA"),
+    tileset,
   );
   rebindSessionToDungeon(session, next);
   session.transition = savedTransition;

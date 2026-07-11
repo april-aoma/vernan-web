@@ -74,6 +74,7 @@ export default defineConfig({
       input: {
         main: resolve(rootDir, "index.html"),
         leaderboard: resolve(rootDir, "leaderboard.html"),
+        crashes: resolve(rootDir, "crashes.html"),
       },
     },
   },

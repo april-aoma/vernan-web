@@ -46,7 +46,10 @@ export class JavaRandom {
   }
 
   nextLong(): bigint {
-    return (BigInt(this.next(32)) << 32n) + BigInt(this.next(32));
+    // Java: ((long) next(32) << 32) + next(32) — both halves are signed ints.
+    const hi = this.next(32) | 0;
+    const lo = this.next(32) | 0;
+    return toJavaLong((BigInt(hi) << 32n) + BigInt(lo));
   }
 
   nextBoolean(): boolean {

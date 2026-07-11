@@ -139,7 +139,8 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - Seeded `DungeonLayout` + `SecretRoomGraphPlacer` + slim `RoomGenerator` shells
 - Door travel: Up/W while grounded on `D` tiles
 - Room tiles are **shells** (frame/ground/doors/ladder column) — no biomes, deco, breakables
-- Secret candidate enumeration sorts keys before expand (stabilizes vs Java `HashSet` order)
+- Secret candidate enumeration follows Java `new HashSet<>(cell.keySet())` order (`javaHashMap.ts`) so SUPER_SECRET shuffle matches desktop
+- `JavaRandom.nextLong` uses signed int32 halves (OpenJDK `((long)next(32)<<32)+next(32)`)
 
 ### Phase 3 notes
 
@@ -147,6 +148,8 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **Crouch attack** (latched at begin): ground crouch or air-Down (not crouch-jump); windup **−2**, recover early **−4** / late **−2**; damage **×0.8**; `SWORD_CROUCH_ATTACK_ACTIVE` hitbox; knock at 80° ×0.85 mag; art `vernan/sword crouch attack.png`
 - Contact damage **1**, i-frames **1.125 s**, knock `±74 / -98`, HP **6**
 - NORMAL/SECRET spawns via `EnemySpawnBudget` + `EnemyChallengeRegistry` (Crawler + Mouse + Penisman + Golden Roach + Jack Blue + Rolling head + Multilimber; equal weight normal, Mouse-favored secret); budget from `contentSeed ^ 0x5DEECE66D`
+- Enemy spawns re-roll in `enrichDungeonArt` after ambient deco (`applyPostGenerationEnemies`) so `AmbientClusterMap` matches Java gen-time red/blue blob cells
+- Ambient clusters stamp during `generateRoomShell` on the room RNG (Java `RoomGenerator`) when a tileset is passed to `buildDungeon`; pick list is `mergedDecoTilePoolForRoomKind` with `FLOOR_SCOPE_ALL` (SeedParityDump / unscoped merge)
 - **Mouse** (`Mouse.ts`): dormant half-speed ledge patrol → vision wake → full/damaged speed (64/80), falls off ledges when chasing; contact only when activated; HP **2**; art faces left (`mouse.png` / `mouse hurt.png`, 4 frames)
 - **Penisman** (`Penisman.ts`): floor patrol shooter; turns at walls/ledges; shoots arcing bullets when Vernan is ahead within ±192px and on-screen; HP **4**; walk speed **28**; art faces left (`penisman.png`, 4 frames; `penis bullet.png` + die strip)
 - **Golden Roach** (`GoldenRoach.ts`): ambient deco cluster walker / flier; 8-dir skitter on blobs, idle/chase takeoff with swoop pass; contact only while flying; **0.1×** frisbee damage; LOS vision at **0.75×** see radius; HP **1**; spawns on ambient clusters; center-anchored rotated draw (`golden roach2.png` 8×8 walk / `golden roach2 fly.png` 16×16 fly frames with padded art); `AmbientClusterMap` for locomotion + spawn
@@ -187,11 +190,12 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 
 ### Phase shop notes (Shop A)
 
-- SHOP rooms: lazy 1–2 priced pedestals (`$15`, `PedestalItemDecks.drawShop`); **Up/W** while overlapping to buy (gates on `PlayerStats.money`)
-- Cat shopkeep (`cat shopkeep sheet.png`): placed left of wares; head bob + tail warp + pupils track Vernan; drawn before player
+- SHOP rooms: lazy `rollShopLayout` (Java parity) — 1–6 slots, weighted KEY/HEART/PEDESTAL with caps {1,3,2}; luck scales pedestal/heart weights; double-xor `SHOP_LAYOUT_SALT`
+- Pedestals `$15` (`PedestalItemDecks.drawDistinct`); heart/key world pickups `$5` (Up/W buy; skip auto-collect)
+- Cat shopkeep (`cat shopkeep sheet.png`): placed left of wares (clears pedestals + priced pickups); head bob + tail warp + pupils track Vernan; drawn before player
 - Price labels in device space; free ITEM/boss pedestals unchanged
 - Run starts with **0** coins (`RUN_START_MONEY`); combat economy from room-clear rewards + breakables + gem sword procs
-- Stubbed: mini-buy lift overlay, heart/key world pickups priced in shop, subweapon shop swap
+- Stubbed: mini-buy lift overlay, subweapon shop swap
 - **Math backgrounds**: boss/secret presets via `BackgroundPresetRegistry` + `BackgroundRendererV3` (scroll/parallax/distortions/blends); occlusion skips solid tiles + deco cells
 
 ### Phase 5a notes
@@ -244,7 +248,7 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **Full PartSim** (Java parity): world-space springs (`SETTLED_K=220` / `LOOSE_K=40`), knock-loose + `moveLooseWithBounce` (`WALL_REST=0.7` / `FLOOR_REST=0.6`), `ANCHOR_TRAIL_FRAC=1.0`; hurt/collision hulls from rig
 - **Hurt knock + hitstun** (Java parity): `freezeFrames` full freeze (no move/parts/bullets) with shake (±4 from amp 8) + solid red; limb knock impulses latch on hit and integrate after freeze; `hurtTint` 0.35s fade; `HURT_POSE` 0.2s; contact damage off for `KNOCKBACK_CONTACT_DISABLE` 0.5s; shooting frozen for whole reeling window
 - **Boss HP bar** (Java `drawBossHealthBarDevice`): top-centered `0.52×` internal width × 8px; dark inset + red fill (`196,40,52`) + 2px highlight (`232,96,104`) + beige border; `"POSSESSED"` label above; hidden while dead/dying (no wind-up yellow/purple)
-- **LilPossessed / LilMiner familiars**: spring trail via `FamiliarTrailHost`; Lil Possessed fires 8-dir bullets on attack edge; Lil Miner mines on room clear and throws a coin every 7 clears
+- **LilPossessed / LilMiner familiars**: spring trail via `FamiliarTrailHost` (Java lead offset / slot spacing); snap to Vernan on room/floor transition; Lil Possessed fires 8-dir bullets on attack edge; Lil Miner mines on room clear and throws a coin every 7 clears
 - **Possessed Head** melee: horizontal bullet on attackPhase 2 rising edge (`PossessedHead.ts`)
 - **Death debris**: pivot-anchored `BrickChunk` limbs with part sprites + collision hulls (`processPossessedDeathChunks`); 8s lifetime / blink-out at 7s; parting kill-explosion pops every 0.11s for 0.55s (no generic cull explosion)
 
