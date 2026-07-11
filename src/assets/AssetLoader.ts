@@ -16,6 +16,8 @@ export class AssetLoader {
   readonly assetBase: string;
   private readonly images = new Map<string, ImageBitmap>();
   private readonly texts = new Map<string, string>();
+  /** Dedupes concurrent fetches for the same path (progressive boot / room ensures). */
+  private readonly imageLoads = new Map<string, Promise<ImageBitmap>>();
 
   constructor(opts: AssetLoaderOptions) {
     this.assetBase = opts.assetBase.endsWith("/") ? opts.assetBase : `${opts.assetBase}/`;
@@ -28,14 +30,24 @@ export class AssetLoader {
   async loadImage(relPath: string): Promise<ImageBitmap> {
     const cached = this.images.get(relPath);
     if (cached) return cached;
-    const res = await fetch(this.url(relPath));
-    if (!res.ok) {
-      throw new Error(`Failed to load image ${relPath}: ${res.status} ${res.statusText}`);
+    const inflight = this.imageLoads.get(relPath);
+    if (inflight) return inflight;
+    const load = (async () => {
+      const res = await fetch(this.url(relPath));
+      if (!res.ok) {
+        throw new Error(`Failed to load image ${relPath}: ${res.status} ${res.statusText}`);
+      }
+      const blob = await res.blob();
+      const bmp = await createImageBitmap(blob);
+      this.images.set(relPath, bmp);
+      return bmp;
+    })();
+    this.imageLoads.set(relPath, load);
+    try {
+      return await load;
+    } finally {
+      this.imageLoads.delete(relPath);
     }
-    const blob = await res.blob();
-    const bmp = await createImageBitmap(blob);
-    this.images.set(relPath, bmp);
-    return bmp;
   }
 
   async loadText(relPath: string): Promise<string> {
