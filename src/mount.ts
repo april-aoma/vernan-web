@@ -155,6 +155,7 @@ import {
 } from "./ui/CirclePad";
 import { HudEconomyDisplay } from "./ui/HudEconomy";
 import { openSubmitDialog } from "./ranking/SubmitDialog";
+import { openLoginDialog } from "./ranking/LoginDialog";
 import { submitScore } from "./ranking/scoresStore";
 import type { RunSummary } from "./ranking/types";
 import { reportUnknownCrash, setCrashContext } from "./diagnostics/crashReporter";
@@ -555,11 +556,18 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
    */
   let leaderboardLocked = false;
   let submitDialogOpen = false;
+  let loginDialogOpen = false;
   let pauseSubmitPending = false;
+  let pauseLoginPending = false;
+  let pauseViewBoardPending = false;
   let deathViewBoardPending = false;
   let deathRestartPending: "new" | "same" | null = null;
   let dungeonRestartInProgress = false;
-  let pauseMenuHits: PauseMenuHitRects = { submit: { x: 0, y: 0, w: 0, h: 0 } };
+  let pauseMenuHits: PauseMenuHitRects = {
+    login: { x: 0, y: 0, w: 0, h: 0 },
+    viewBoard: { x: 0, y: 0, w: 0, h: 0 },
+    submit: { x: 0, y: 0, w: 0, h: 0 },
+  };
   let deathMenuHits: DeathOverlayHitRects = {
     submit: { x: 0, y: 0, w: 0, h: 0 },
     viewBoard: { x: 0, y: 0, w: 0, h: 0 },
@@ -996,12 +1004,22 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   };
 
   const onTouchControlsPointerDown = (e: PointerEvent): void => {
-    if (submitDialogOpen) return;
+    if (submitDialogOpen || loginDialogOpen) return;
     const pt = canvasPointToInternal(e);
     if (!pt) return;
     const { ix, iy } = pt;
     const hudY0 = INTERNAL_HEIGHT - HUD_HEIGHT;
 
+    if (paused && pauseMenuHits.login.w > 0 && hitTestRect(ix, iy, pauseMenuHits.login)) {
+      e.preventDefault();
+      pauseLoginPending = true;
+      return;
+    }
+    if (paused && pauseMenuHits.viewBoard.w > 0 && hitTestRect(ix, iy, pauseMenuHits.viewBoard)) {
+      e.preventDefault();
+      pauseViewBoardPending = true;
+      return;
+    }
     if (paused && pauseMenuHits.submit.w > 0 && hitTestRect(ix, iy, pauseMenuHits.submit)) {
       e.preventDefault();
       pauseSubmitPending = true;
@@ -1131,8 +1149,23 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     window.open(leaderboardPageUrl().href, "_blank", "noopener,noreferrer");
   }
 
+  async function beginLoginFromPause(): Promise<void> {
+    if (submitDialogOpen || loginDialogOpen) return;
+    loginDialogOpen = true;
+    paused = true;
+    softPointerControls.clear();
+    clearCirclePad();
+    input.clearHardwareState();
+    try {
+      await openLoginDialog();
+    } finally {
+      loginDialogOpen = false;
+      pauseLoginPending = false;
+    }
+  }
+
   async function beginSubmitAndQuit(): Promise<void> {
-    if (submitDialogOpen) return;
+    if (submitDialogOpen || loginDialogOpen) return;
     if (leaderboardLocked) {
       window.alert(
         "Scores cannot be submitted for this run (respawned in-room, or restarted on the same seed).",
@@ -2415,6 +2448,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       // Skip while dead or item-pickup overlay (Java !itemPickupOverlayActive).
       const wantPauseToggle =
         !submitDialogOpen &&
+        !loginDialogOpen &&
         !player.health.isDead &&
         !pickupOverlay.isActive() &&
         (input.pauseTogglePressed || pauseButtonTogglePending);
@@ -2428,6 +2462,29 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
       if (
         !submitDialogOpen &&
+        !loginDialogOpen &&
+        pauseLoginPending &&
+        paused
+      ) {
+        pauseLoginPending = false;
+        void beginLoginFromPause();
+        return;
+      }
+
+      if (
+        !submitDialogOpen &&
+        !loginDialogOpen &&
+        pauseViewBoardPending &&
+        paused
+      ) {
+        pauseViewBoardPending = false;
+        openLeaderboardView();
+        return;
+      }
+
+      if (
+        !submitDialogOpen &&
+        !loginDialogOpen &&
         (input.submitRunPressed || pauseSubmitPending) &&
         (paused || player.health.isDead)
       ) {
@@ -2456,7 +2513,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
       if (player.health.isDead) {
         runReachedDeath = true;
-        if (!submitDialogOpen && (input.jumpPressed || input.attackPressed)) {
+        if (!submitDialogOpen && !loginDialogOpen && (input.jumpPressed || input.attackPressed)) {
           player.health.max = player.stats.maxHealth;
           player.health.refill();
           leaderboardLocked = true;
@@ -3514,7 +3571,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           leaderboardLocked,
         );
       } else {
-        pauseMenuHits = { submit: { x: 0, y: 0, w: 0, h: 0 } };
+        pauseMenuHits = {
+          login: { x: 0, y: 0, w: 0, h: 0 },
+          viewBoard: { x: 0, y: 0, w: 0, h: 0 },
+          submit: { x: 0, y: 0, w: 0, h: 0 },
+        };
       }
 
       for (const id of hudWeaponItemIdsToPreload(player, session.catalog)) {
