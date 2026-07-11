@@ -87,8 +87,16 @@ export class PlayerStats {
   slideKickDamageFixed = 0;
   slideKickDamageUsesAttackStat = false;
   slideKickDamageAttackStatBonus = 0;
-  /** HEELIES (stub until full skate port). */
+  /** HEELIES: coasting ground movement (see HeelysMechanics). */
   heelysStacks = 0;
+  /** PINK_SCARF: hold-jump float / air control. */
+  pinkScarfStacks = 0;
+  /** PONCHO: mid-air jump flap. */
+  ponchoStacks = 0;
+  /** KURIBO_SHOE: falling stomp. */
+  kuriboShoeStacks = 0;
+  /** AFTERIMAGE: lingering sword smear hitboxes. */
+  afterimageStacks = 0;
   readonly kaleidoscopeEye = new KaleidoscopeEyeState();
 
   get attackRecoverFrames(): number {
@@ -182,6 +190,10 @@ export class PlayerStats {
     this.disc03AirDodgeStacks = inv.stacksOf("DISC03_AIRDODGE");
     this.disc04HeavyStacks = inv.stacksOf("DISC04_HEAVY");
     this.heelysStacks = inv.stacksOf("HEELIES");
+    this.pinkScarfStacks = inv.stacksOf("PINK_SCARF");
+    this.ponchoStacks = inv.stacksOf("PONCHO");
+    this.kuriboShoeStacks = inv.stacksOf("KURIBO_SHOE");
+    this.afterimageStacks = inv.stacksOf("AFTERIMAGE");
     if (this.disc01SlideStacks > 0) {
       const slideDef = catalog.def("DISC01_SLIDE");
       this.slideDistancePx = slideDef.slideDistancePx;

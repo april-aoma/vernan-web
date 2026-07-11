@@ -95,6 +95,9 @@ export interface HeadbandCombatHost {
   getupLockFrames: number;
   climbing: boolean;
   attackPhase: number;
+  normalJumpAirborne: boolean;
+  crouchJumpMode: boolean;
+  walkOffLedgeActive: boolean;
   stats: Pick<
     PlayerStats,
     | "attackWindupFrames"
@@ -112,6 +115,13 @@ export interface HeadbandCombatHost {
   inventory: Pick<PlayerItemInventory, "stacksOf">;
   /** Blocks side-attack re-hits during offensive hitlag (Java offensiveHitlagTimeRemaining). */
   offensiveHitlagRemaining: number;
+  /** Authored anim-cue squash / vx / vy for headband strips. */
+  fireAnimCueStrip(
+    logicalKey: string,
+    stripIndex: number,
+    priorStripIndex: number,
+    startedOnGround: boolean,
+  ): void;
 }
 
 /**
@@ -136,9 +146,18 @@ export class HeadbandCombat {
   private attackChordBufferTimer = 0;
   private horizontalChordDir = 0;
   private sideAttackOppositeChordTapped = false;
+  /** Jump collision hull after upattack0 lift-off (Java headbandUpAttackJumpHull). */
+  private upAttackJumpHull_ = false;
+  /** Jump collision hull during airborne sideattack0 (Java headbandSideAttackJumpHull). */
+  private sideAttackJumpHull_ = false;
 
   isActive(): boolean {
     return this.kind_ !== "none";
+  }
+
+  /** PLAYER_JUMP hull while headband up/side attack is airborne. */
+  usesJumpCollisionHull(): boolean {
+    return this.upAttackJumpHull_ || this.sideAttackJumpHull_;
   }
 
   kind(): HeadbandAttackKind {
@@ -273,9 +292,30 @@ export class HeadbandCombat {
     this.startedOnGround = false;
     this.sideAttackLoop = 0;
     this.sideAttackFullLoops = HEADBAND_SIDE_ATTACK_MAX_FULL_LOOPS;
+    this.upAttackJumpHull_ = false;
+    this.sideAttackJumpHull_ = false;
     this.sideHitEnemiesIndex0.clear();
     this.sideHitEnemiesIndex2.clear();
     this.sideHitEnemiesIndex5.clear();
+  }
+
+  /** After collide: latch jump hull / walk-off for up & side attacks (Java post-step headband block). */
+  syncAirborneLatch(wasOnGround: boolean, host: HeadbandCombatHost): void {
+    if (this.kind_ === "up_attack") {
+      host.walkOffLedgeActive = false;
+    }
+    if (wasOnGround && !host.onGround && this.kind_ === "side_attack" && this.startedOnGround) {
+      this.latchSideAttackAirborne(host);
+    } else if (this.kind_ === "side_attack" && !host.onGround) {
+      this.sideAttackJumpHull_ = true;
+    }
+    if (
+      this.kind_ === "up_attack" &&
+      this.frameIndex_ === HEADBAND_UP_ATTACK0_HIT_FRAME &&
+      !host.onGround
+    ) {
+      this.latchUpAttackAirborne(host);
+    }
   }
 
   /** Sword active AABB for the current headband hit frame, or null. */
@@ -427,11 +467,19 @@ export class HeadbandCombat {
         this.frameTimeLeft -= dt;
         if (this.frameTimeLeft > 0) return;
         const ticks = this.frameTicks();
+        const priorFrame = this.frameIndex_;
         this.frameIndex_++;
         if (this.frameIndex_ >= ticks.length) {
+          if (this.kind_ === "up_attack") this.finishUpAttack(host);
           this.cancel();
         } else {
           this.frameTimeLeft = this.attackFrameSeconds(host, this.frameIndex_);
+          host.fireAnimCueStrip(
+            this.attackCueKey(),
+            this.frameIndex_,
+            priorFrame,
+            this.startedOnGround,
+          );
         }
         return;
       }
@@ -604,7 +652,10 @@ export class HeadbandCombat {
     this.hitLanded = false;
     this.damageConfirmed = false;
     this.startedOnGround = host.onGround;
+    this.upAttackJumpHull_ = false;
+    if (kind === "up_attack") host.walkOffLedgeActive = false;
     this.frameTimeLeft = this.attackFrameSeconds(host, 0);
+    host.fireAnimCueStrip(this.attackCueKey(), 0, -1, this.startedOnGround);
   }
 
   private beginSideAttack(latchedFacing: number, fullLoops: number, host: HeadbandCombatHost): void {
@@ -618,12 +669,58 @@ export class HeadbandCombat {
     this.hitLanded = false;
     this.damageConfirmed = false;
     this.startedOnGround = host.onGround;
+    this.upAttackJumpHull_ = false;
+    this.sideAttackJumpHull_ = !host.onGround;
     this.sideLatchedFacing = latchedFacing >= 0 ? 1 : -1;
     host.facing = this.sideLatchedFacing;
     this.sideHitEnemiesIndex0.clear();
     this.sideHitEnemiesIndex2.clear();
     this.sideHitEnemiesIndex5.clear();
     this.frameTimeLeft = this.sideAttackFrameSeconds(host, 0);
+    host.fireAnimCueStrip("sideattack0", 0, -1, this.startedOnGround);
+  }
+
+  private attackCueKey(): string {
+    switch (this.kind_) {
+      case "up_attack":
+        return "upattack0";
+      case "side_attack":
+        return "sideattack0";
+      default:
+        return "crouchattack1";
+    }
+  }
+
+  private latchUpAttackAirborne(host: HeadbandCombatHost): void {
+    this.upAttackJumpHull_ = true;
+    host.normalJumpAirborne = true;
+    host.walkOffLedgeActive = false;
+    host.crouchJumpMode = false;
+  }
+
+  private latchSideAttackAirborne(host: HeadbandCombatHost): void {
+    this.sideAttackJumpHull_ = true;
+    host.normalJumpAirborne = true;
+    host.walkOffLedgeActive = false;
+    host.crouchJumpMode = false;
+  }
+
+  private finishUpAttack(host: HeadbandCombatHost): void {
+    if (!host.onGround && !host.normalJumpAirborne) {
+      host.normalJumpAirborne = true;
+      host.walkOffLedgeActive = false;
+      host.crouchJumpMode = false;
+    }
+  }
+
+  private finishSideAttackAirborne(host: HeadbandCombatHost): void {
+    if (!host.onGround && this.startedOnGround) {
+      if (!host.normalJumpAirborne) {
+        host.normalJumpAirborne = true;
+      }
+      host.walkOffLedgeActive = false;
+      host.crouchJumpMode = false;
+    }
   }
 
   private tryBeginSideAttackFromInput(input: Input, host: HeadbandCombatHost): boolean {
@@ -747,9 +844,11 @@ export class HeadbandCombat {
       this.sideAttackLoop === HEADBAND_SIDE_ATTACK_END_LOOP &&
       this.frameIndex_ >= 1
     ) {
+      this.finishSideAttackAirborne(host);
       this.cancel();
       return;
     }
+    const priorFrame = this.frameIndex_;
     this.frameIndex_++;
     if (this.frameIndex_ > 5) {
       if (this.sideAttackLoop + 1 < this.sideAttackFullLoops) {
@@ -761,11 +860,13 @@ export class HeadbandCombat {
         this.frameIndex_ = 0;
         this.clearSideAttackLoopHits();
       } else {
+        this.finishSideAttackAirborne(host);
         this.cancel();
         return;
       }
     }
     this.frameTimeLeft = this.sideAttackFrameSeconds(host, this.frameIndex_);
+    host.fireAnimCueStrip("sideattack0", this.frameIndex_, priorFrame, this.startedOnGround);
   }
 
   private clearSideAttackLoopHits(): void {

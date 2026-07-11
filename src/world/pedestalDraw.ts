@@ -109,7 +109,10 @@ function pedestalItemWorldRect(
   return { cx: p.anchorX, cy: iy + sh * 0.5, ix, iy };
 }
 
-/** Bobbing item sprite with squash/stretch + white outline (Java drawSinglePedestal item branch). */
+/**
+ * Bobbing item sprite with squash/stretch + white outline (Java drawSinglePedestal item branch).
+ * Matches Java AffineTransform: translate to item center, scale squash, draw outline then sprite.
+ */
 export function drawPedestalFloatingItem(
   g: CanvasRenderingContext2D,
   camera: WorldCamera,
@@ -121,41 +124,24 @@ export function drawPedestalFloatingItem(
   sw: number,
   sh: number,
 ): void {
-  const { cx, cy, ix, iy } = pedestalItemWorldRect(p, bobPhase, sw, sh);
+  const { cx, cy } = pedestalItemWorldRect(p, bobPhase, sw, sh);
   const { scaleX, scaleY } = pedestalItemSquashScales(bobPhase);
-  const baseDw = CAMERA_ZOOM * sw;
-  const baseDh = CAMERA_ZOOM * sh;
-  const dw = Math.max(1, Math.round(baseDw * scaleX));
-  const dh = Math.max(1, Math.round(baseDh * scaleY));
   const dcx = camera.worldToDeviceX(cx);
   const dcy = camera.worldToDeviceY(cy);
-  const dx = Math.floor(dcx - dw * 0.5);
-  const dy = Math.floor(dcy - dh * 0.5);
+  // Java: camera already has CAMERA_ZOOM, then scale(sx, sy) in world space.
+  // Device path: bake zoom into the local scale around the item center.
+  const itemDrawX = Math.floor(-sw * 0.5);
+  const itemDrawY = Math.floor(-sh * 0.5);
 
+  g.save();
   g.imageSmoothingEnabled = false;
-  try {
-    g.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
-    const outline = pedestalItemOutlineForDraw(source, sx, sy, sw, sh);
-    if (outline) {
-      g.save();
-      g.globalCompositeOperation = "destination-over";
-      g.drawImage(outline, 0, 0, sw, sh, dx, dy, dw, dh);
-      g.restore();
-    }
-  } catch {
-    // Last-resort: flat blit at bob position (pre-port behavior).
-    const flatDx = camera.worldToDeviceX(ix);
-    const flatDy = camera.worldToDeviceY(iy);
-    g.drawImage(
-      source,
-      sx,
-      sy,
-      sw,
-      sh,
-      flatDx,
-      flatDy,
-      Math.floor(baseDw),
-      Math.floor(baseDh),
-    );
+  g.translate(dcx, dcy);
+  g.scale(CAMERA_ZOOM * scaleX, CAMERA_ZOOM * scaleY);
+
+  const outline = pedestalItemOutlineForDraw(source, sx, sy, sw, sh);
+  if (outline) {
+    g.drawImage(outline, 0, 0, sw, sh, itemDrawX, itemDrawY, sw, sh);
   }
+  g.drawImage(source, sx, sy, sw, sh, itemDrawX, itemDrawY, sw, sh);
+  g.restore();
 }

@@ -7,13 +7,14 @@ import type { CombatEnemy } from "../../entity/CombatEnemy";
 import type { Player } from "../../entity/Player";
 
 /**
- * FUZZY_HAT: body-contact electrocution (hurtbox overlap).
- * Java FuzzyHatContactEffect (stomp path deferred — no Kuribo shoe yet).
+ * FUZZY_HAT: body-contact electrocution (hurtbox overlap) + Kuribo electric stomp.
+ * Java FuzzyHatContactEffect.
  */
 export class FuzzyHatContactEffect {
   static readonly ELECTROCUTION_DAMAGE_PER_STACK = 1.5;
   /** Enemy-only: multiplier on freezeFrames for electrocution hitstun. */
   static readonly ELECTROCUTION_HITSTUN_MULT = 5;
+  private static readonly KURIBO_STOMP_DAMAGE_PER_STACK = 1.5;
 
   static electrocutionFreezeFrames(): number {
     return freezeFrames(1, 1) * FuzzyHatContactEffect.ELECTROCUTION_HITSTUN_MULT;
@@ -41,7 +42,29 @@ export class FuzzyHatContactEffect {
       attackerX: player.x,
       attackerW: player.w,
       facing: player.facing,
-      knockKind: "sword_stand",
+      knockKind: "electrocution",
+      contactWorldX: contact.x,
+      contactWorldY: contact.y,
+    };
+    if (!enemy.applyWeaponStrike(strike)) return null;
+    return strike;
+  }
+
+  /** Kuribo stomp while fuzzy hat is equipped. */
+  static applyElectricStomp(
+    fuzzyHatStacks: number,
+    enemy: CombatEnemy,
+    player: Player,
+    contact: { x: number; y: number },
+  ): WeaponStrike | null {
+    if (fuzzyHatStacks <= 0 || enemy.isDead()) return null;
+    const strike: WeaponStrike = {
+      damage: FuzzyHatContactEffect.KURIBO_STOMP_DAMAGE_PER_STACK * fuzzyHatStacks,
+      freezeFrames: FuzzyHatContactEffect.electrocutionFreezeFrames(),
+      attackerX: player.x,
+      attackerW: player.w,
+      facing: player.facing,
+      knockKind: "stomp_electric",
       contactWorldX: contact.x,
       contactWorldY: contact.y,
     };

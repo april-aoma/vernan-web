@@ -1,4 +1,5 @@
 import { HeartKind } from "../combat/Health";
+import { KCandyForgetHud, KCandyForgetTarget } from "../item/KCandyForgetHud";
 import type { Player } from "../entity/Player";
 import type { ItemCatalog } from "../item/ItemCatalog";
 import { resolveSwordProfile } from "../combat/SwordProfile";
@@ -32,7 +33,7 @@ import {
   formatHudStatValue,
   formatMoneyHud,
   type HudEconomyDisplay,
-  uiHeartFrameIndexForContainer,
+  uiHeartFrameIndexForSlot,
   uiSpecialHeartFrameIndex,
 } from "./HudEconomy";
 
@@ -82,6 +83,32 @@ export function miniMapRevealFlags(inv: {
   };
 }
 
+export type KCandyHudDrawState = {
+  forget: KCandyForgetHud;
+  usesRemaining: number;
+  hudRedDisplayed: number;
+};
+
+export type BottomHudDrawOpts = {
+  paused?: boolean;
+  kCandy?: KCandyHudDrawState;
+  /** Live hold state for on-screen control chrome (keyboard + soft). */
+  touchHeld?: TouchControlsHeld;
+};
+
+/** Pressed highlights for the HUD control cluster (Java PlayerControls.is*Held). */
+export type TouchControlsHeld = {
+  up: boolean;
+  left: boolean;
+  down: boolean;
+  right: boolean;
+  jump: boolean;
+  attack: boolean;
+  sub: boolean;
+  dodge: boolean;
+  pause: boolean;
+};
+
 const MINIMAP_ALPHA_VISITED = 230;
 const MINIMAP_ALPHA_UNVISITED = 130;
 const MINIMAP_ALPHA_CURRENT = 250;
@@ -92,7 +119,7 @@ const MINIMAP_HUD_GAP = 8;
 
 /**
  * Draw the full Java-style bottom HUD band.
- * Touch chrome: pause button always; full d-pad/JUMP/ATK optional later.
+ * Touch chrome: D-pad + JUMP/ATK/SPA + shoulders (II pause / R dodge).
  */
 export function drawBottomHud(
   g: CanvasRenderingContext2D,
@@ -105,26 +132,111 @@ export function drawBottomHud(
   roomId: number,
   miniMap: MiniMapState,
   subCooldowns: SubweaponCooldowns,
-  opts: { paused?: boolean } = {},
+  opts: BottomHudDrawOpts = {},
 ): void {
   const hud = computeBottomHudGeometry(INTERNAL_WIDTH, INTERNAL_HEIGHT, HUD_HEIGHT);
   const slots = player.health.hudSlotCount();
+  const kCandy = opts.kCandy;
+  const forget = kCandy?.forget;
+  const heartOp = forget ? forget.opacity(KCandyForgetTarget.HEARTS) : 1;
+  const coinOp = forget ? forget.opacity(KCandyForgetTarget.COINS) : 1;
+  const keyOp = forget ? forget.opacity(KCandyForgetTarget.KEYS) : 1;
+  const statOp = forget ? forget.opacity(KCandyForgetTarget.COMBAT_STATS) : 1;
+  const passiveOp = forget ? forget.opacity(KCandyForgetTarget.PASSIVE_STRIP) : 1;
+  const weaponOp = forget ? forget.opacity(KCandyForgetTarget.WEAPON_SLOTS) : 1;
+  const mapOp = forget ? forget.opacity(KCandyForgetTarget.MAP) : 1;
+  const touchOp = forget ? forget.opacity(KCandyForgetTarget.TOUCH_CONTROLS) : 1;
+  const redCur =
+    kCandy && kCandy.hudRedDisplayed >= 0
+      ? kCandy.hudRedDisplayed
+      : player.health.getRedCurrent();
+  const redMax = player.health.getRedMax();
 
   g.fillStyle = "#000000";
   g.fillRect(0, hud.y0, INTERNAL_WIDTH, HUD_HEIGHT);
   g.imageSmoothingEnabled = false;
   g.font = "10px monospace";
 
-  drawHeartsRow(g, player, sprites, hud, slots);
-  drawEconomyRow(g, player, sprites, economy, hud);
-  drawCombatStats(g, player, sprites, hud, minimapLeftEdge(layout, hud));
-  drawPassiveStrip(g, player, catalog, itemBitmaps, hud);
-  drawWeaponSlots(g, player, catalog, itemBitmaps, sprites, hud, subCooldowns);
-  drawMiniMap(g, layout, roomId, miniMap, hud, miniMapRevealFlags(player.inventory));
-  drawPauseButton(g, hud, opts.paused === true);
+  withHudOpacity(g, heartOp, () => drawHeartsRow(g, player, sprites, hud, slots, redCur, redMax));
+  withHudOpacity(g, coinOp, () => drawEconomyRow(g, player, sprites, economy, hud, keyOp));
+  withHudOpacity(g, statOp, () => drawCombatStats(g, player, sprites, hud, minimapLeftEdge(layout, hud)));
+  withHudOpacity(g, passiveOp, () => drawPassiveStrip(g, player, catalog, itemBitmaps, hud));
+  withHudOpacity(g, weaponOp, () =>
+    drawWeaponSlots(g, player, catalog, itemBitmaps, sprites, hud, subCooldowns, kCandy),
+  );
+  withHudOpacity(g, mapOp, () => drawMiniMap(g, layout, roomId, miniMap, hud, miniMapRevealFlags(player.inventory)));
+  withHudOpacity(g, touchOp, () =>
+    drawTouchControls(g, hud, opts.touchHeld, opts.paused === true),
+  );
+  if (forget?.isBlackout()) {
+    g.fillStyle = "#000000";
+    g.fillRect(0, hud.y0, INTERNAL_WIDTH, HUD_HEIGHT);
+  }
 }
 
-/** Pause control in the left-shoulder HUD slot (Java touch chrome L). */
+function withHudOpacity(g: CanvasRenderingContext2D, alpha: number, draw: () => void): void {
+  if (alpha <= 0.01) return;
+  if (alpha >= 0.99) {
+    draw();
+    return;
+  }
+  g.save();
+  g.globalAlpha = alpha;
+  draw();
+  g.restore();
+}
+
+function drawHudUsesBadge(
+  g: CanvasRenderingContext2D,
+  boxLeft: number,
+  boxTop: number,
+  boxSize: number,
+  uses: number,
+): void {
+  const text = String(Math.max(0, uses));
+  g.font = "bold 8px monospace";
+  const tw = g.measureText(text).width;
+  const tx = boxLeft + boxSize - tw - 1;
+  const ty = boxTop + boxSize - 2;
+  g.fillStyle = "rgba(0,0,0,0.86)";
+  g.fillText(text, tx + 1, ty + 1);
+  g.fillStyle = "rgb(255,240,200)";
+  g.fillText(text, tx, ty);
+  g.font = "10px monospace";
+}
+
+/** Full on-screen control cluster (Java GamePanel.drawBottomHud touch chrome). */
+export function drawTouchControls(
+  g: CanvasRenderingContext2D,
+  hud: BottomHudGeometry,
+  held: TouchControlsHeld | undefined,
+  paused: boolean,
+): void {
+  const tc = computeTouchControlsGeometry(INTERNAL_WIDTH, hud.y0, HUD_HEIGHT);
+  const h = held ?? {
+    up: false,
+    left: false,
+    down: false,
+    right: false,
+    jump: false,
+    attack: false,
+    sub: false,
+    dodge: false,
+    pause: false,
+  };
+  drawButtonBox(g, tc.up.x, tc.up.y, tc.up.w, tc.up.h, "UP", h.up);
+  drawButtonBox(g, tc.left.x, tc.left.y, tc.left.w, tc.left.h, "L", h.left);
+  drawButtonBox(g, tc.down.x, tc.down.y, tc.down.w, tc.down.h, "DN", h.down);
+  drawButtonBox(g, tc.right.x, tc.right.y, tc.right.w, tc.right.h, "R", h.right);
+  // Web: left shoulder is pause (II); Java draws dodge L here.
+  drawButtonBox(g, tc.pause.x, tc.pause.y, tc.pause.w, tc.pause.h, "II", h.pause || paused);
+  drawButtonBox(g, tc.jump.x, tc.jump.y, tc.jump.w, tc.jump.h, "JUMP", h.jump);
+  drawButtonBox(g, tc.dodge.x, tc.dodge.y, tc.dodge.w, tc.dodge.h, "R", h.dodge);
+  drawButtonBox(g, tc.attack.x, tc.attack.y, tc.attack.w, tc.attack.h, "ATK", h.attack);
+  drawButtonBox(g, tc.sub.x, tc.sub.y, tc.sub.w, tc.sub.h, "SPA", h.sub);
+}
+
+/** Pause control in the left-shoulder HUD slot (Java touch chrome L → web II). */
 export function drawPauseButton(
   g: CanvasRenderingContext2D,
   hud: BottomHudGeometry,
@@ -170,17 +282,21 @@ function drawHeartsRow(
   sprites: BottomHudSprites,
   hud: BottomHudGeometry,
   slots: number,
+  redCur: number,
+  redMax: number,
 ): void {
   let hx = PAD_L;
   const redFrames = sprites.heartFrames;
+  let redSlotIndex = 0;
   if (redFrames.length >= 3) {
     for (let slot = 0; slot < slots; slot++) {
       const kind = player.health.hudKind(slot);
       const fill = player.health.hudFill(slot);
-      const cap = player.health.hudCapacity(slot);
       let icon: ImageBitmap | null = null;
       if (kind === HeartKind.RED) {
-        icon = redFrames[uiHeartFrameIndexForContainer(fill, cap)] ?? null;
+        const fi = uiHeartFrameIndexForSlot(redSlotIndex, redCur, redMax);
+        icon = redFrames[fi] ?? null;
+        redSlotIndex++;
       } else if (kind === HeartKind.SOUL && fill > 0.01 && sprites.soulHeartFrames.length >= 2) {
         icon = sprites.soulHeartFrames[uiSpecialHeartFrameIndex(fill)] ?? null;
       } else if (kind === HeartKind.BLACK && fill > 0.01 && sprites.blackHeartFrames.length >= 2) {
@@ -205,6 +321,7 @@ function drawEconomyRow(
   sprites: BottomHudSprites,
   economy: HudEconomyDisplay,
   hud: BottomHudGeometry,
+  keyOp: number,
 ): void {
   const econY = hud.economyY;
   let textX = PAD_L;
@@ -220,14 +337,16 @@ function drawEconomyRow(
   );
 
   const keyX = textX + 44;
-  if (sprites.key) {
+  if (keyOp > 0.01 && sprites.key) {
     drawHudIconContained(g, sprites.key, keyX, econY, ECON_ICON);
     textX = keyX + ECON_ICON + 4;
   } else {
     textX = keyX;
   }
-  g.fillStyle = "#ffffff";
-  g.fillText(String(economy.displayKeys(player.stats.keys)), textX, econY + 11);
+  if (keyOp > 0.01) {
+    g.fillStyle = "#ffffff";
+    g.fillText(String(economy.displayKeys(player.stats.keys)), textX, econY + 11);
+  }
 }
 
 function drawCombatStats(
@@ -322,6 +441,7 @@ function drawWeaponSlots(
   sprites: BottomHudSprites,
   hud: BottomHudGeometry,
   subCooldowns: SubweaponCooldowns,
+  kCandy?: KCandyHudDrawState,
 ): void {
   const slot = WEAPON_SLOT;
   const slotY = hud.y0 + Math.floor((HUD_HEIGHT - slot) / 2);
@@ -401,6 +521,13 @@ function drawWeaponSlots(
         subCooldowns.remainingOf(eqSub),
         subCooldowns.totalOf(eqSub, def.subweaponCooldownSeconds),
       );
+      if (eqSub === "K_CANDY" && kCandy) {
+        drawHudUsesBadge(g, ix, iy, Math.min(iw, ih), kCandy.usesRemaining);
+        if (kCandy.usesRemaining <= 0) {
+          g.fillStyle = "rgba(40,42,48,0.784)";
+          g.fillRect(ix, iy, iw, ih);
+        }
+      }
     }
   }
 }

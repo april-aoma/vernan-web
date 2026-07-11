@@ -4,8 +4,10 @@ import { GoldenRoach } from "../entity/GoldenRoach";
 import { JackBlue } from "../entity/JackBlue";
 import { IceBlock } from "../entity/IceBlock";
 import { Mouse } from "../entity/Mouse";
+import { Multilimber } from "../entity/Multilimber";
 import { Penisman } from "../entity/Penisman";
 import { RollingHead } from "../entity/RollingHead";
+import type { MultilimberPartSprites } from "../entity/drawMultilimber";
 import { isIceBlockFreezable } from "./IceBlockFreeze";
 import { ICE_AQUA_OVERLAY_ALPHA, ICE_AQUA_OVERLAY_RGB } from "./IceBlockFx";
 import type { SpriteStrip } from "../render/SpriteDraw";
@@ -20,6 +22,19 @@ export type FreezeEnemyArt = {
   rollingHead: SpriteStrip | null;
   goldenRoachWalk: SpriteStrip | null;
   goldenRoachFly: SpriteStrip | null;
+  multilimberBody: SpriteStrip | null;
+  multilimberHead: SpriteStrip | null;
+  multilimberEye: SpriteStrip | null;
+};
+
+export type MultilimberPartIceSpawn = {
+  partIndex: number;
+  cx: number;
+  cy: number;
+  animFrame: number;
+  mirrorSourceX: boolean;
+  squashX: number;
+  squashY: number;
 };
 
 function facingHint(e: CombatEnemy): number {
@@ -29,7 +44,6 @@ function facingHint(e: CombatEnemy): number {
   return e.facingSign();
 }
 
-/** {@code drawImage} source-X flip at freeze (Java iceBlockMirrorSourceX). */
 export function iceBlockMirrorSourceX(e: CombatEnemy): boolean {
   const faceRight = facingHint(e) >= 0;
   if (
@@ -37,7 +51,8 @@ export function iceBlockMirrorSourceX(e: CombatEnemy): boolean {
     e instanceof Mouse ||
     e instanceof JackBlue ||
     e instanceof GoldenRoach ||
-    e instanceof RollingHead
+    e instanceof RollingHead ||
+    e instanceof Multilimber
   ) {
     return faceRight;
   }
@@ -74,6 +89,10 @@ function resolveFrame(
     const strip = flying ? art.goldenRoachFly : art.goldenRoachWalk;
     if (!strip) return null;
     return { strip, frame: Math.max(0, Math.min(strip.frameCount - 1, e.getAnimFrame())) };
+  }
+  if (e instanceof Multilimber) {
+    if (!art.multilimberBody) return null;
+    return { strip: art.multilimberBody, frame: Math.max(0, Math.min(2, e.getAnimFrame())) };
   }
   return null;
 }
@@ -117,6 +136,27 @@ function drawEnemyFrameToCanvas(
   return c;
 }
 
+function drawPartFrameToCanvas(
+  strip: SpriteStrip,
+  frame: number,
+  mirrorSourceX: boolean,
+): HTMLCanvasElement | null {
+  const fw = strip.frameW;
+  const fh = strip.frameH;
+  const c = document.createElement("canvas");
+  c.width = fw;
+  c.height = fh;
+  const g = c.getContext("2d")!;
+  g.imageSmoothingEnabled = false;
+  const sx = frame * fw;
+  if (mirrorSourceX) {
+    g.drawImage(strip.image, sx + fw, 0, -fw, fh, 0, 0, fw, fh);
+  } else {
+    g.drawImage(strip.image, sx, 0, fw, fh, 0, 0, fw, fh);
+  }
+  return c;
+}
+
 export function snapshotIceHoldSprite(block: IceBlock): HTMLCanvasElement {
   const c = document.createElement("canvas");
   c.width = TILE_SIZE;
@@ -142,6 +182,36 @@ export function freezeCombatEnemyToIce(
   const tinted = tintAqua(base);
   const squashX = kuriboPancake ? 1.35 : 1;
   const squashY = kuriboPancake ? 1 / 1.35 : 1;
-  const angle = 0;
-  return new IceBlock(r.x, r.y, r.w, r.h, tinted, mirror, kuriboPancake, squashX, squashY, angle);
+  return new IceBlock(r.x, r.y, r.w, r.h, tinted, mirror, kuriboPancake, squashX, squashY, 0);
+}
+
+export function spawnMultilimberPartIce(
+  req: MultilimberPartIceSpawn,
+  parts: MultilimberPartSprites,
+): IceBlock | null {
+  const strip =
+    req.partIndex === 0
+      ? parts.eye
+      : req.partIndex === 1
+        ? parts.head
+        : parts.body;
+  if (!strip) return null;
+  const fi = Math.max(0, Math.min(2, req.animFrame));
+  const base = drawPartFrameToCanvas(strip, fi, req.mirrorSourceX);
+  if (!base) return null;
+  const tinted = tintAqua(base);
+  const halfW = base.width * 0.5;
+  const halfH = base.height * 0.5;
+  return new IceBlock(
+    req.cx - halfW,
+    req.cy - halfH,
+    base.width,
+    base.height,
+    tinted,
+    req.mirrorSourceX,
+    req.squashX >= 1.35 * 0.9,
+    req.squashX,
+    req.squashY,
+    0,
+  );
 }

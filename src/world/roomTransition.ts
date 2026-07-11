@@ -100,6 +100,10 @@ export type RoomSession = {
   shopPedestals: (ItemPedestal[] | null)[];
   /** Enemy death loot pedestals (e.g. Jack Blue shield drop). */
   enemyLootPedestals: (ItemPedestal[] | null)[];
+  /** SUPER_SECRET $30 k-candy refill (lazy; null = no spawn). */
+  superSecretKCandyRefill: (ItemPedestal | null)[];
+  /** Per-room: refill resolve already attempted. */
+  superSecretKCandyRefillResolved: boolean[];
   /** SHOP cat shopkeep (lazy with pedestals). */
   shopKeepers: (ShopKeeper | null)[];
   /** Sealed door cells per room (packCell keys). */
@@ -138,6 +142,8 @@ export function createSession(
     bossClearPedestals: new Array(n).fill(null),
     shopPedestals: new Array(n).fill(null),
     enemyLootPedestals: new Array(n).fill(null),
+    superSecretKCandyRefill: new Array(n).fill(null),
+    superSecretKCandyRefillResolved: new Array(n).fill(false),
     shopKeepers: new Array(n).fill(null),
     bossDoorSealedCells: new Array(n).fill(null),
     bossAscendLadderTx: new Array(n).fill(-1),
@@ -178,6 +184,8 @@ export function rebindSessionToDungeon(session: RoomSession, dungeon: BuiltDunge
   session.bossClearPedestals = new Array(n).fill(null);
   session.shopPedestals = new Array(n).fill(null);
   session.enemyLootPedestals = new Array(n).fill(null);
+  session.superSecretKCandyRefill = new Array(n).fill(null);
+  session.superSecretKCandyRefillResolved = new Array(n).fill(false);
   session.shopKeepers = new Array(n).fill(null);
   session.bossDoorSealedCells = new Array(n).fill(null);
   session.bossAscendLadderTx = new Array(n).fill(-1);
@@ -578,7 +586,11 @@ export function applyNextFloorAscend(session: RoomSession, player: Player): void
   // Preserve fade/blackout machine across rebind (Java keeps LEVEL_LOAD_BLACK).
   const savedTransition = session.transition;
   const nextFloor = session.dungeon.floorOrdinal + 1;
-  const next = buildDungeon(session.dungeon.runSeed, nextFloor);
+  const next = buildDungeon(
+    session.dungeon.runSeed,
+    nextFloor,
+    player.inventory.stacksOf("EYE_OF_RA"),
+  );
   rebindSessionToDungeon(session, next);
   session.transition = savedTransition;
   applyRoomAndSpawn(session, 0, SpawnKind.INITIAL, player);

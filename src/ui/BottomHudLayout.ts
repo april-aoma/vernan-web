@@ -77,18 +77,35 @@ export function weaponSlotsLeftX(jaX: number): number {
   return jaX - WEAPON_SLOT * WEAPON_SLOT_COUNT;
 }
 
+export type TouchControlRect = { x: number; y: number; w: number; h: number };
+
 /** Touch-control chrome geometry (Java BottomHud drawButtonBox cluster). */
 export type TouchControlsGeometry = {
-  up: { x: number; y: number; w: number; h: number };
-  left: { x: number; y: number; w: number; h: number };
-  down: { x: number; y: number; w: number; h: number };
-  right: { x: number; y: number; w: number; h: number };
-  jump: { x: number; y: number; w: number; h: number };
-  attack: { x: number; y: number; w: number; h: number };
-  sub: { x: number; y: number; w: number; h: number };
-  /** Pause / menu (left shoulder slot). */
-  pause: { x: number; y: number; w: number; h: number };
+  up: TouchControlRect;
+  left: TouchControlRect;
+  down: TouchControlRect;
+  right: TouchControlRect;
+  jump: TouchControlRect;
+  attack: TouchControlRect;
+  sub: TouchControlRect;
+  /**
+   * Left shoulder — web uses this as pause (label II); Java draws dodge L here.
+   */
+  pause: TouchControlRect;
+  /** Right shoulder dodge (Java R). */
+  dodge: TouchControlRect;
 };
+
+export type TouchControlId =
+  | "up"
+  | "left"
+  | "down"
+  | "right"
+  | "jump"
+  | "attack"
+  | "sub"
+  | "pause"
+  | "dodge";
 
 export function computeTouchControlsGeometry(
   internalWidth: number,
@@ -111,6 +128,7 @@ export function computeTouchControlsGeometry(
   const jumpW = box * 2;
   const shoulderY = top + Math.floor((box - shoulder) / 2);
   const lShoulderX = jaX - gap - shoulder;
+  const rShoulderX = jaX + jumpW + gap;
   const atkW = Math.floor((jumpW - gap) / 2);
   return {
     up: { x: upX, y: upY, w: box, h: box },
@@ -121,7 +139,31 @@ export function computeTouchControlsGeometry(
     attack: { x: jaX, y: top + box + gap, w: atkW, h: box },
     sub: { x: jaX + atkW + gap, y: top + box + gap, w: atkW, h: box },
     pause: { x: lShoulderX, y: shoulderY, w: shoulder, h: shoulder },
+    dodge: { x: rShoulderX, y: shoulderY, w: shoulder, h: shoulder },
   };
+}
+
+/** Hit-test which on-screen control contains (ix, iy), or null. */
+export function hitTestTouchControl(
+  ix: number,
+  iy: number,
+  geo: TouchControlsGeometry,
+): TouchControlId | null {
+  const order: TouchControlId[] = [
+    "up",
+    "left",
+    "down",
+    "right",
+    "jump",
+    "attack",
+    "sub",
+    "pause",
+    "dodge",
+  ];
+  for (const id of order) {
+    if (hitTestRect(ix, iy, geo[id])) return id;
+  }
+  return null;
 }
 
 export function hitTestRect(

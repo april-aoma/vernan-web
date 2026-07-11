@@ -3,38 +3,14 @@ import { SquashStretch } from "../render/SquashStretch";
 import { CAMERA_ZOOM } from "../specs";
 import type { WorldCamera } from "../camera/WorldCamera";
 import type { Aabb } from "../combat/CombatMath";
+import { HitVfxKind, hitVfxSpriteFile } from "../combat/HitVfxKind";
+
+export { HitVfxKind, hitVfxSpriteFile };
 
 /** Java CombatHitVfx constants. */
 export const HIT_VFX_FADE_FRAMES = 20;
 export const HIT_VFX_DRAW_SCALE = 1.2;
 export const HIT_VFX_FADE_ROTATION_RAD = Math.PI * 0.5;
-
-/** On-hit spark kinds we ship for Phase 3+ sword (Java HitVfxKind subset). */
-export enum HitVfxKind {
-  SLASH = "slash",
-  ELECTRIC = "electric",
-  SHIELD = "shield",
-  SHIELD_BREAK = "shield_break",
-  BLACK_HEART = "black_heart",
-  FALLBACK = "fallback",
-}
-
-export function hitVfxSpriteFile(kind: HitVfxKind): string {
-  switch (kind) {
-    case HitVfxKind.SLASH:
-      return "hit slash.png";
-    case HitVfxKind.ELECTRIC:
-      return "hit electric.png";
-    case HitVfxKind.SHIELD:
-      return "hit shield.png";
-    case HitVfxKind.SHIELD_BREAK:
-      return "hit shield break.png";
-    case HitVfxKind.BLACK_HEART:
-      return "hit black heart.png";
-    case HitVfxKind.FALLBACK:
-      return "hit fallback.png";
-  }
-}
 
 /**
  * Two-phase on-hit spark (Java HitVfx): frame 0 through hitlag with scale ease + opposite shake;
@@ -115,7 +91,8 @@ export class HitVfx {
     camera: WorldCamera,
     sheet: ImageBitmap,
   ): void {
-    const frameCount = 2;
+    const singleFrame = this.kind === HitVfxKind.SHIELD;
+    const frameCount = singleFrame ? 1 : 2;
     const frameW = Math.max(1, Math.floor(sheet.width / frameCount));
     const sh = sheet.height;
     let frameIndex = 0;
@@ -129,7 +106,7 @@ export class HitVfx {
       const fadeElapsed = fadeTotal - this.fadeFramesRemaining;
       const u = fadeTotal > 0 ? fadeElapsed / fadeTotal : 1;
       const uu = Math.max(0, Math.min(1, u));
-      frameIndex = 1;
+      frameIndex = singleFrame ? 0 : 1;
       alpha = 1 - uu;
       const clockwise = this.baseWorldX >= this.attackerCenterWorldX;
       angleRad = (clockwise ? 1 : -1) * HIT_VFX_FADE_ROTATION_RAD * uu;
@@ -170,7 +147,6 @@ export class HitVfx {
   }
 }
 
-/** World center of AABB overlap (Java CombatHitVfx.contactBetweenPoses). */
 export function contactBetweenAabbs(a: Aabb, b: Aabb): { x: number; y: number } {
   const left = Math.max(a.x, b.x);
   const right = Math.min(a.x + a.w, b.x + b.w);

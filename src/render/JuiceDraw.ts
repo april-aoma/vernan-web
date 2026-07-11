@@ -34,6 +34,10 @@ export type JuiceDrawOpts = {
   scaleY?: number;
   /** Solid red SrcAtop (defensive hitstun). */
   solidRed?: boolean;
+  /** Alternating black/white SrcAtop during electrocution hitstun. */
+  electrocuteBw?: boolean;
+  /** Sim tick for electrocution B/W phase (defaults 0). */
+  simTicks?: number;
   /** Fade hurt tint alpha 0–255 (red unless tintRgb set). */
   hurtTintAlpha?: number;
   /** Optional 0xRRGGBB for colored SrcAtop (nova absorb flash). */
@@ -42,7 +46,10 @@ export type JuiceDrawOpts = {
   ownedPalette?: ReadonlyMap<number, number>;
 };
 
-export type TintBlitOpts = Pick<JuiceDrawOpts, "solidRed" | "hurtTintAlpha" | "tintRgb" | "ownedPalette">;
+export type TintBlitOpts = Pick<
+  JuiceDrawOpts,
+  "solidRed" | "electrocuteBw" | "simTicks" | "hurtTintAlpha" | "tintRgb" | "ownedPalette"
+>;
 
 function prepareSpriteCell(
   tc: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
@@ -66,12 +73,18 @@ function prepareSpriteCell(
     }
   }
   const solidRed = juice.solidRed === true;
+  const electrocuteBw = juice.electrocuteBw === true;
   const tintA = juice.hurtTintAlpha ?? 0;
-  if (!solidRed && tintA <= 0) return;
+  if (!solidRed && !electrocuteBw && tintA <= 0) return;
   tc.globalCompositeOperation = "source-atop";
   if (solidRed) {
     tc.fillStyle = "#ff0000";
     tc.globalAlpha = 1;
+    tc.fillRect(0, 0, sw, sh);
+  } else if (electrocuteBw) {
+    const white = Math.floor((juice.simTicks ?? 0) / 3) % 2 === 0;
+    tc.fillStyle = white ? "#ffffff" : "#000000";
+    tc.globalAlpha = 0.92;
     tc.fillRect(0, 0, sw, sh);
   } else {
     const rgb = juice.tintRgb;
@@ -105,9 +118,10 @@ export function blitTintedSpriteCell(
   tint: TintBlitOpts = {},
 ): void {
   const solidRed = tint.solidRed === true;
+  const electrocuteBw = tint.electrocuteBw === true;
   const tintA = tint.hurtTintAlpha ?? 0;
   const needsPalette = !ownedPaletteEmpty(tint.ownedPalette);
-  const needsTint = solidRed || tintA > 0;
+  const needsTint = solidRed || electrocuteBw || tintA > 0;
   g.imageSmoothingEnabled = false;
   if (!needsPalette && !needsTint) {
     g.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
@@ -156,9 +170,10 @@ export function drawJuicedImage(
   const dh = Math.max(1, y2 - y1);
 
   const solidRed = juice.solidRed === true;
+  const electrocuteBw = juice.electrocuteBw === true;
   const tintA = juice.hurtTintAlpha ?? 0;
   const needsPalette = !ownedPaletteEmpty(juice.ownedPalette);
-  const needsTint = solidRed || tintA > 0;
+  const needsTint = solidRed || electrocuteBw || tintA > 0;
 
   g.imageSmoothingEnabled = false;
 

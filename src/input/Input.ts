@@ -14,6 +14,13 @@ export class Input {
   private readonly releasedThisFrame = new Set<string>();
   /** Survives endFrame until the next consuming sim batch (timestop / zero substeps). */
   private readonly lagStashedPresses = new Set<string>();
+  /**
+   * Soft (on-screen) holds — OR'd into {@link isDown} so touch chrome drives the same
+   * getters as keyboard without colliding with real key-up clearing.
+   * Refcounted so D-pad + circle pad can share a direction.
+   */
+  private readonly softKeysDown = new Set<string>();
+  private readonly softKeyRefs = new Map<string, number>();
 
   private readonly onKeyDown: (e: KeyboardEvent) => void;
   private readonly onKeyUp: (e: KeyboardEvent) => void;
@@ -146,7 +153,7 @@ export class Input {
   }
 
   isDown(code: string): boolean {
-    return this.keysDown.has(code);
+    return this.keysDown.has(code) || this.softKeysDown.has(code);
   }
 
   wasPressed(code: string): boolean {
@@ -155,6 +162,42 @@ export class Input {
 
   wasReleased(code: string): boolean {
     return this.releasedThisFrame.has(code);
+  }
+
+  /**
+   * Begin a soft (on-screen) hold for a keyboard code. First press edges
+   * {@link wasPressed}; subsequent holds stay in {@link isDown} until
+   * {@link softKeyUp} / {@link clearSoftKeys}. Refcounted for multitouch / multi-widget.
+   */
+  softKeyDown(code: string): void {
+    const n = this.softKeyRefs.get(code) ?? 0;
+    if (n === 0 && !this.keysDown.has(code)) {
+      this.pressedThisFrame.add(code);
+    }
+    this.softKeyRefs.set(code, n + 1);
+    this.softKeysDown.add(code);
+  }
+
+  /** End a soft hold; emits a release edge like a real key-up when refcount hits 0. */
+  softKeyUp(code: string): void {
+    const n = this.softKeyRefs.get(code) ?? 0;
+    if (n <= 0) return;
+    if (n === 1) {
+      this.softKeyRefs.delete(code);
+      this.softKeysDown.delete(code);
+      if (!this.keysDown.has(code)) this.releasedThisFrame.add(code);
+    } else {
+      this.softKeyRefs.set(code, n - 1);
+    }
+  }
+
+  /** Drop all soft holds (pointer cancel / blur). */
+  clearSoftKeys(): void {
+    for (const code of this.softKeysDown) {
+      if (!this.keysDown.has(code)) this.releasedThisFrame.add(code);
+    }
+    this.softKeysDown.clear();
+    this.softKeyRefs.clear();
   }
 
   /** Claim a press so another system (e.g. door) can take priority. */
@@ -188,6 +231,8 @@ export class Input {
   /** Window blur / tab hide — key-up may never arrive. */
   clearHardwareState(): void {
     this.keysDown.clear();
+    this.softKeysDown.clear();
+    this.softKeyRefs.clear();
     this.pressedThisFrame.clear();
     this.releasedThisFrame.clear();
     this.lagStashedPresses.clear();

@@ -339,6 +339,7 @@ export function poseFromSequence(rig: PossessedRigData, seqName: string, progres
 }
 
 let cached: PossessedRigData | null = null;
+const rigCache = new Map<string, PossessedRigData>();
 
 export function getPossessedRig(): PossessedRigData | null {
   return cached;
@@ -356,4 +357,23 @@ export async function loadPossessedRig(assets: {
     cached = fallbackRig();
   }
   return cached;
+}
+
+/** Load an arbitrary possessed-style rig (lil possessed / lil miner). */
+export async function loadPossessedStyleRig(
+  assets: { loadJson: <T = unknown>(relPath: string) => Promise<T> },
+  relPath: string,
+): Promise<PossessedRigData> {
+  const hit = rigCache.get(relPath);
+  if (hit) return hit;
+  try {
+    const raw = await assets.loadJson<Record<string, unknown>>(relPath);
+    const rig = parseRig(raw);
+    rigCache.set(relPath, rig);
+    return rig;
+  } catch {
+    const fb = fallbackRig();
+    rigCache.set(relPath, fb);
+    return fb;
+  }
 }

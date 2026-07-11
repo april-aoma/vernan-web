@@ -1,8 +1,9 @@
 /**
  * Mutable copy of GameColorPalette for kaleidoscope eye.
  * Accumulates edits and remaps the full backbuffer to nearest scratch swatch.
- * Spatial-distort op is a simplified shuffle (full BackgroundSpatialDistortion deferred).
  */
+import { blendRgb, MODE_LABELS } from "../../../tileset/background/BackgroundLayerBlend";
+import { parse as parseSpatialDistortion, SPATIAL_KINDS } from "../../../tileset/background/BackgroundSpatialDistortion";
 const LUT_SIZE = 4096;
 const BLACK_RGB = 0x000000;
 const WHITE_RGB = 0xffffff;
@@ -45,7 +46,7 @@ export class KaleidoscopeScratchPalette {
         this.stretchRandomSwatch(nextInt);
         break;
       default:
-        this.shuffleChromaticOnce(nextInt);
+        this.distortPaletteOnce(nextInt);
         break;
     }
     this.rebuildRemapLut();
@@ -143,21 +144,30 @@ export class KaleidoscopeScratchPalette {
     else if (dir === 2) nr = Math.min(rows - 1, r + 1);
     else nr = Math.max(0, r - 1);
     const neighbor = this.grid[nc]![nr]!;
+    const mode = MODE_LABELS[nextInt(MODE_LABELS.length)] ?? "normal";
     const strength = 0.35 + nextInt(56) / 100;
-    const blended = lerpRgb(base, neighbor, strength);
+    const blended = blendRgb(base | 0xff000000, neighbor | 0xff000000, strength, mode) & 0xffffff;
     this.grid[c]![r] = blended;
     if (nextInt(2) === 0) this.grid[nc]![nr] = blended;
   }
 
-  /** Simplified stand-in for BackgroundSpatialDistortion palette warp. */
-  private shuffleChromaticOnce(nextInt: (bound: number) => number): void {
+  /** Remap palette swatches through a random BackgroundSpatialDistortion (Java distortPaletteOnce). */
+  private distortPaletteOnce(nextInt: (bound: number) => number): void {
     const cols = this.grid.length;
     const rows = this.grid[0]!.length;
     const copy = this.grid.map((col) => col.slice());
-    for (let c = 1; c <= cols - 2; c++) {
+    const kind = SPATIAL_KINDS[nextInt(SPATIAL_KINDS.length)]!;
+    const tr = defaultDistortParams(kind, cols, rows, nextInt);
+    const dist = parseSpatialDistortion(tr, nextInt(8));
+    if (!dist) return;
+    for (let c = 0; c < cols; c++) {
       for (let r = 0; r < rows; r++) {
-        const sc = 1 + nextInt(cols - 2);
-        const sr = nextInt(rows);
+        const uv = new Float64Array([c * 8 + 4, r * 8 + 4]);
+        dist.mapSample(uv, 0, 0, nextInt(240));
+        let sc = Math.round(uv[0]! / 8);
+        let sr = Math.round(uv[1]! / 8);
+        sc = Math.max(0, Math.min(cols - 1, sc));
+        sr = Math.max(0, Math.min(rows - 1, sr));
         this.grid[c]![r] = copy[sc]![sr]!;
       }
     }
@@ -189,17 +199,75 @@ function wrapChromatic(col: number, cols: number): number {
   return c;
 }
 
-function lerpRgb(a: number, b: number, t: number): number {
-  const ar = (a >>> 16) & 0xff;
-  const ag = (a >>> 8) & 0xff;
-  const ab = a & 0xff;
-  const br = (b >>> 16) & 0xff;
-  const bg = (b >>> 8) & 0xff;
-  const bb = b & 0xff;
-  const r = Math.round(ar + (br - ar) * t);
-  const g = Math.round(ag + (bg - ag) * t);
-  const bl = Math.round(ab + (bb - ab) * t);
-  return ((r & 0xff) << 16) | ((g & 0xff) << 8) | (bl & 0xff);
+function defaultDistortParams(
+  kind: string,
+  cols: number,
+  rows: number,
+  nextInt: (bound: number) => number,
+): Record<string, number | string | boolean> {
+  const cx = cols * 4;
+  const cy = rows * 4;
+  const rad = Math.hypot(cols, rows) * 4;
+  const tr: Record<string, number | string | boolean> = {
+    kind,
+    enabled: true,
+    phaseOffsetRad: nextInt(6283) / 1000,
+  };
+  switch (kind.toLowerCase()) {
+    case "scanlinewarp":
+      tr.ampPx = 1.5 + nextInt(2500) / 1000;
+      tr.phasePerRowRad = 0.25 + nextInt(500) / 1000;
+      tr.timeRadPerTick = 0.04;
+      tr.pinnedRow = nextInt(Math.max(1, rows));
+      tr.strength = 0.6 + nextInt(350) / 1000;
+      break;
+    case "fisheye":
+      tr.centerXPx = cx;
+      tr.centerYPx = cy;
+      tr.radiusPx = rad * 0.55;
+      tr.strength = 0.2 + nextInt(450) / 1000;
+      tr.rippleAmp = 0.08 + nextInt(180) / 1000;
+      tr.rippleFreq = 3 + nextInt(5000) / 1000;
+      tr.timeRadPerTick = 0.03;
+      break;
+    case "swirl":
+      tr.centerXPx = cx;
+      tr.centerYPx = cy;
+      tr.radiusPx = rad * 0.65;
+      tr.twistRad = 0.6 + nextInt(1400) / 1000;
+      tr.rippleAmp = 0.1 + nextInt(200) / 1000;
+      tr.rippleFreq = 3 + nextInt(4000) / 1000;
+      tr.timeRadPerTick = 0.04;
+      break;
+    case "polarscroll":
+      tr.centerXPx = cx;
+      tr.centerYPx = cy;
+      tr.radiusPx = rad;
+      tr.angleRadPerTick = 0.02 + nextInt(50) / 1000;
+      tr.radialPxPerTick = nextInt(2000) / 1000 - 1;
+      tr.strength = 0.65 + nextInt(350) / 1000;
+      break;
+    case "wave2d":
+      tr.ampXPx = 1 + nextInt(3000) / 1000;
+      tr.ampYPx = 0.8 + nextInt(2500) / 1000;
+      tr.phasePerColRad = 0.15 + nextInt(350) / 1000;
+      tr.phasePerRowRad = 0.2 + nextInt(400) / 1000;
+      tr.pinnedCol = nextInt(Math.max(1, cols));
+      tr.pinnedRow = nextInt(Math.max(1, rows));
+      tr.timeRadPerTick = 0.05;
+      break;
+    case "ripple":
+      tr.centerXPx = cx;
+      tr.centerYPx = cy;
+      tr.radiusPx = rad * 0.7;
+      tr.ampPx = 1.5 + nextInt(3000) / 1000;
+      tr.rings = 2 + nextInt(4000) / 1000;
+      tr.timeRadPerTick = 0.06;
+      break;
+    default:
+      break;
+  }
+  return tr;
 }
 
 function quantizeIndex(r: number, g: number, b: number): number {

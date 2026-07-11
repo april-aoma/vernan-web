@@ -2,11 +2,11 @@ import { DEFAULT_SHAKE_AMPLITUDE_PX, sampleShake } from "./HitlagState";
 import { BlackHeartBeatDeferral } from "./BlackHeartBeatDeferral";
 import { blackHeartBurstKnockVelocity } from "./BlackHeartBurstCombat";
 import type { WeaponStrike } from "./CombatMath";
+import type { ElectrocuteJuiceState } from "./EnemyHitstunJuice";
 
-export type BlackHeartEnemyHitstunState = {
+export type BlackHeartEnemyHitstunState = ElectrocuteJuiceState & {
   hitstun: number;
   blackHeartBeat: BlackHeartBeatDeferral;
-  hitlagSolidRed: boolean;
   hitlagShakeX: number;
   hitlagShakeY: number;
 };
@@ -18,6 +18,7 @@ export type BlackHeartEnemyHitstunState = {
 export function tickBlackHeartEnemyHitstun(dt: number, state: BlackHeartEnemyHitstunState): boolean {
   if (state.hitstun <= 0 && !state.blackHeartBeat.isLocked()) {
     state.hitlagSolidRed = false;
+    state.hitlagElectrocute = false;
     state.hitlagShakeX = 0;
     state.hitlagShakeY = 0;
     return false;
@@ -27,12 +28,13 @@ export function tickBlackHeartEnemyHitstun(dt: number, state: BlackHeartEnemyHit
   }
   const frozen = state.hitstun > 0 || state.blackHeartBeat.isLocked();
   if (frozen) {
-    state.hitlagSolidRed = true;
+    state.hitlagSolidRed = !state.hitlagElectrocute;
     state.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
     state.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
     return true;
   }
   state.hitlagSolidRed = false;
+  state.hitlagElectrocute = false;
   state.hitlagShakeX = 0;
   state.hitlagShakeY = 0;
   return false;

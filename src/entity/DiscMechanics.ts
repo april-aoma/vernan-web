@@ -158,6 +158,13 @@ export interface DiscMechanicsHost {
   effectiveOutgoingDamage(base: number): number;
   applySquashStretchX(scale: number, frames: number): void;
   applySquashStretchYWallAnchored(scale: number, frames: number, wallSide: number): void;
+  /** Authored anim-cue squash for disc04 heavy ({@code attack1}). */
+  fireAnimCueStrip(
+    logicalKey: string,
+    stripIndex: number,
+    priorStripIndex: number,
+    startedOnGround: boolean,
+  ): void;
   cancelAttack(): void;
   cancelSubweaponAnim(): void;
   cancelHeadbandAttack(): void;
@@ -182,6 +189,8 @@ export interface DiscMechanicsHost {
   fuzzyHatStacks: number;
   headbandStacks: number;
   gemSwordStacks: number;
+  onHeelysAirDodgeLanding(combinedVx: number): void;
+  onHeelysSlideSpeedBase(): number;
   applySwordHitItemProcs(enemy: CombatEnemy): void;
   beginOffensiveHitlag(frames: number): void;
   hitlagFrames: number;
@@ -382,6 +391,12 @@ export class DiscMechanics {
             break;
           }
           this.heavyAttackFrameTimeLeft += this.heavyAttackFrameSeconds(this.heavyFrameIdx, host);
+          host.fireAnimCueStrip(
+            "attack1",
+            this.heavyFrameIdx,
+            prev,
+            this.heavyAttackStartedOnGround,
+          );
         }
         return;
       }
@@ -887,7 +902,9 @@ export class DiscMechanics {
     host.facing = nf;
     host.crouching = true;
     host.applyHitboxHeight(PLAYER_CROUCH_H, map);
-    this.slideSpeedBase = Math.max(Math.abs(host.vx), host.stats.maxGroundSpeed) * host.stats.slideSpeedMult;
+    this.slideSpeedBase = host.stats.heelysStacks > 0
+      ? host.onHeelysSlideSpeedBase()
+      : Math.max(Math.abs(host.vx), host.stats.maxGroundSpeed) * host.stats.slideSpeedMult;
     host.vx = this.slideFacing * this.slideSpeedBase;
     host.vy = 0;
     host.walkOffLedgeActive = false;
@@ -1344,6 +1361,8 @@ export class DiscMechanics {
   }
 
   private endAirDodgeOnLand(steerDir: number, host: DiscMechanicsHost): void {
+    const combinedVx = this.airDodgeCoastCombinedVx(steerDir);
+    const hadSlideMomentum = Math.abs(combinedVx) > 1e-3;
     if (host.onGround && Math.abs(host.vx) > Math.abs(this.airDodgeVelX) + 1e-3) {
       this.airDodgeVelX = host.vx;
     }
@@ -1354,13 +1373,20 @@ export class DiscMechanics {
     this.airDodgeAvailable = true;
     if (host.onGround) {
       if (host.stats.heelysStacks > 0) {
-        host.vx = this.airDodgeCoastCombinedVx(steerDir);
-        this.airDodgeVelX = 0;
-        this.airDodgeGroundCoast = false;
-        this.airDodgeSavedVelocityPending = false;
-      } else if (Math.abs(this.airDodgeCoastCombinedVx(steerDir)) > 1e-3) {
+        if (hadSlideMomentum) {
+          host.vx = combinedVx;
+          this.airDodgeVelX = 0;
+          this.airDodgeGroundCoast = false;
+          this.airDodgeSavedVelocityPending = false;
+          host.onHeelysAirDodgeLanding(combinedVx);
+        } else {
+          this.airDodgeVelX = 0;
+          this.airDodgeGroundCoast = false;
+          this.airDodgeSavedVelocityPending = false;
+        }
+      } else if (hadSlideMomentum) {
         this.airDodgeGroundCoast = true;
-        host.vx = this.airDodgeCoastCombinedVx(steerDir);
+        host.vx = combinedVx;
       } else {
         this.airDodgeGroundCoast = false;
         this.airDodgeSavedVelocityPending = false;
@@ -1424,6 +1450,7 @@ export class DiscMechanics {
     this.heavyAttackStartedOnGround = host.onGround;
     this.heavyAttackFrameTimeLeft = this.heavyAttackFrameSeconds(0, host);
     this.heavyAttackScreenShakeArmed = false;
+    host.fireAnimCueStrip("attack1", 0, -1, this.heavyAttackStartedOnGround);
   }
 
   private tryCancelHeavyLateRecoverOnAttack(input: Input, host: DiscMechanicsHost): boolean {

@@ -51,6 +51,15 @@ import {
 import { SquashStretch } from "../render/SquashStretch";
 import { HURT_TINT_PEAK_ALPHA, HURT_TINT_SECONDS } from "../combat/HitlagState";
 import { JavaRandom } from "../util/JavaRandom";
+import {
+  applyStrikeElectrocuteJuice,
+  isElectrocutionKnock,
+} from "../combat/EnemyHitstunJuice";
+import type { MultilimberPartIceSpawn } from "../combat/freezeCombatEnemy";
+
+export type IceFreezeHost = {
+  iceBlockEquipped(): boolean;
+};
 
 export const MULTILIMBER_PART_EYE = 0;
 export const MULTILIMBER_PART_HEAD = 1;
@@ -171,7 +180,11 @@ export class Multilimber implements CombatEnemy {
   hitlagShakeX = 0;
   hitlagShakeY = 0;
   hitlagSolidRed = false;
+  hitlagElectrocute = false;
   readonly blackHeartBeat = new BlackHeartBeatDeferral();
+
+  private iceFreezeHost: IceFreezeHost | null = null;
+  private readonly pendingPartIceSpawns: MultilimberPartIceSpawn[] = [];
 
   constructor(x: number, y: number, maxHp = MULTILIMBER_MAX_HP) {
     this.x = x;
@@ -219,6 +232,17 @@ export class Multilimber implements CombatEnemy {
     if (this.pendingExplosions.length === 0) return [];
     const out = [...this.pendingExplosions];
     this.pendingExplosions.length = 0;
+    return out;
+  }
+
+  setIceFreezeHost(host: IceFreezeHost | null): void {
+    this.iceFreezeHost = host;
+  }
+
+  drainPartIceSpawns(): MultilimberPartIceSpawn[] {
+    if (this.pendingPartIceSpawns.length === 0) return [];
+    const out = [...this.pendingPartIceSpawns];
+    this.pendingPartIceSpawns.length = 0;
     return out;
   }
 
@@ -610,6 +634,23 @@ export class Multilimber implements CombatEnemy {
 
   private beginPartDestroy(part: number): void {
     if (this.partDestroying[part] || this.partGone[part]) return;
+    if (this.iceFreezeHost?.iceBlockEquipped()) {
+      this.partGone[part] = true;
+      if (part !== MULTILIMBER_PART_BODY) {
+        const c = this.spriteCenterWorld();
+        const sq = this.partRenderSquash(part);
+        this.pendingPartIceSpawns.push({
+          partIndex: part,
+          cx: c[0]!,
+          cy: c[1]!,
+          animFrame: this.animFrame,
+          mirrorSourceX: this.facingHintVelX() >= 0,
+          squashX: sq.active() ? sq.scaleX() : 1,
+          squashY: sq.active() ? sq.scaleY() : 1,
+        });
+      }
+      return;
+    }
     this.partDestroying[part] = true;
     this.partDestroyStep[part] = 0;
     this.partDestroyTimer[part] = 0;
@@ -672,8 +713,10 @@ export class Multilimber implements CombatEnemy {
 
   private queueHitstunAfterDamage(strike: WeaponStrike): void {
     this.hitstun = Math.max(this.hitstun, Math.max(0.12, strike.freezeFrames / 60));
-    this.hitlagSolidRed = true;
-    this.pendingKnockIsContactOnly = strike.knockKind === "contact_only";
+    applyStrikeElectrocuteJuice(strike, this);
+    if (!this.hitlagElectrocute) this.hitlagSolidRed = true;
+    this.pendingKnockIsContactOnly =
+      strike.knockKind === "contact_only" || isElectrocutionKnock(strike.knockKind);
     const r = this.rect();
     const away = r.x + r.w * 0.5 >= strike.attackerX + strike.attackerW * 0.5 ? 1 : -1;
     const kb = this.scaleKnock(knockbackFor(strike.knockKind, away));
@@ -683,6 +726,7 @@ export class Multilimber implements CombatEnemy {
 
   private finishHitstunKnockRelease(): void {
     this.hitlagSolidRed = false;
+    this.hitlagElectrocute = false;
     if (this.pendingKnockIsContactOnly) {
       this.pendingKnockIsContactOnly = false;
       return;

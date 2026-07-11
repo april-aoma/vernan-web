@@ -46,7 +46,11 @@ export type BuiltDungeon = {
  * layout → planned W/H → Pass A → Pass B → secret content → ladder align →
  * placeSecretEntrances → final shaft → keyblocks → enemies last.
  */
-export function buildDungeon(runSeed: bigint, floorOrdinal = 1): BuiltDungeon {
+export function buildDungeon(
+  runSeed: bigint,
+  floorOrdinal = 1,
+  eyeOfRaStacks = 0,
+): BuiltDungeon {
   const layoutSeed = floorLayoutSeed(runSeed, floorOrdinal);
   const targetRooms = targetRoomCount(layoutSeed);
   const combatW = Math.max(64, Math.floor(WORLD_VIEWPORT_W / TILE_SIZE));
@@ -54,7 +58,13 @@ export function buildDungeon(runSeed: bigint, floorOrdinal = 1): BuiltDungeon {
   const oneScreenW = Math.max(10, Math.ceil(WORLD_VIEWPORT_W / TILE_SIZE));
   const oneScreenH = Math.max(8, Math.ceil(WORLD_VIEWPORT_H / TILE_SIZE));
 
-  const layout = DungeonLayout.generate(layoutSeed, targetRooms, combatW, 0, 0);
+  const layout = DungeonLayout.generate(
+    layoutSeed,
+    targetRooms,
+    combatW,
+    Math.max(0, eyeOfRaStacks | 0),
+    0,
+  );
   const n = layout.roomCount();
   const plannedW = plannedWidths(layout, combatW, oneScreenW);
   const plannedH = plannedHeights(layout, combatH, oneScreenH);

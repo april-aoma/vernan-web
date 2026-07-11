@@ -12,6 +12,7 @@ import {
   releaseBlackHeartBeatKnockback,
   tickBlackHeartEnemyHitstun,
 } from "../combat/BlackHeartEnemyCombat";
+import { applyStrikeElectrocuteJuice } from "../combat/EnemyHitstunJuice";
 import { seesPlayerWithSolidLos } from "../combat/SolidLineOfSight";
 import type { WorldRect } from "../combat/EnemyVision";
 import {
@@ -128,6 +129,7 @@ export class GoldenRoach implements CombatEnemy {
   hitlagShakeX = 0;
   hitlagShakeY = 0;
   hitlagSolidRed = false;
+  hitlagElectrocute = false;
   private hurtTintRemaining = 0;
   readonly blackHeartBeat = new BlackHeartBeatDeferral();
 
@@ -699,6 +701,7 @@ export class GoldenRoach implements CombatEnemy {
       return true;
     }
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
+    applyStrikeElectrocuteJuice(strike, this);
     const r = this.rect();
     const away =
       r.x + r.w * 0.5 >= strike.attackerX + strike.attackerW * 0.5 ? 1 : -1;

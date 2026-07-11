@@ -22,6 +22,7 @@ export function drawGoldenRoach(
   camera: WorldCamera,
   walkStrip: SpriteStrip | null,
   flyStrip: SpriteStrip | null,
+  simTicks = 0,
 ): void {
   if (roach.isDead()) return;
   const flying = roach.getMode() === "fly";
@@ -68,6 +69,8 @@ export function drawGoldenRoach(
       sh,
       {
         solidRed: roach.hitlagSolidRed,
+        electrocuteBw: roach.hitlagElectrocute && roach.hitstun > 0,
+        simTicks,
         hurtTintAlpha: roach.hurtTintAlpha(),
       },
     );

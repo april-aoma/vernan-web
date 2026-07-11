@@ -12,6 +12,7 @@ import {
   releaseBlackHeartBeatKnockback,
   tickBlackHeartEnemyHitstun,
 } from "../combat/BlackHeartEnemyCombat";
+import { applyStrikeElectrocuteJuice } from "../combat/EnemyHitstunJuice";
 import {
   ENEMY_ROLLING_HEAD_HIT_LOCAL,
   ENEMY_ROLLING_HEAD_HIT_PIVOT_X,
@@ -85,6 +86,7 @@ export class RollingHead implements CombatEnemy {
   hitlagShakeX = 0;
   hitlagShakeY = 0;
   hitlagSolidRed = false;
+  hitlagElectrocute = false;
   private hurtTintRemaining = 0;
   readonly blackHeartBeat = new BlackHeartBeatDeferral();
 
@@ -239,6 +241,7 @@ export class RollingHead implements CombatEnemy {
       return true;
     }
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
+    applyStrikeElectrocuteJuice(strike, this);
     const away = this.rect().x + this.rect().w * 0.5 >= strike.attackerX + strike.attackerW * 0.5 ? 1 : -1;
     const kb = knockbackFor(strike.knockKind, away);
     this.pendingKnockVx = this.vx + kb.vx;

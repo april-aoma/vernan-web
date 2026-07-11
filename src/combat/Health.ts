@@ -86,6 +86,21 @@ export class Health {
     this.invulnRemaining = 0;
   }
 
+  /** Red half-hearts filled (Java getRedCurrent). */
+  getRedCurrent(): number {
+    return Math.floor(this.redFillTotal() + ALIVE_EPS);
+  }
+
+  /** Red half-heart cap (Java getRedMax). */
+  getRedMax(): number {
+    return Math.round(this.redCapacityTotal());
+  }
+
+  /** Fill all red containers (Java healFull). */
+  healFull(): void {
+    this.refill();
+  }
+
   tryDamage(amount: number, invulnSeconds: number): boolean {
     if (amount <= 0 || this.isDead || this.isInvulnerable) return false;
     this.applyContainerDamage(amount);

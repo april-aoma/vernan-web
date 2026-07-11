@@ -240,6 +240,7 @@ export class Nephilim implements CombatEnemy {
   hp: number;
   readonly maxHp: number;
   hitlagSolidRed = false;
+  hitlagElectrocute = false;
   hitlagShakeX = 0;
   hitlagShakeY = 0;
   readonly blackHeartBeat = new BlackHeartBeatDeferral();

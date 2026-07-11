@@ -14,6 +14,8 @@ import {
   releaseBlackHeartBeatKnockback,
   tickBlackHeartEnemyHitstun,
 } from "../combat/BlackHeartEnemyCombat";
+import { applyStrikeElectrocuteJuice } from "../combat/EnemyHitstunJuice";
+import { KuriboStompFx } from "../combat/KuriboStompFx";
 import {
   CRAWLER_H,
   CRAWLER_HOP_COOLDOWN_MAX,
@@ -80,6 +82,8 @@ export class Crawler implements PeerWalkingEnemy {
   private animFrame = 0;
   private animAccum = 0;
   private pendingCorpseExplosion = false;
+  private kuriboStompKillPending = false;
+  private kuriboStompCorpseSec = 0;
   /** Java horizontalWallResolvedThisStep — wall snap this tick (turn after move). */
   private horizontalWallResolvedThisStep = false;
   /** Java ignoreHorizontalSolidsThisHop — hop ascent may phase through walls above foot band. */
@@ -93,6 +97,7 @@ export class Crawler implements PeerWalkingEnemy {
   hitlagShakeX = 0;
   hitlagShakeY = 0;
   hitlagSolidRed = false;
+  hitlagElectrocute = false;
   private hurtTintRemaining = 0;
   readonly blackHeartBeat = new BlackHeartBeatDeferral();
 
@@ -119,12 +124,23 @@ export class Crawler implements PeerWalkingEnemy {
       this.hurtTintRemaining = Math.max(0, this.hurtTintRemaining - dt);
     }
 
-    // Java: corpse stays through hitstun, then queues explosion.
+    // Java: corpse stays through hitstun, then queues explosion (or Kuribo pancake linger).
     if (this.hp <= 0) {
+      if (this.kuriboStompCorpseSec > 0) {
+        this.kuriboStompCorpseSec = Math.max(0, this.kuriboStompCorpseSec - dt);
+        if (this.kuriboStompCorpseSec <= 0) this.pendingCorpseExplosion = true;
+        return;
+      }
       if (this.hitstun > 0 || this.blackHeartBeat.isLocked()) {
         const hadHitstun = this.hitstun > 0;
         tickBlackHeartEnemyHitstun(dt, this);
         if (hadHitstun && this.hitstun <= 0 && !this.blackHeartBeat.isLocked()) {
+          if (this.kuriboStompKillPending) {
+            this.kuriboStompKillPending = false;
+            this.kuriboStompCorpseSec = KuriboStompFx.STOMP_CORPSE_LINGER_SEC;
+            this.squash.applyStretchX(KuriboStompFx.STOMP_CORPSE_X, 999);
+            return;
+          }
           this.pendingCorpseExplosion = true;
         }
       }
@@ -293,15 +309,23 @@ export class Crawler implements PeerWalkingEnemy {
       return true;
     }
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
+    applyStrikeElectrocuteJuice(strike, this);
     const r = this.rect();
     const away =
       r.x + r.w * 0.5 >= strike.attackerX + strike.attackerW * 0.5 ? 1 : -1;
-    const kb = knockbackFor(strike.knockKind, away);
+    const kbSign =
+      strike.knockKind === "stomp" || strike.knockKind === "stomp_electric"
+        ? strike.facing
+        : away;
+    const kb = knockbackFor(strike.knockKind, kbSign);
     this.pendingKnockVx = kb.vx;
     this.pendingKnockVy = kb.vy;
     this.vx = 0;
     this.vy = 0;
     this.jumpsquat = 0;
+    if (this.hp <= 0 && (strike.knockKind === "stomp" || strike.knockKind === "stomp_electric")) {
+      this.kuriboStompKillPending = true;
+    }
     return true;
   }
 
@@ -471,7 +495,7 @@ export class Crawler implements PeerWalkingEnemy {
   }
 
   isKuriboStompCorpseActive(): boolean {
-    return false;
+    return this.kuriboStompCorpseSec > 0;
   }
 
   collisionPoseAt(ax: number, ay: number): HitboxPose {

@@ -29,6 +29,8 @@ import {
 } from "./costume/renderPlayerBody";
 import { loadCostumeLayers } from "./ranking/costumeResolve";
 import { VernanBodyLibrary } from "./vernan/VernanBodyLibrary";
+import { VernanAnimCueRuntime } from "./vernan/VernanAnimCueRuntime";
+import { VernanAnimCueSheet } from "./vernan/VernanAnimCueSheet";
 import { mergeOwnedPalette } from "./vernan/OwnedPaletteRuntime";
 import { gemKillSource, setGemKillSource } from "./combat/GemKillTracking";
 import { enemyKillDifficulty } from "./combat/EnemyKillDifficulty";
@@ -39,6 +41,22 @@ import { stickReflectedVelocity } from "./combat/StickReflect";
 import type { SwordVisual } from "./combat/SwordVisual";
 import { BackpackWeaponSwitch } from "./entity/BackpackWeaponSwitch";
 import { FlintFire } from "./entity/FlintFire";
+import { SmokeCloud } from "./fx/SmokeCloud";
+import {
+  applySmokeHeatDistortion,
+  buildSmokeDeviceMask,
+  makeSmokeHeatAnchor,
+  rippleRadiusForSmokeMask,
+  type SmokeHeatAnchor,
+} from "./render/SmokeHeatDistortionEffect";
+import { AfterimageGhost, type AfterimageSpawnSnapshot } from "./combat/AfterimageGhost";
+import { applyTamilOmAuraToBullet } from "./item/effect/TamilOmAura";
+import { CrawlerHatRiding } from "./item/CrawlerHatRiding";
+import { FamiliarTrailHost } from "./item/FamiliarTrailHost";
+import { LilPossessed, LIL_POSSESSED_BULLET_DAMAGE } from "./item/LilPossessed";
+import { LilMiner } from "./item/LilMiner";
+import { WhipSim } from "./combat/whip/WhipSim";
+
 import { LemonProjectile } from "./entity/LemonProjectile";
 import { Player } from "./entity/Player";
 import { Possessed, possessedBulletDamagePose, type PossessedBullet } from "./entity/Possessed";
@@ -65,6 +83,16 @@ import { tickEnemyPeerPhysics } from "./entity/EnemyPeerTick";
 import type { CombatEnemy } from "./entity/CombatEnemy";
 import { FrisbeeAimSnapshot } from "./entity/FrisbeeAimSnapshot";
 import { FrisbeeProjectile } from "./entity/FrisbeeProjectile";
+import { WarpOrbProjectile } from "./entity/WarpOrbProjectile";
+import { KCandyForgetHud, KCandyForgetTarget } from "./item/KCandyForgetHud";
+import { KCandyHealSequence } from "./item/KCandyHealSequence";
+import { KCandyVisionEffect } from "./render/KCandyVisionEffect";
+import {
+  captureBackbuffer,
+  drawSpriteWithLiveReflection,
+} from "./render/LiveReflectionEffect";
+import { WARP_ORB_REFLECTION_STYLE } from "./render/LiveReflectionStyle";
+import { PICKUP_COLLECT_DURATION_SEC } from "./fx/PickupCollectFx";
 import type { SubweaponHost } from "./entity/SubweaponHost";
 import { loadPossessedRig } from "./boss/PossessedRig";
 import { loadNephilimRig } from "./boss/NephilimRig";
@@ -101,16 +129,30 @@ import {
   drawBottomHud,
   hudWeaponItemIdsToPreload,
   innerBoxFrom0000feBorder,
-  pauseButtonRect,
   revealMiniMapForRoom,
   sliceHudStrip,
   slicePickupCell,
   type BottomHudSprites,
   type MiniMapState,
+  type TouchControlsHeld,
 } from "./ui/BottomHud";
 import { drawPauseMenu, drawPauseOverlay, type PauseMenuHitRects } from "./ui/PauseOverlay";
 import { drawDeathOverlay, type DeathOverlayHitRects } from "./ui/DeathOverlay";
-import { hitTestRect } from "./ui/BottomHudLayout";
+import {
+  computeTouchControlsGeometry,
+  hitTestRect,
+  hitTestTouchControl,
+  type TouchControlId,
+} from "./ui/BottomHudLayout";
+import {
+  circlePadDirsToKeyCodes,
+  computeCirclePadLayout,
+  drawCirclePad,
+  hitTestCirclePad,
+  sampleCirclePad,
+  type CirclePadDirs,
+  type CirclePadDrawState,
+} from "./ui/CirclePad";
 import { HudEconomyDisplay } from "./ui/HudEconomy";
 import { openSubmitDialog } from "./ranking/SubmitDialog";
 import { submitScore } from "./ranking/scoresStore";
@@ -129,7 +171,6 @@ import {
   snapshotIceHoldSprite,
 } from "./combat/freezeCombatEnemy";
 import { drawIceBlocks } from "./combat/drawIceBlock";
-import { captureBackbuffer } from "./render/IceBlockReflectionEffect";
 import { feetOnIce, trySwordStrikeIce } from "./combat/IceBlockSupport";
 import { isIceBlockFreezable } from "./combat/IceBlockFreeze";
 import { ICE_SHARD_VELOCITY_SCALE } from "./combat/IceBlockFx";
@@ -154,6 +195,13 @@ import {
   HitVfxKind,
   hitVfxSpriteFile,
 } from "./fx/HitVfx";
+import { HIT_VFX_PRELOAD_KINDS, resolvePlayerMeleeHitVfx } from "./combat/HitVfxKind";
+import { grantRoomClearRewards } from "./world/RoomClearRewards";
+import { spawnMultilimberPartIce } from "./combat/freezeCombatEnemy";
+import {
+  drawElectricShockOverlayWorldRect,
+  ELECTRIC_SHOCK_SHEET_FRAMES,
+} from "./fx/ElectricShockOverlay";
 import { drawRisingDustFx, RisingDustFx } from "./fx/RisingDustFx";
 import {
   coinValue,
@@ -180,6 +228,12 @@ import {
   tryBuyShopPedestal,
   type ShopKeeperFrames,
 } from "./world/Shop";
+import {
+  activeSuperSecretKCandyRefill,
+  K_CANDY_REFILL_PRICE,
+  resolveSuperSecretKCandyRefill,
+  tryBuySuperSecretKCandyRefill,
+} from "./world/KCandyRefill";
 import { RoomKind } from "./world/DungeonTypes";
 import type { Aabb } from "./combat/CombatMath";
 import {
@@ -363,6 +417,9 @@ type PlayerSprites = {
   specialAttack: SpriteStrip | null;
   /** Air frisbee throw (5 frames). */
   airSpecialAttack: SpriteStrip | null;
+  /** Warp orb throw (4 frames, attack0). */
+  attack0: SpriteStrip | null;
+  airAttack0: SpriteStrip | null;
   /** Gardening gloves pluck (4 frames, base+hair composite). */
   pluck: SpriteStrip | null;
   /** Gardening gloves throw (5 frames). */
@@ -476,10 +533,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   fb.mount(parent);
   input.attach(fb.canvas);
 
-  const dungeon = buildDungeon(BigInt(seed), 1);
+  const dungeon = buildDungeon(BigInt(seed), 1, 0);
   let floorOrdinal = 1;
   /** Mirrors Java GamePanel.enemiesKilledThisRun. */
   let enemiesKilledThisRun = 0;
+  /** Last enemy death feet anchor for room-clear loot (Java lastEnemyDeathFeetCenterX/Y). */
+  let lastEnemyDeathFeetCenterX = 0;
+  let lastEnemyDeathFeetY = 0;
   /** Mirrors Java GamePanel.enemiesKillDifficultyThisRun. */
   let enemiesKillDifficultyThisRun = 0;
   /** True once the player has died this run. */
@@ -737,6 +797,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     },
   });
   const subweaponCooldowns = new SubweaponCooldowns();
+  const K_CANDY_MAX_USES = 30;
+  let kCandyUsesRemaining = 0;
+  const kCandyForgetHud = new KCandyForgetHud();
+  const kCandyHealSequence = new KCandyHealSequence();
+  const kCandyVision = new KCandyVisionEffect();
+  let kCandyHudRedDisplayed = -1;
   const subweaponHost: SubweaponHost = {
     equippedSubweapon: () => player.inventory.equippedSubweapon(),
     subweaponCooldownReady: () => {
@@ -769,6 +835,36 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       if (!session) return;
       psychicSpoon.activate(brickChunks, player, session.enemies, camera);
     },
+    spawnWarpOrb: (worldX, worldY, facingSign, throwFromGround) => {
+      warpOrbProjectiles.length = 0;
+      const ivx = facingSign * 132;
+      const ivy = -118;
+      warpOrbProjectiles.push(new WarpOrbProjectile(worldX, worldY, ivx, ivy, throwFromGround));
+    },
+    activateKCandy: () => {
+      if (kCandyUsesRemaining <= 0 || kCandyHealSequence.isActive()) return;
+      kCandyUsesRemaining--;
+      const roomId = session?.roomId ?? 0;
+      const runSeed = session?.dungeon.runSeed ?? BigInt(seed);
+      const rng = new JavaRandom(
+        toJavaLong(
+          runSeed ^
+            BigInt(kCandyForgetHud.totalUses()) * 0xc011ee11n ^
+            BigInt(roomId) * 0x9e3779b9n,
+        ),
+      );
+      kCandyForgetHud.advanceForget(rng);
+      const redCur = player.health.getRedCurrent();
+      const redMax = player.health.getRedMax();
+      const healAmount = Math.max(0, redMax - redCur);
+      const hearts = healAmount > 0 ? Math.max(1, Math.ceil((healAmount + 1) / 2)) : 1;
+      const duration = PICKUP_COLLECT_DURATION_SEC * hearts * 0.55;
+      kCandyHudRedDisplayed = redCur;
+      player.triggerKCandyWhiteFlash(duration);
+      kCandyHealSequence.begin(redCur, redMax, duration, hearts);
+    },
+    kCandyUsesRemaining: () => kCandyUsesRemaining,
+    kCandyCanFire: () => kCandyUsesRemaining > 0 && !kCandyHealSequence.isActive(),
     hasLemonShooter: () => player.inventory.stacksOf("LEMON") > 0,
     lemonShotsOnScreen: () => lemonProjectiles.length,
     lemonShotDamage: () => player.effectiveOutgoingDamage(player.stats.outgoingDamage()) * 0.5,
@@ -800,22 +896,92 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   /** Java GamePanel.paused — freezes sim; Enter/Esc or HUD pause button toggles. */
   let paused = false;
   let pauseButtonTogglePending = false;
-  let fps = 0;
-  let ups = 0;
-  const itemBitmaps = new Map<string, ImageBitmap>();
+  /** pointerId → soft control currently held (multitouch). */
+  const softPointerControls = new Map<number, TouchControlId>();
+  /** Active circle-pad pointer (one stick at a time). */
+  let circlePadPointerId: number | null = null;
+  let circlePadCodes = new Set<string>();
+  let circlePadDraw: CirclePadDrawState = {
+    knobDx: 0,
+    knobDy: 0,
+    active: false,
+    dirs: { up: false, left: false, down: false, right: false },
+  };
 
-  const onPausePointerDown = (e: PointerEvent): void => {
-    if (submitDialogOpen) return;
-    const rect = fb.canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const ix = ((e.clientX - rect.left) / rect.width) * INTERNAL_WIDTH;
-    const iy = ((e.clientY - rect.top) / rect.height) * INTERNAL_HEIGHT;
-    const hudY0 = INTERNAL_HEIGHT - HUD_HEIGHT;
-    if (hitTestRect(ix, iy, pauseButtonRect(hudY0))) {
-      e.preventDefault();
-      pauseButtonTogglePending = true;
+  const touchControlKeyCode = (id: TouchControlId): string | null => {
+    switch (id) {
+      case "up":
+        return "ArrowUp";
+      case "left":
+        return "ArrowLeft";
+      case "down":
+        return "ArrowDown";
+      case "right":
+        return "ArrowRight";
+      case "jump":
+        return "KeyZ";
+      case "attack":
+        return "KeyX";
+      case "sub":
+        return "KeyC";
+      case "dodge":
+        return "ShiftLeft";
+      case "pause":
+        return null;
+    }
+  };
+
+  const syncCirclePadDirs = (dirs: CirclePadDirs): void => {
+    const next = new Set(circlePadDirsToKeyCodes(dirs));
+    for (const code of circlePadCodes) {
+      if (!next.has(code)) input.softKeyUp(code);
+    }
+    for (const code of next) {
+      if (!circlePadCodes.has(code)) input.softKeyDown(code);
+    }
+    circlePadCodes = next;
+  };
+
+  const clearCirclePad = (): void => {
+    circlePadPointerId = null;
+    for (const code of circlePadCodes) input.softKeyUp(code);
+    circlePadCodes = new Set();
+    circlePadDraw = {
+      knobDx: 0,
+      knobDy: 0,
+      active: false,
+      dirs: { up: false, left: false, down: false, right: false },
+    };
+  };
+
+  const releaseSoftPointer = (pointerId: number): void => {
+    if (circlePadPointerId === pointerId) {
+      clearCirclePad();
       return;
     }
+    const id = softPointerControls.get(pointerId);
+    if (!id) return;
+    softPointerControls.delete(pointerId);
+    const code = touchControlKeyCode(id);
+    if (code) input.softKeyUp(code);
+  };
+
+  const canvasPointToInternal = (e: PointerEvent): { ix: number; iy: number } | null => {
+    const rect = fb.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      ix: ((e.clientX - rect.left) / rect.width) * INTERNAL_WIDTH,
+      iy: ((e.clientY - rect.top) / rect.height) * INTERNAL_HEIGHT,
+    };
+  };
+
+  const onTouchControlsPointerDown = (e: PointerEvent): void => {
+    if (submitDialogOpen) return;
+    const pt = canvasPointToInternal(e);
+    if (!pt) return;
+    const { ix, iy } = pt;
+    const hudY0 = INTERNAL_HEIGHT - HUD_HEIGHT;
+
     if (paused && pauseMenuHits.submit.w > 0 && hitTestRect(ix, iy, pauseMenuHits.submit)) {
       e.preventDefault();
       pauseSubmitPending = true;
@@ -828,9 +994,82 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     ) {
       e.preventDefault();
       pauseSubmitPending = true;
+      return;
+    }
+
+    const geo = computeTouchControlsGeometry(INTERNAL_WIDTH, hudY0, HUD_HEIGHT);
+    const hit = hitTestTouchControl(ix, iy, geo);
+    if (hit) {
+      e.preventDefault();
+      try {
+        fb.canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      if (hit === "pause") {
+        pauseButtonTogglePending = true;
+        return;
+      }
+      if (paused || player.health.isDead) return;
+      softPointerControls.set(e.pointerId, hit);
+      const code = touchControlKeyCode(hit);
+      if (code) input.softKeyDown(code);
+      return;
+    }
+
+    if (paused || player.health.isDead) return;
+    const padLayout = computeCirclePadLayout();
+    if (circlePadPointerId == null && hitTestCirclePad(ix, iy, padLayout)) {
+      e.preventDefault();
+      try {
+        fb.canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      circlePadPointerId = e.pointerId;
+      const sample = sampleCirclePad(ix, iy, padLayout);
+      circlePadDraw = {
+        knobDx: sample.knobDx,
+        knobDy: sample.knobDy,
+        active: true,
+        dirs: sample.dirs,
+      };
+      syncCirclePadDirs(sample.dirs);
     }
   };
-  fb.canvas.addEventListener("pointerdown", onPausePointerDown);
+
+  const onTouchControlsPointerMove = (e: PointerEvent): void => {
+    if (circlePadPointerId !== e.pointerId) return;
+    const pt = canvasPointToInternal(e);
+    if (!pt) return;
+    const padLayout = computeCirclePadLayout();
+    const sample = sampleCirclePad(pt.ix, pt.iy, padLayout);
+    circlePadDraw = {
+      knobDx: sample.knobDx,
+      knobDy: sample.knobDy,
+      active: true,
+      dirs: sample.dirs,
+    };
+    syncCirclePadDirs(sample.dirs);
+  };
+
+  const onTouchControlsPointerUp = (e: PointerEvent): void => {
+    releaseSoftPointer(e.pointerId);
+  };
+
+  const onTouchControlsPointerCancel = (e: PointerEvent): void => {
+    releaseSoftPointer(e.pointerId);
+  };
+
+  fb.canvas.addEventListener("pointerdown", onTouchControlsPointerDown);
+  fb.canvas.addEventListener("pointermove", onTouchControlsPointerMove);
+  fb.canvas.addEventListener("pointerup", onTouchControlsPointerUp);
+  fb.canvas.addEventListener("pointercancel", onTouchControlsPointerCancel);
+  fb.canvas.addEventListener("lostpointercapture", onTouchControlsPointerUp);
+
+  let fps = 0;
+  let ups = 0;
+  const itemBitmaps = new Map<string, ImageBitmap>();
 
   function currentRunSummary(): RunSummary {
     return {
@@ -852,6 +1091,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     }
     submitDialogOpen = true;
     paused = true;
+    softPointerControls.clear();
+    clearCirclePad();
     input.clearHardwareState();
     try {
       const summary = currentRunSummary();
@@ -909,6 +1150,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     levelTransition: null,
     specialAttack: null,
     airSpecialAttack: null,
+    attack0: null,
+    airAttack0: null,
     pluck: null,
     throwCarry: null,
     throwCarryAir: null,
@@ -1020,12 +1263,21 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   const brickChunks: BrickChunk[] = [];
   const pendingJackDeathExplosions: PendingJackDeathExplosion[] = [];
   const frisbeeProjectiles: FrisbeeProjectile[] = [];
+  const warpOrbProjectiles: WarpOrbProjectile[] = [];
   const flintFires: FlintFire[] = [];
+  const smokeClouds: SmokeCloud[] = [];
+  const afterimageGhosts: AfterimageGhost[] = [];
+  const familiarTrail = new FamiliarTrailHost();
+  let smokeBmp: ImageBitmap | null = null;
+  let lilPossessedFriendBmp: ImageBitmap | null = null;
+  let lilMinerFriendBmp: ImageBitmap | null = null;
+  let whipPartBmp: ImageBitmap | null = null;
   const lemonProjectiles: LemonProjectile[] = [];
   const backpackWeaponSwitch = new BackpackWeaponSwitch();
   let frisbeeStrip: SpriteStrip | null = null;
   let fireStrip: SpriteStrip | null = null;
   let lemonShotStrip: SpriteStrip | null = null;
+  let electricShockStrip: SpriteStrip | null = null;
   let psychicFireStrip: SpriteStrip | null = null;
   retainWeaponPhysicsForPlayerParity();
   const worldPickups: WorldPickup[] = [];
@@ -1059,8 +1311,15 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   void (async () => {
     try {
       const catalog = await ItemCatalog.load(assets);
+      try {
+        const cuesRaw = await assets.loadJson("data/vernan_anim_cues.json");
+        VernanAnimCueRuntime.load(VernanAnimCueSheet.fromJson(cuesRaw));
+      } catch {
+        VernanAnimCueRuntime.load(VernanAnimCueSheet.empty());
+      }
       gamePalette = await GameColorPalette.load(assets);
       gamePaletteRef = gamePalette;
+      kCandyVision.bindPalette(gamePalette);
       bgRegistry = await BackgroundPresetRegistry.load(assets);
       roomMathBackgroundPresetId = assignRoomMathBackgroundPresets(
         dungeon.layout,
@@ -1140,17 +1399,15 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         const collectBmp = await loadImageSafe(assets, `sprites/${collectFile}`);
         if (collectBmp) pickupCollectStrips.set(kind, collectBmp);
       }
-      for (const kind of [
-        HitVfxKind.SLASH,
-        HitVfxKind.ELECTRIC,
-        HitVfxKind.SHIELD,
-        HitVfxKind.SHIELD_BREAK,
-        HitVfxKind.BLACK_HEART,
-        HitVfxKind.FALLBACK,
-      ]) {
+      for (const kind of HIT_VFX_PRELOAD_KINDS) {
         const bmp = await loadImageSafe(assets, `sprites/${hitVfxSpriteFile(kind)}`);
         if (bmp) hitVfxSprites.set(kind, bmp);
       }
+      electricShockStrip = await loadStrip(
+        assets,
+        "sprites/electric shock.png",
+        ELECTRIC_SHOCK_SHEET_FRAMES,
+      );
       dustSprite = await loadImageSafe(assets, "sprites/dust.png");
 
       playerSprites.idle = await loadImageSafe(assets, "sprites/vernan idle.png");
@@ -1239,6 +1496,18 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         "sprites/vernan air special attack.png",
         5,
       );
+      const attack0Layers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/attack0 ${part}.png`, 4),
+        ),
+      );
+      playerSprites.attack0 = (await compositeBodyStrip(attack0Layers)) ?? null;
+      const attack0AirLayers = await Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/attack0 air-${part}.png`, 4),
+        ),
+      );
+      playerSprites.airAttack0 = (await compositeBodyStrip(attack0AirLayers)) ?? null;
       const pluckLayers = await Promise.all(
         (["base", "hair"] as const).map((part) =>
           loadStrip(assets, `sprites/vernan/pluck ${part}.png`, 4),
@@ -1450,6 +1719,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       penisBulletDieBmp = await loadImageSafe(assets, "sprites/penis bullet die.png");
       jackBlueBoneBmp = await loadImageSafe(assets, "sprites/bone.png");
       lilPossessedBulletBmp = await loadImageSafe(assets, "sprites/lil possessed bullet.png");
+      smokeBmp = await loadImageSafe(assets, "sprites/smoke.png");
+      lilPossessedFriendBmp = await loadImageSafe(assets, "sprites/lil possessed friend.png");
+      lilMinerFriendBmp = await loadImageSafe(assets, "sprites/lil miner friend.png");
+      whipPartBmp = await loadImageSafe(assets, "sprites/whip part.png");
       lilPossessedBulletDieBmp = await loadImageSafe(
         assets,
         "sprites/lil possessed bullet die.png",
@@ -1481,6 +1754,36 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       s.dungeon.secretSeams,
       seamAnimPlayableScrollOverride.current,
     );
+  }
+
+  function grantKCandyOnFirstAcquire(): void {
+    if (kCandyUsesRemaining <= 0) {
+      kCandyUsesRemaining = K_CANDY_MAX_USES;
+    }
+  }
+
+  function tickKCandySystems(dt: number): void {
+    if (kCandyHealSequence.isActive()) {
+      player.tickCosmeticTimers(dt);
+    }
+    kCandyVision.tick(dt);
+    if (!kCandyHealSequence.isActive()) return;
+    const finished = kCandyHealSequence.tick(dt, () => {
+      itemPickupHost.playPickupCollectFxAtPlayer(PickupKind.HEART, 1);
+    });
+    kCandyHudRedDisplayed = kCandyHealSequence.displayedRed();
+    if (finished) {
+      player.health.healFull();
+      player.health.grantSoulHeartsFilled(1);
+      kCandyHudRedDisplayed = -1;
+      const roomId = session?.roomId ?? 0;
+      const runSeed = session?.dungeon.runSeed ?? BigInt(seed);
+      const visionSeed =
+        runSeed ^
+        BigInt(kCandyForgetHud.totalUses()) * 0xc011ee11n ^
+        BigInt(roomId) * 0x9e3779b9n;
+      kCandyVision.beginAfterHeal(visionSeed, kCandyForgetHud.warpIntensity());
+    }
   }
 
   /** Hard snap (spawn / room swap / SEAM-ANIM). Java resetCameraForRoomSpawn. */
@@ -1609,6 +1912,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   function clearWeaponProjectiles(): void {
     flintFires.length = 0;
+    smokeClouds.length = 0;
+    afterimageGhosts.length = 0;
     lemonProjectiles.length = 0;
     backpackWeaponSwitch.reset();
   }
@@ -1709,11 +2014,113 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     worldPickups.push(WorldPickup.createFromBreakable(kind, feetCx, feetY, Math.random));
   }
 
+  function spawnSmokeAtEnemy(enemy: CombatEnemy): void {
+    const fw = smokeBmp?.width ?? 16;
+    const fh = smokeBmp?.height ?? 16;
+    const r = enemy.rect();
+    const sx = r.x + r.w * 0.5 - fw * 0.5;
+    const sy = r.y + r.h * 0.5 - fh * 0.5;
+    const dmg = player.stats.outgoingDamage() / 3;
+    smokeClouds.push(
+      new SmokeCloud(sx, sy, fw, fh, dmg, player.facing >= 0 ? 8 : -8),
+    );
+  }
+
+  function spawnAfterimageGhost(snap: AfterimageSpawnSnapshot): void {
+    for (const g of afterimageGhosts) {
+      if (g.isActive()) g.beginReplaceFade();
+    }
+    afterimageGhosts.push(new AfterimageGhost(snap));
+    while (afterimageGhosts.length > AfterimageGhost.MAX_ON_SCREEN) {
+      afterimageGhosts.shift();
+    }
+  }
+
+
+  function tickFamiliarSystems(map: TileMap): void {
+    if (!session) return;
+    const px = player.x + player.w * 0.5;
+    const py = player.y + player.h * 0.5;
+    const { newPossessed, newMiners } = familiarTrail.syncStacks(
+      player.inventory.stacksOf("LIL_POSSESSED"),
+      player.inventory.stacksOf("LIL_MINER"),
+      { x: px, y: py },
+      () => new LilPossessed(px, py),
+      () => new LilMiner(px, py),
+    );
+    void (async () => {
+      for (const f of newPossessed) await f.loadRig(assets);
+      for (const m of newMiners) await m.loadRig(assets);
+    })();
+    familiarTrail.pushLead(px, py, player.facing);
+    const fireEdge = familiarTrail.consumeAttackFireEdge(
+      player.attackPhase !== 0 || player.disc.isHeavyActive(),
+    );
+    let nearest = { x: px + player.facing * 40, y: py };
+    let best = Infinity;
+    for (const e of session.enemies) {
+      if (e.isDead()) continue;
+      const r = e.rect();
+      const cx = r.x + r.w * 0.5;
+      const cy = r.y + r.h * 0.5;
+      const d = (cx - px) * (cx - px) + (cy - py) * (cy - py);
+      if (d < best) {
+        best = d;
+        nearest = { x: cx, y: cy };
+      }
+    }
+    for (let i = 0; i < familiarTrail.lilPossessed.length; i++) {
+      const f = familiarTrail.lilPossessed[i]!;
+      const follow = familiarTrail.followPoint(familiarTrail.slotFollowIndex("possessed", i));
+      f.update(FIXED_DT, follow.x, follow.y, fireEdge, nearest.x, nearest.y, map);
+      for (const b of f.bulletsCopy()) {
+        const stacks = player.inventory.stacksOf("TAMIL_OM");
+        const v = applyTamilOmAuraToBullet(stacks, px, py, b.x, b.y, b.vx, b.vy);
+        b.vx = v.vx;
+        b.vy = v.vy;
+        for (const e of session.enemies) {
+          if (e.isDead()) continue;
+          const hurt = e.damageReceivePose();
+          if (b.x < hurt.x || b.x > hurt.x + hurt.w || b.y < hurt.y || b.y > hurt.y + hurt.h) continue;
+          const strike = {
+            damage: LIL_POSSESSED_BULLET_DAMAGE,
+            freezeFrames: Math.max(1, Math.ceil(5 + LIL_POSSESSED_BULLET_DAMAGE)),
+            projectileVelX: b.vx,
+            projectileVelY: b.vy,
+            knockKind: "lemon_shot" as const,
+            debrisCenterWorldX: b.x,
+            debrisCenterWorldY: b.y,
+          };
+          if (e.applyProjectileStrike(strike)) b.dead = true;
+        }
+      }
+    }
+    for (let i = 0; i < familiarTrail.lilMiners.length; i++) {
+      const m = familiarTrail.lilMiners[i]!;
+      const follow = familiarTrail.followPoint(familiarTrail.slotFollowIndex("miner", i));
+      m.update(FIXED_DT, follow.x, follow.y, px);
+      if (m.drainCoinThrow()) {
+        const [cx, cy] = m.coinThrowOrigin();
+        worldPickups.push(WorldPickup.createFromBreakable(PickupKind.COIN_1, cx, cy, Math.random));
+      }
+    }
+  }
+
   function wireFlintIgniteCallback(): void {
     if (player.inventory.stacksOf("FLINT") > 0) {
       player.setFlintIgniteCallback(spawnFlintFireAtEnemy);
     } else {
       player.setFlintIgniteCallback(null);
+    }
+    if (player.inventory.stacksOf("PACK_OF_SMOKES") > 0) {
+      player.setSmokePuffCallback(spawnSmokeAtEnemy);
+    } else {
+      player.setSmokePuffCallback(null);
+    }
+    if (player.inventory.stacksOf("AFTERIMAGE") > 0) {
+      player.setAfterimageSpawnHost(spawnAfterimageGhost);
+    } else {
+      player.setAfterimageSpawnHost(null);
     }
     if (player.inventory.stacksOf("GEM_SWORD") > 0) {
       player.setGemSwordHitCallback((e) => {
@@ -1774,6 +2181,36 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     for (let i = flintFires.length - 1; i >= 0; i--) {
       if (flintFires[i]!.isDissipated()) flintFires.splice(i, 1);
     }
+    for (const sc of smokeClouds) {
+      sc.update(FIXED_DT, session.enemies, SmokeCloud.FRAME_DURATION_SEC);
+    }
+    for (let i = smokeClouds.length - 1; i >= 0; i--) {
+      if (smokeClouds[i]!.isDissipated()) smokeClouds.splice(i, 1);
+    }
+    for (let i = afterimageGhosts.length - 1; i >= 0; i--) {
+      const g = afterimageGhosts[i]!;
+      if (g.tickReplaceFade()) {
+        afterimageGhosts.splice(i, 1);
+        continue;
+      }
+      if (!g.isActive()) continue;
+      for (const e of session.enemies) {
+        if (e.isDead() || g.alreadyHit(e)) continue;
+        if (!e.intersectsMeleePose?.(g.hitboxPose) && !e.intersectsAttack(g.hitboxPose.bounds())) continue;
+        const strike = {
+          damage: g.damage,
+          freezeFrames: Math.max(1, Math.ceil(5 + g.damage)),
+          attackerX: g.originX,
+          attackerW: g.attackerWidth,
+          facing: g.facing,
+          knockKind: g.knockbackKind,
+        };
+        if (e.applyWeaponStrike(strike)) {
+          g.markHit(e);
+          player.applySwordHitItemProcsPublic(e);
+        }
+      }
+    }
     for (const lp of lemonProjectiles) {
       lp.update(FIXED_DT, map, camView, tryLemonStrikeTiles);
       lp.applyHits(session.enemies);
@@ -1798,6 +2235,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       pauseButtonTogglePending = false;
       if (wantPauseToggle) {
         paused = !paused;
+        softPointerControls.clear();
+        clearCirclePad();
         input.clearHardwareState();
       }
 
@@ -1828,6 +2267,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           applyRoomAndSpawn(session, session.roomId, SpawnKind.INITIAL, player);
           worldPickups.length = 0;
           frisbeeProjectiles.length = 0;
+          warpOrbProjectiles.length = 0;
           clearWeaponProjectiles();
           player.resetSubweaponAnim();
           mountDeferredRoomPickups(session.dungeon.rooms[session.roomId]!, worldPickups);
@@ -1887,6 +2327,15 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
       hudEconomy.tick(player.stats.money, player.stats.keys);
       subweaponCooldowns.tick(FIXED_DT);
+      tickKCandySystems(FIXED_DT);
+      if (kCandyHealSequence.isActive()) {
+        for (let i = pickupCollectFx.length - 1; i >= 0; i--) {
+          pickupCollectFx[i]!.update(FIXED_DT);
+          if (pickupCollectFx[i]!.done) pickupCollectFx.splice(i, 1);
+        }
+        followCamera(session, false);
+        return;
+      }
 
       // Seam open strip freezes Vernan/enemies (Java activeSeamOpenAnim).
       if (
@@ -1939,6 +2388,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         }
         brickChunks.length = 0;
         frisbeeProjectiles.length = 0;
+        warpOrbProjectiles.length = 0;
         clearWeaponProjectiles();
         worldPickups.length = 0;
         pickupCollectFx.length = 0;
@@ -1967,6 +2417,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           );
         }
         mountDeferredRoomPickups(s.dungeon.rooms[s.roomId]!, worldPickups);
+        resolveSuperSecretKCandyRefill(s, player.inventory.equippedSubweapon());
         refreshRoomArtAndCamera();
         revealMiniMapForRoom(s.dungeon.layout, s.roomId, miniMapState);
       };
@@ -1980,6 +2431,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           );
           brickChunks.length = 0;
           frisbeeProjectiles.length = 0;
+          warpOrbProjectiles.length = 0;
           clearWeaponProjectiles();
           worldPickups.length = 0;
           pickupCollectFx.length = 0;
@@ -2040,9 +2492,15 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       const pedestalPlatforms = pedestalBmp
         ? pedestalPlatformRects(collectRoomPedestals(session))
         : null;
+      const crawlerHatStacks = player.inventory.stacksOf("CRAWLER_HAT");
+      CrawlerHatRiding.primeMountedCrawler(crawlerHatStacks, player, input, session.enemies);
+      const crawlerDecks = CrawlerHatRiding.crawlerDeckPlatforms(session.enemies, crawlerHatStacks);
+      const mergedPlatforms = CrawlerHatRiding.mergePlatformDecks(pedestalPlatforms, crawlerDecks);
+      const crawlerMount = CrawlerHatRiding.findMountedCarrier(player, session.enemies);
+      player.crawlerHatBlockJump = CrawlerHatRiding.blocksPlayerJump(player, input, crawlerMount);
       followCamera(session, true);
       const camViewPre = camera.viewRect();
-      const seeRPre = seeRadiusForRun(false, camViewPre);
+      const seeRPre = seeRadiusForRun(player.inventory.stacksOf("HOODIE") > 0, camViewPre);
       const playerSnapPre = {
         cx: player.x + player.w * 0.5,
         cy: player.y + player.h * 0.5,
@@ -2076,6 +2534,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           e.setCameraView(camViewPre);
           e.applyVision(playerSnapPre, seeRPre);
         } else if (e instanceof Multilimber) {
+          e.setIceFreezeHost({
+            iceBlockEquipped: () => player.inventory.stacksOf("ICE_BLOCK") > 0,
+          });
           e.setCameraView(camViewPre);
           e.applyVision(playerSnapPre.cx, playerSnapPre.cy, seeRPre, map);
         } else if (e instanceof GoldenRoach) {
@@ -2087,6 +2548,18 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         }
       }
       tickEnemyPeerPhysics(session.enemies, map, player.x + player.w * 0.5, FIXED_DT);
+      for (const e of session.enemies) {
+        if (e instanceof Multilimber) {
+          for (const req of e.drainPartIceSpawns()) {
+            const block = spawnMultilimberPartIce(req, {
+              body: enemySprites.multilimberBody,
+              head: enemySprites.multilimberHead,
+              eye: enemySprites.multilimberEye,
+            });
+            if (block) iceBlocks.push(block);
+          }
+        }
+      }
       for (const block of iceBlocks) block.tick(FIXED_DT);
       player.setIceBlockCollisionContext(iceBlocks, feetOnIce(player, iceBlocks));
       player.update(
@@ -2094,10 +2567,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         input,
         map,
         subweaponHost,
-        pedestalPlatforms,
+        mergedPlatforms,
         session.enemies,
         gardeningGlovesSupport,
       );
+      CrawlerHatRiding.correctHullPenetration(player, session.enemies, crawlerHatStacks);
       const wallDust = player.disc.consumeWallSlideDustSpawn();
       if (wallDust) RisingDustFx.spawnStripPuff(risingDustFx, wallDust[0], wallDust[1]);
       const slideDust = player.disc.consumeSlideDustSpawn();
@@ -2136,17 +2610,30 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
 
       const nodeKind = session.dungeon.layout.room(session.roomId).kind;
-      if (nodeKind === RoomKind.SHOP) {
+      const upPressed = input.wasPressed("ArrowUp") || input.wasPressed("KeyW");
+      const refillBuy = tryBuySuperSecretKCandyRefill(
+        session,
+        player,
+        upPressed,
+        player.inventory.equippedSubweapon(),
+        () => {
+          kCandyUsesRemaining = K_CANDY_MAX_USES;
+        },
+      );
+      if (refillBuy) {
+        hudEconomy.startCoinDrain(refillBuy.price, player.stats.money);
+      } else if (nodeKind === RoomKind.SHOP) {
         ensureShopResolved(session);
         const bought = tryBuyShopPedestal(
           session,
           player,
-          input.wasPressed("ArrowUp") || input.wasPressed("KeyW"),
+          upPressed,
           itemPickupHost,
         );
         if (bought) {
           hudEconomy.startCoinDrain(bought.price, player.stats.money);
           if (bought.itemId === "KALEIDOSCOPE_EYE") ensureKaleidoscopePalette();
+          if (bought.itemId === "K_CANDY") grantKCandyOnFirstAcquire();
           pickupOverlay.begin(bought.itemId, pickupOverlayBonusLine);
           pickupOverlayBonusLine = "";
           applySwordProfileIfPresent();
@@ -2156,6 +2643,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         const collected = tryCollectPedestal(session, player, itemPickupHost);
         if (collected) {
           if (collected === "KALEIDOSCOPE_EYE") ensureKaleidoscopePalette();
+          if (collected === "K_CANDY") grantKCandyOnFirstAcquire();
           pickupOverlay.begin(collected, pickupOverlayBonusLine);
           pickupOverlayBonusLine = "";
           applySwordProfileIfPresent();
@@ -2244,6 +2732,28 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       for (let i = frisbeeProjectiles.length - 1; i >= 0; i--) {
         if (!frisbeeProjectiles[i]!.isAlive()) frisbeeProjectiles.splice(i, 1);
       }
+      for (const w of warpOrbProjectiles) {
+        w.update(FIXED_DT, map, pedestalPlatforms, session.enemies);
+        w.applyHits(session.enemies);
+      }
+      for (let i = warpOrbProjectiles.length - 1; i >= 0; i--) {
+        const w = warpOrbProjectiles[i]!;
+        if (w.consumeTeleportPending()) {
+          player.applyWarpOrbTeleport(
+            w.centerWorldX(),
+            w.feetWorldY(),
+            w.landedOnStandable(),
+            map,
+            pedestalPlatforms,
+          );
+          snapCameraToPlayer(session);
+          const body = player.collisionPoseAt(player.x, player.y).bounds();
+          RisingDustFx.spawnBurst(risingDustFx, body.x + body.w * 0.5, body.y + body.h * 0.55, 8);
+          warpOrbProjectiles.splice(i, 1);
+        } else if (!w.isAlive()) {
+          warpOrbProjectiles.splice(i, 1);
+        }
+      }
       const enemyFreeze = player.applyAttackHits(session.enemies, (e, strike, sword, vfx) => {
         const hurt = e.damageReceivePose();
         const contact = contactBetweenAabbs(sword, hurt);
@@ -2252,7 +2762,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
             ? HitVfxKind.SHIELD_BREAK
             : vfx === "shield_block"
               ? HitVfxKind.SHIELD
-              : HitVfxKind.SLASH;
+              : resolvePlayerMeleeHitVfx(
+                  player.swordVisualId(),
+                  player.inventory,
+                  false,
+                  false,
+                );
         HitVfx.spawn(
           hitVfxList,
           kind,
@@ -2313,19 +2828,44 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           player.x + player.w * 0.5,
         );
       });
+      const whipFreeze = player.applyWhipHits(session.enemies);
+      if (whipFreeze > 0) player.latchAttackHit(whipFreeze);
       applyPenismanBulletHits(session, player);
       applyJackBlueBoneHits(session, player);
+      tickFamiliarSystems(map);
       applyPossessedBulletHits(session, player);
       applyStickReflectedArcingBulletHits(session, player);
       lastFrozenIce = null;
       for (const e of session.enemies) maybeSpawnDeathFx(e);
       session.enemies = session.enemies.filter((e) => {
         if (!e.isDead()) return true;
+        const r = e.rect();
+        lastEnemyDeathFeetCenterX = r.x + r.w * 0.5;
+        lastEnemyDeathFeetY = r.y + r.h;
         enemiesKilledThisRun++;
         enemiesKillDifficultyThisRun += enemyKillDifficulty(e);
         return false;
       });
+      const roomId = session.roomId;
+      const wasRoomCleared = session.roomCombatCleared[roomId];
       tryProcessRoomClear(session, player);
+      if (!wasRoomCleared && session.roomCombatCleared[roomId]) {
+        familiarTrail.notifyRoomCleared();
+        grantRoomClearRewards({
+          layout: session.dungeon.layout,
+          roomId,
+          floorOrdinal,
+          runSeed: session.dungeon.runSeed,
+          map,
+          player,
+          enemiesKilledThisRun,
+          lastEnemyDeathFeetCenterX,
+          lastEnemyDeathFeetY,
+          iceBlocks,
+          lastFrozenIce,
+          worldPickups,
+        });
+      }
       tickTurnAnim(player);
     },
     render: () => {
@@ -2461,6 +3001,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         for (const sp of activeShopPedestals(session)) preloadPedestalItem(sp);
       }
       for (const ep of activeEnemyLootPedestals(session)) preloadPedestalItem(ep);
+      const kCandyRefillPed = activeSuperSecretKCandyRefill(session);
+      preloadPedestalItem(kCandyRefillPed);
       drawPedestal(
         g,
         activePedestal(session),
@@ -2515,8 +3057,28 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           kaleidoscopePedestalSprite,
         );
       }
+      if (kCandyRefillPed) {
+        drawPedestal(
+          g,
+          kCandyRefillPed,
+          session,
+          camera,
+          pedestalBmp,
+          itemBitmaps,
+          kaleidoscopePedestalSprite,
+        );
+        if (!kCandyRefillPed.collected && kCandyRefillPed.itemId) {
+          const box = pedestalItemAabb(kCandyRefillPed);
+          if (box) {
+            const labelX = camera.worldToDeviceX(kCandyRefillPed.anchorX);
+            const labelY = camera.worldToDeviceY(box.y) - 4;
+            drawShopPriceLabel(g, labelX, labelY, kCandyRefillPed.priceCoins ?? K_CANDY_REFILL_PRICE);
+          }
+        }
+      }
       for (const e of session.enemies) {
-        drawEnemy(g, e, camera, enemySprites, player, playerSprites);
+        const simTick = Math.floor(session.timeSec * 60);
+        drawEnemy(g, e, camera, enemySprites, player, playerSprites, simTick, electricShockStrip);
         if (e instanceof Possessed) {
           drawPossessedBullets(g, e, camera, possessedBulletBmp, possessedBulletDieBmp);
         } else if (e instanceof Penisman) {
@@ -2557,6 +3119,18 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       for (const ff of flintFires) {
         drawFlintFire(g, ff, camera, fireStrip);
       }
+      for (const sc of smokeClouds) {
+        drawSmokeCloud(g, sc, camera, smokeBmp);
+      }
+      drawWhip(g, player, camera, whipPartBmp);
+      drawFamiliars(
+        g,
+        camera,
+        familiarTrail,
+        lilPossessedFriendBmp,
+        lilMinerFriendBmp,
+        lilPossessedBulletBmp,
+      );
       if (!levelAscendFadeOut && !isPlayerGrabDrawEmbeddedInNephilim(player, session.enemies)) {
         const ownedPalette = mergeOwnedPalette(player.inventory, session.catalog);
         drawPlayer(
@@ -2567,7 +3141,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           renderFacing,
           turnAnimFramesLeft > 0,
           session.transition.pose,
-          pickupOverlay.isActive(),
+          pickupOverlay.isActive() || kCandyHealSequence.isActive(),
           costumeBundle,
           ownedPalette,
         );
@@ -2603,6 +3177,17 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
               playerSprites.itemPose?.height ?? 32,
             );
           }
+        } else if (kCandyHealSequence.isActive()) {
+          const kCandyBmp = itemBitmaps.get(session.catalog.def("K_CANDY").spriteFileName);
+          if (kCandyBmp) {
+            drawPickupItemAbovePlayer(
+              g,
+              player,
+              camera,
+              kCandyBmp,
+              playerSprites.itemPose?.height ?? 32,
+            );
+          }
         }
       }
       drawBrickChunksInFront(
@@ -2614,8 +3199,19 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         psychicFireStrip,
         psychicDash,
       );
+      const warpOrbReflectionBackbuffer =
+        warpOrbProjectiles.length > 0 ? captureBackbuffer(fb.internal) : null;
       for (const f of frisbeeProjectiles) {
         drawFrisbeeProjectile(g, f, camera, frisbeeStrip);
+      }
+      for (const w of warpOrbProjectiles) {
+        drawWarpOrbProjectile(
+          g,
+          w,
+          camera,
+          itemBitmaps.get(session.catalog.def("WARP_ORB").spriteFileName) ?? null,
+          warpOrbReflectionBackbuffer,
+        );
       }
       for (const lp of lemonProjectiles) {
         drawLemonProjectile(g, lp, camera, lemonShotStrip);
@@ -2691,6 +3287,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         void ensureItemArt(session.catalog.def(id).spriteFileName);
       }
 
+      // Geometry-only fisheye under smoke sprites (Java applySmokeHeatDistortion) — after world, before HUD.
+      applySmokeHeatDistortionToBackbuffer(g, camera, smokeClouds, smokeBmp);
+
       drawBottomHud(
         g,
         player,
@@ -2702,8 +3301,32 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         session.roomId,
         miniMapState,
         subweaponCooldowns,
-        { paused },
+        {
+          paused,
+          touchHeld: {
+            up: input.up,
+            left: input.left,
+            down: input.down,
+            right: input.right,
+            jump: input.jump,
+            attack: input.attack,
+            sub: input.subweapon,
+            dodge: input.shiftHeld,
+            pause: paused,
+          } satisfies TouchControlsHeld,
+          kCandy: {
+            forget: kCandyForgetHud,
+            usesRemaining: kCandyUsesRemaining,
+            hudRedDisplayed: kCandyHudRedDisplayed,
+          },
+        },
       );
+
+      // Web-only circle pad (above HUD, left). Fades with k-candy touch-control forget.
+      {
+        const touchOp = kCandyForgetHud.opacity(KCandyForgetTarget.TOUCH_CONTROLS);
+        drawCirclePad(g, computeCirclePadLayout(), circlePadDraw, touchOp);
+      }
 
       if (debug && !pickupOverlay.isActive()) {
         g.fillStyle = "#6ec8ff";
@@ -2740,6 +3363,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       ) {
         kaleidoscopePalette.applyToCanvas(g, INTERNAL_WIDTH, INTERNAL_HEIGHT);
       }
+      if (kCandyVision.isActive()) {
+        kCandyVision.apply(g, INTERNAL_WIDTH, INTERNAL_HEIGHT);
+      }
 
       fb.present();
     },
@@ -2764,22 +3390,26 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   function tickTurnAnim(pl: Player): void {
     const cur = pl.facing >= 0 ? 1 : -1;
+    const heelysGlideHold = pl.isHeelysGlidePoseHold();
     if (!pl.onGround || pl.climbing || pl.isAttacking()) {
       renderFacing = cur;
       turnAnimFramesLeft = 0;
       return;
     }
     if (turnAnimFramesLeft > 0) {
-      turnAnimFramesLeft--;
-      // Pre-flip half keeps old renderFacing; post-flip snaps to gameplay facing.
-      if (turnAnimFramesLeft < TURN_POST_FLIP_FRAMES) {
-        renderFacing = cur;
+      if (!heelysGlideHold) {
+        turnAnimFramesLeft--;
+        if (turnAnimFramesLeft < TURN_POST_FLIP_FRAMES) {
+          renderFacing = cur;
+        }
+        if (turnAnimFramesLeft === 0) renderFacing = cur;
       }
-      if (turnAnimFramesLeft === 0) renderFacing = cur;
       return;
     }
     if (cur !== renderFacing) {
-      turnAnimFramesLeft = TURN_PRE_FLIP_FRAMES + TURN_POST_FLIP_FRAMES;
+      if (!heelysGlideHold) {
+        turnAnimFramesLeft = TURN_PRE_FLIP_FRAMES + TURN_POST_FLIP_FRAMES;
+      }
     } else {
       renderFacing = cur;
     }
@@ -2840,6 +3470,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       if (e.suppressDeathExplosion()) {
         if (e.isDead() && !dyingFxStarted.has(e)) {
           dyingFxStarted.add(e);
+          if (tryFreezeDeadEnemy(e)) {
+            rollGemKillLootIntoIce(e);
+            return;
+          }
           trySpawnGemKillCoin(e);
         }
         return;
@@ -2897,6 +3531,20 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       if (!(e instanceof Penisman) || e.isDead()) continue;
       for (const b of e.bulletsCopy()) {
         if (!b.alive || b.isStickReflected() || b.playerOverlapHandled()) continue;
+        {
+          const stacks = pl.inventory.stacksOf("TAMIL_OM");
+          const v = applyTamilOmAuraToBullet(
+            stacks,
+            pl.x + pl.w * 0.5,
+            pl.y + pl.h * 0.5,
+            b.centerX(),
+            b.centerY(),
+            b.vx,
+            b.vy,
+          );
+          b.vx = v.vx;
+          b.vy = v.vy;
+        }
         const res = pl.hitArcingEnemyBullet(b.damagePose(), b.centerX());
         if (res === "miss") continue;
         if (res === "stick_reflect") {
@@ -2932,6 +3580,20 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       if (!(e instanceof Possessed) || e.isDead()) continue;
       for (const b of e.bulletsCopy()) {
         if (b.dead || b.stickReflected || b.playerOverlapHandled) continue;
+        {
+          const stacks = pl.inventory.stacksOf("TAMIL_OM");
+          const v = applyTamilOmAuraToBullet(
+            stacks,
+            pl.x + pl.w * 0.5,
+            pl.y + pl.h * 0.5,
+            b.x,
+            b.y,
+            b.vx,
+            b.vy,
+          );
+          b.vx = v.vx;
+          b.vy = v.vy;
+        }
         const res = pl.hitArcingEnemyBullet(possessedBulletDamagePose(b), b.x);
         if (res === "miss") continue;
         if (res === "stick_reflect") {
@@ -3015,7 +3677,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     getRunSummary: () => currentRunSummary(),
     destroy: () => {
       loop.stop();
-      fb.canvas.removeEventListener("pointerdown", onPausePointerDown);
+      fb.canvas.removeEventListener("pointerdown", onTouchControlsPointerDown);
+      fb.canvas.removeEventListener("pointermove", onTouchControlsPointerMove);
+      fb.canvas.removeEventListener("pointerup", onTouchControlsPointerUp);
+      fb.canvas.removeEventListener("pointercancel", onTouchControlsPointerCancel);
+      fb.canvas.removeEventListener("lostpointercapture", onTouchControlsPointerUp);
+      clearCirclePad();
+      input.clearSoftKeys();
       input.detach();
       parent.replaceChildren();
     },
@@ -3177,6 +3845,8 @@ function collectRoomPedestals(session: RoomSession): ItemPedestal[] {
   if (primary) out.push(primary);
   out.push(...activeShopPedestals(session));
   out.push(...activeEnemyLootPedestals(session));
+  const refill = activeSuperSecretKCandyRefill(session);
+  if (refill) out.push(refill);
   return out;
 }
 
@@ -3401,14 +4071,15 @@ function drawPlayer(
   const lemonBody = player.isLemonPoseActive() || player.usesLemonBuster();
   const bodySprites = lemonBody ? pickLemonBodySprites(sprites) : sprites;
   const shyFlash = player.shyMaskFlashAlpha();
+  const kCandyWhite = player.kCandyWhiteFlashActive();
   const juice = {
     shakeX: player.hitlagShakeX,
     shakeY: player.hitlagShakeY,
     scaleX: player.renderSquashScaleX(),
     scaleY: player.renderSquashScaleY(),
-    solidRed: player.hitlagSolidRed,
-    hurtTintAlpha: shyFlash > 0 ? shyFlash : player.hurtTintAlpha(),
-    tintRgb: shyFlash > 0 ? player.shyMaskFlashRgb() : undefined,
+    solidRed: player.hitlagSolidRed && !kCandyWhite,
+    hurtTintAlpha: kCandyWhite ? 255 : shyFlash > 0 ? shyFlash : player.hurtTintAlpha(),
+    tintRgb: kCandyWhite ? 0xffffff : shyFlash > 0 ? player.shyMaskFlashRgb() : undefined,
     ownedPalette,
   };
 
@@ -3639,9 +4310,13 @@ function drawPlayer(
   }
 
   if (player.isSubweaponAnimating()) {
-    const strip = player.subweaponUsesAirSpecialStrip()
-      ? (sprites.airSpecialAttack ?? sprites.specialAttack)
-      : sprites.specialAttack;
+    const strip = player.subweaponUsesAttack0Strip()
+      ? player.subweaponUsesAirSpecialStrip()
+        ? (sprites.airAttack0 ?? sprites.attack0)
+        : sprites.attack0
+      : player.subweaponUsesAirSpecialStrip()
+        ? (sprites.airSpecialAttack ?? sprites.specialAttack)
+        : sprites.specialAttack;
     if (strip) {
       drawFeetPinnedStrip(
         g,
@@ -3715,6 +4390,59 @@ function drawPlayer(
   g.fillRect(dx, dy, dw, dh);
 }
 
+type ElectrocuteEnemyDrawState = {
+  hitlagShakeX: number;
+  hitlagShakeY: number;
+  hitlagSolidRed: boolean;
+  hitlagElectrocute?: boolean;
+  hitstun: number;
+  squash?: { scaleX(): number; scaleY(): number };
+  hurtTintAlpha(): number;
+};
+
+function enemyStrikeJuice(e: ElectrocuteEnemyDrawState, simTicks: number): JuiceDrawOpts {
+  const electrocuteBw = !!(e.hitlagElectrocute && e.hitstun > 0);
+  return {
+    shakeX: e.hitlagShakeX,
+    shakeY: e.hitlagShakeY,
+    scaleX: e.squash?.scaleX() ?? 1,
+    scaleY: e.squash?.scaleY() ?? 1,
+    solidRed: electrocuteBw ? false : e.hitlagSolidRed,
+    electrocuteBw,
+    simTicks,
+    hurtTintAlpha: e.hurtTintAlpha(),
+  };
+}
+
+function maybeDrawElectricShockOverlay(
+  g: CanvasRenderingContext2D,
+  e: CombatEnemy,
+  camera: WorldCamera,
+  strip: SpriteStrip | null,
+  simTicks: number,
+): void {
+  if (!strip) return;
+  const host = e as CombatEnemy & {
+    hitlagElectrocute?: boolean;
+    hitstun?: number;
+    hitlagShakeX?: number;
+    hitlagShakeY?: number;
+  };
+  if (!host.hitlagElectrocute || (host.hitstun ?? 0) <= 0) return;
+  const shakeDx = Math.round((host.hitlagShakeX ?? 0) * CAMERA_ZOOM);
+  const shakeDy = Math.round((host.hitlagShakeY ?? 0) * CAMERA_ZOOM);
+  drawElectricShockOverlayWorldRect(
+    g,
+    (wx) => camera.worldToDeviceX(wx),
+    (wy) => camera.worldToDeviceY(wy),
+    e.rect(),
+    shakeDx,
+    shakeDy,
+    strip,
+    simTicks,
+  );
+}
+
 function drawEnemy(
   g: CanvasRenderingContext2D,
   e: CombatEnemy,
@@ -3722,6 +4450,8 @@ function drawEnemy(
   sprites: EnemySprites,
   player: Player,
   playerSprites: PlayerSprites,
+  simTicks: number,
+  electricShock: SpriteStrip | null,
 ): void {
   if (e instanceof Possessed) {
     drawPossessedBoss(g, e, camera, {
@@ -3773,15 +4503,9 @@ function drawEnemy(
         feet,
         e.facingSign(),
         camera,
-        {
-          shakeX: e.hitlagShakeX,
-          shakeY: e.hitlagShakeY,
-          scaleX: e.squash.scaleX(),
-          scaleY: e.squash.scaleY(),
-          solidRed: e.hitlagSolidRed,
-          hurtTintAlpha: e.hurtTintAlpha(),
-        },
+        enemyStrikeJuice(e, simTicks),
       );
+      maybeDrawElectricShockOverlay(g, e, camera, electricShock, simTicks);
       return;
     }
   }
@@ -3801,15 +4525,9 @@ function drawEnemy(
         feet,
         e.facingSign(),
         camera,
-        {
-          shakeX: e.hitlagShakeX,
-          shakeY: e.hitlagShakeY,
-          scaleX: e.squash.scaleX(),
-          scaleY: e.squash.scaleY(),
-          solidRed: e.hitlagSolidRed,
-          hurtTintAlpha: e.hurtTintAlpha(),
-        },
+        enemyStrikeJuice(e, simTicks),
       );
+      maybeDrawElectricShockOverlay(g, e, camera, electricShock, simTicks);
       return;
     }
   }
@@ -3828,21 +4546,16 @@ function drawEnemy(
         feet,
         e.facingSign(),
         camera,
-        {
-          shakeX: e.hitlagShakeX,
-          shakeY: e.hitlagShakeY,
-          scaleX: e.squash.scaleX(),
-          scaleY: e.squash.scaleY(),
-          solidRed: e.hitlagSolidRed,
-          hurtTintAlpha: e.hurtTintAlpha(),
-        },
+        enemyStrikeJuice(e, simTicks),
       );
+      maybeDrawElectricShockOverlay(g, e, camera, electricShock, simTicks);
       return;
     }
   }
 
   if (e instanceof GoldenRoach) {
-    drawGoldenRoach(g, e, camera, sprites.goldenRoachWalk, sprites.goldenRoachFly);
+    drawGoldenRoach(g, e, camera, sprites.goldenRoachWalk, sprites.goldenRoachFly, simTicks);
+    maybeDrawElectricShockOverlay(g, e, camera, electricShock, simTicks);
     return;
   }
 
@@ -3852,14 +4565,7 @@ function drawEnemy(
       const rect = e.rect();
       const cx = rect.x + rect.w * 0.5;
       const feet = rect.y + rect.h;
-      const juice = {
-        shakeX: e.hitlagShakeX,
-        shakeY: e.hitlagShakeY,
-        scaleX: e.squash.scaleX(),
-        scaleY: e.squash.scaleY(),
-        solidRed: e.hitlagSolidRed,
-        hurtTintAlpha: e.hurtTintAlpha(),
-      };
+      const juice = enemyStrikeJuice(e, simTicks);
       drawFeetPinnedStrip(
         g,
         sprites.jackBlue,
@@ -3882,6 +4588,7 @@ function drawEnemy(
           juice,
         );
       }
+      maybeDrawElectricShockOverlay(g, e, camera, electricShock, simTicks);
       return;
     }
   }
@@ -3897,15 +4604,9 @@ function drawEnemy(
         head: sprites.multilimberHead,
         eye: sprites.multilimberEye,
       },
-      {
-        shakeX: e.hitlagShakeX,
-        shakeY: e.hitlagShakeY,
-        scaleX: e.squash.scaleX(),
-        scaleY: e.squash.scaleY(),
-        solidRed: e.hitlagSolidRed,
-        hurtTintAlpha: e.hurtTintAlpha(),
-      },
+      enemyStrikeJuice(e, simTicks),
     );
+    maybeDrawElectricShockOverlay(g, e, camera, electricShock, simTicks);
     return;
   }
 
@@ -3923,15 +4624,9 @@ function drawEnemy(
         feet,
         e.facingSign(),
         camera,
-        {
-          shakeX: e.hitlagShakeX,
-          shakeY: e.hitlagShakeY,
-          scaleX: e.squash.scaleX(),
-          scaleY: e.squash.scaleY(),
-          solidRed: e.hitlagSolidRed,
-          hurtTintAlpha: e.hurtTintAlpha(),
-        },
+        enemyStrikeJuice(e, simTicks),
       );
+      maybeDrawElectricShockOverlay(g, e, camera, electricShock, simTicks);
       return;
     }
   }
@@ -4093,6 +4788,185 @@ function drawFlintFire(
   g.restore();
 }
 
+function applySmokeHeatDistortionToBackbuffer(
+  g: CanvasRenderingContext2D,
+  camera: WorldCamera,
+  clouds: readonly SmokeCloud[],
+  bmp: ImageBitmap | null,
+): void {
+  if (!bmp || clouds.length === 0) return;
+  const fw = Math.floor(bmp.width / SmokeCloud.ANIM_FRAME_COUNT) || bmp.width;
+  const fh = bmp.height;
+  const anchors: SmokeHeatAnchor[] = [];
+  for (const s of clouds) {
+    if (s.isDissipated()) continue;
+    const sc = s.spriteScale();
+    const worldVisH = fh * sc;
+    const cxWorld = s.x + s.w * 0.5;
+    const cyWorld = s.y + s.h - worldVisH * 0.5;
+    const cx = camera.worldToDeviceX(cxWorld);
+    const cy = camera.worldToDeviceY(cyWorld);
+    const mask = buildSmokeDeviceMask({
+      cloudX: s.x,
+      cloudY: s.y,
+      cloudW: s.w,
+      cloudH: s.h,
+      frameW: fw,
+      frameH: fh,
+      spriteScale: sc,
+      earthboundScanlineOffsetWorldX: (row) => s.earthboundScanlineOffsetWorldX(row),
+      worldToDeviceX: (wx) => camera.worldToDeviceX(wx),
+      worldToDeviceY: (wy) => camera.worldToDeviceY(wy),
+      cameraZoom: CAMERA_ZOOM,
+    });
+    const rippleRadius = rippleRadiusForSmokeMask(mask, cx, cy);
+    anchors.push(
+      makeSmokeHeatAnchor(cx, cy, rippleRadius, s.renderAlpha(), s.distortionPhaseSec(), mask),
+    );
+  }
+  if (anchors.length === 0) return;
+  applySmokeHeatDistortion(g, INTERNAL_WIDTH, INTERNAL_HEIGHT, anchors);
+}
+
+function drawSmokeCloud(
+  g: CanvasRenderingContext2D,
+  cloud: SmokeCloud,
+  camera: WorldCamera,
+  bmp: ImageBitmap | null,
+): void {
+  if (cloud.isDissipated() || !bmp) return;
+  const alpha = cloud.renderAlpha();
+  if (alpha <= 0.01) return;
+  const fw = Math.floor(bmp.width / SmokeCloud.ANIM_FRAME_COUNT) || bmp.width;
+  const fh = bmp.height;
+  const fi = cloud.animFrameIndex() % SmokeCloud.ANIM_FRAME_COUNT;
+  const sc = cloud.spriteScale();
+  const worldVisW = fw * sc;
+  const worldVisH = fh * sc;
+  const leftWorld = cloud.x + cloud.w * 0.5 - worldVisW * 0.5;
+  const topWorld = cloud.y + cloud.h - worldVisH;
+  let dwDest = Math.round(CAMERA_ZOOM * worldVisW);
+  if (dwDest < 1) dwDest = 1;
+  const sxTex = fi * fw;
+  g.save();
+  g.globalAlpha = alpha;
+  g.imageSmoothingEnabled = false;
+  // Per-row EarthBound scanline quads (Java drawSmokeCloudsDevice).
+  for (let row = 0; row < fh; row++) {
+    const ox = cloud.earthboundScanlineOffsetWorldX(row);
+    const yt = topWorld + (row / fh) * worldVisH;
+    const yb = topWorld + ((row + 1) / fh) * worldVisH;
+    const sx1 = camera.worldToDeviceX(leftWorld + ox);
+    const sy1 = camera.worldToDeviceY(yt);
+    const sy2 = camera.worldToDeviceY(yb);
+    const dh = Math.max(1, sy2 - sy1);
+    g.drawImage(bmp, sxTex, row, fw, 1, sx1, sy1, dwDest, dh);
+  }
+  g.restore();
+}
+
+function drawWhip(
+  g: CanvasRenderingContext2D,
+  pl: Player,
+  camera: WorldCamera,
+  bmp: ImageBitmap | null,
+): void {
+  if (!pl.usesWhip() || !pl.whipSim.isActive() || !pl.whipSim.isDeployed()) return;
+  const sim = pl.whipSim;
+  g.save();
+  g.strokeStyle = "#cbdbfc";
+  g.lineWidth = Math.max(1, CAMERA_ZOOM);
+  g.beginPath();
+  for (let i = 0; i < sim.pointCount(); i++) {
+    const dx = camera.worldToDeviceX(sim.pointX(i));
+    const dy = camera.worldToDeviceY(sim.pointY(i));
+    if (i === 0) g.moveTo(dx, dy);
+    else g.lineTo(dx, dy);
+  }
+  g.stroke();
+  if (bmp) {
+    const cell = WhipSim.HANDLE_CELL_W;
+    const hx = camera.worldToDeviceX(sim.handleX() - cell * 0.5);
+    const hy = camera.worldToDeviceY(sim.handleY() - cell * 0.5);
+    const dw = Math.max(1, Math.round(CAMERA_ZOOM * cell));
+    g.imageSmoothingEnabled = false;
+    g.drawImage(bmp, 0, 0, cell, cell, hx, hy, dw, dw);
+    const ang = sim.headSegmentAngleRad();
+    const tipDx = camera.worldToDeviceX(sim.tipX());
+    const tipDy = camera.worldToDeviceY(sim.tipY());
+    g.translate(tipDx, tipDy);
+    g.rotate(ang);
+    g.drawImage(
+      bmp,
+      cell,
+      0,
+      cell,
+      cell,
+      -Math.round(CAMERA_ZOOM * WhipSim.HEAD_ROPE_LOCAL_X),
+      -Math.round(CAMERA_ZOOM * WhipSim.HEAD_ROPE_LOCAL_Y),
+      dw,
+      dw,
+    );
+  }
+  g.restore();
+}
+
+function drawFamiliars(
+  g: CanvasRenderingContext2D,
+  camera: WorldCamera,
+  trail: FamiliarTrailHost,
+  possessedBmp: ImageBitmap | null,
+  minerBmp: ImageBitmap | null,
+  bulletBmp: ImageBitmap | null,
+): void {
+  const drawParts = (
+    bmp: ImageBitmap | null,
+    parts: { frame: number; cx: number; cy: number; angleRad: number; mirror: boolean; pivotX: number; pivotY: number }[],
+    frameW: number,
+    frameH: number,
+  ) => {
+    if (!bmp) return;
+    for (const p of parts) {
+      const dx = camera.worldToDeviceX(p.cx);
+      const dy = camera.worldToDeviceY(p.cy);
+      const dw = Math.max(1, Math.round(CAMERA_ZOOM * frameW));
+      const dh = Math.max(1, Math.round(CAMERA_ZOOM * frameH));
+      g.save();
+      g.translate(dx, dy);
+      if (p.mirror) g.scale(-1, 1);
+      g.rotate(p.angleRad);
+      g.imageSmoothingEnabled = false;
+      g.drawImage(
+        bmp,
+        p.frame * frameW,
+        0,
+        frameW,
+        frameH,
+        -Math.round(CAMERA_ZOOM * p.pivotX),
+        -Math.round(CAMERA_ZOOM * p.pivotY),
+        dw,
+        dh,
+      );
+      g.restore();
+    }
+  };
+  for (const f of trail.lilPossessed) {
+    drawParts(possessedBmp, f.partRenders(), 16, 16);
+    if (bulletBmp) {
+      for (const b of f.bulletsCopy()) {
+        const dx = camera.worldToDeviceX(b.x - 4);
+        const dy = camera.worldToDeviceY(b.y - 4);
+        const dw = Math.max(1, Math.round(CAMERA_ZOOM * 8));
+        g.drawImage(bulletBmp, 0, 0, 8, 8, dx, dy, dw, dw);
+      }
+    }
+  }
+  for (const m of trail.lilMiners) {
+    drawParts(minerBmp, m.partRenders(), 16, 16);
+  }
+}
+
+
 function drawLemonProjectile(
   g: CanvasRenderingContext2D,
   shot: LemonProjectile,
@@ -4120,6 +4994,36 @@ function drawLemonProjectile(
     g.drawImage(strip.image, 0, 0, fw, fh, 0, 0, dw, dh);
   }
   g.restore();
+}
+
+function drawWarpOrbProjectile(
+  g: CanvasRenderingContext2D,
+  w: WarpOrbProjectile,
+  camera: WorldCamera,
+  sprite: ImageBitmap | null,
+  backbuffer: ReturnType<typeof captureBackbuffer>,
+): void {
+  if (!w.isAlive() || !sprite) return;
+  const sw = sprite.width;
+  const sh = sprite.height;
+  const dx1 = camera.worldToDeviceX(w.x);
+  const dy1 = camera.worldToDeviceY(w.y);
+  const dx2 = dx1 + Math.round(CAMERA_ZOOM * sw);
+  const dy2 = dy1 + Math.round(CAMERA_ZOOM * sh);
+  drawSpriteWithLiveReflection(
+    g,
+    backbuffer,
+    sprite,
+    sw,
+    sh,
+    dx1,
+    dy1,
+    dx2,
+    dy2,
+    CAMERA_ZOOM,
+    false,
+    WARP_ORB_REFLECTION_STYLE,
+  );
 }
 
 function drawFrisbeeProjectile(

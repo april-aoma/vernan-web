@@ -8,5 +8,9 @@ export interface SubweaponHost extends LemonShotHost {
   /** Start cooldown after projectile spawn / fire frame. */
   onSubweaponFired(): void;
   spawnFrisbee(worldX: number, worldY: number, facingSign: number, aim: FrisbeeAimSnapshot): void;
+  spawnWarpOrb(worldX: number, worldY: number, facingSign: number, throwFromGround: boolean): void;
   activatePsychicSpoon(): void;
+  activateKCandy(): void;
+  kCandyUsesRemaining(): number;
+  kCandyCanFire(): boolean;
 }

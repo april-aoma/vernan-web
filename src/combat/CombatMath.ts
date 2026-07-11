@@ -1,4 +1,8 @@
 import type { HitVfxKind } from "../fx/HitVfx";
+import {
+  KURIBO_STOMP_KNOCK_ANGLE_RAD,
+  KURIBO_STOMP_KNOCK_MAG_SCALE,
+} from "../config/Physics";
 
 /** Hitlag freeze frames from damage (Java CombatJuice.freezeFrames). */
 export function freezeFrames(damage: number, multiplier = 1): number {
@@ -25,7 +29,10 @@ export type KnockbackKind =
   | "frisbee"
   | "psychic_debris"
   | "black_heart_burst"
-  | "slide_kick";
+  | "slide_kick"
+  | "electrocution"
+  | "stomp"
+  | "stomp_electric";
 
 const BASE_KX = 74;
 const BASE_KY = -98;
@@ -84,6 +91,16 @@ export function knockbackFor(kind: KnockbackKind, facingAwaySign: number): { vx:
       return polar(0.45, 10);
     case "contact_only":
       return { vx: 0, vy: 0 };
+    case "electrocution":
+      return { vx: 0, vy: 0 };
+    case "stomp":
+    case "stomp_electric": {
+      // For stomp kinds, facingAwaySign is attacker facing (Java KnockbackVectors.stompKnock).
+      const mag = Math.hypot(BASE_KX, BASE_KY) * KURIBO_STOMP_KNOCK_MAG_SCALE;
+      const away = sign >= 0 ? -1 : 1;
+      const theta = Math.PI / 2 + away * KURIBO_STOMP_KNOCK_ANGLE_RAD;
+      return { vx: Math.cos(theta) * mag, vy: Math.sin(theta) * mag };
+    }
     case "frisbee":
       return knockbackForFrisbee(sign);
     case "black_heart_burst":

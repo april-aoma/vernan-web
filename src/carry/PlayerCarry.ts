@@ -133,6 +133,7 @@ export class PlayerCarry {
     this.animPhase = 1;
     this.frameIndex = 0;
     this.frameTimeLeft = PLUCK_FRAME_TICKS[0]! / FIXED_STEP_HZ;
+    player.fireAnimCueStripForCarry("pluck", 0);
   }
 
   private tickPluck(dt: number, player: Player, host: GardeningGlovesHost): void {
@@ -148,6 +149,7 @@ export class PlayerCarry {
       this.pluckPreview = null;
       return;
     }
+    const prior = this.frameIndex;
     this.frameIndex++;
     if (this.frameIndex === PLUCK_ACTION_INDEX && this.pluckTarget) {
       const target = this.pluckTarget;
@@ -162,6 +164,7 @@ export class PlayerCarry {
       }
     }
     this.frameTimeLeft = PLUCK_FRAME_TICKS[this.frameIndex]! / FIXED_STEP_HZ;
+    player.fireAnimCueStripForCarry("pluck", this.frameIndex, prior);
   }
 
   private handleHoldInput(input: Input, player: Player, _host: GardeningGlovesHost): void {
@@ -182,6 +185,7 @@ export class PlayerCarry {
     this.frameTimeLeft = THROW_FRAME_TICKS[0]! / FIXED_STEP_HZ;
     this.throwSpawnFired = false;
     this.throwBeganOnGround = player.onGround;
+    player.fireAnimCueStripForCarry("throw", 0);
   }
 
   private spawnThrowPayload(
@@ -236,6 +240,7 @@ export class PlayerCarry {
     if (this.frameIndex === THROW_RELEASE_INDEX) {
       this.spawnThrowPayload(player, host, input, this.dropOneCellAhead);
     }
+    const prior = this.frameIndex;
     this.frameIndex++;
     if (this.frameIndex >= THROW_FRAMES) {
       this.animPhase = 0;
@@ -244,6 +249,7 @@ export class PlayerCarry {
       this.throwSpawnFired = false;
     } else {
       this.frameTimeLeft = THROW_FRAME_TICKS[this.frameIndex]! / FIXED_STEP_HZ;
+      player.fireAnimCueStripForCarry("throw", this.frameIndex, prior);
     }
   }
 

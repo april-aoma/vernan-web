@@ -80,6 +80,23 @@ export class WorldPickup {
     );
   }
 
+  /** Room-clear reward pop (Java WorldPickup.create ROOM_CLEAR arc). */
+  static createFromRoomClear(
+    kind: PickupKind,
+    feetCenterX: number,
+    feetY: number,
+    rnd: () => number,
+  ): WorldPickup {
+    const b0 = physicsBoundsAtOrigin(kind);
+    return new WorldPickup(
+      kind,
+      feetCenterX - b0.w * 0.5 - b0.x,
+      feetY - b0.h - b0.y,
+      (rnd() - 0.5) * 140,
+      -100 - rnd() * 55,
+    );
+  }
+
   /** Collection hit (Java hitboxPose — unrotated). */
   hitboxPose(): HitboxPose {
     return new HitboxPose(pickup(this.kind), this.x, this.y, 1, pickupPivotX(this.kind));

@@ -59,6 +59,48 @@ function copyPackDir(fromDir) {
   console.log(`Synced ${copied} entries → ${outAssets}`);
 }
 
+/**
+ * Overlay combat/enemy sprites that may be missing from a stale runtime pack.
+ * Safe to call after copyPackDir when a Java source tree is available.
+ */
+function overlayCombatSpritesFromJava(javaRoot) {
+  const srcSprites = join(javaRoot, "sprites");
+  const destSprites = join(outAssets, "sprites");
+  if (!existsSync(srcSprites)) return;
+  mkdirSync(destSprites, { recursive: true });
+  const overlay = [
+    "hit slash.png",
+    "hit flint.png",
+    "hit stick.png",
+    "hit black heart.png",
+    "hit ice.png",
+    "hit money.png",
+    "hit shield break.png",
+    "hit shield.png",
+    "hit kuribo.png",
+    "hit electric.png",
+    "hit fist.png",
+    "hit fallback.png",
+    "electric shock.png",
+    "rolling head cc.png",
+    "multilimber body.png",
+    "multilimber head.png",
+    "multilimber eye.png",
+    "golden roach2.png",
+    "golden roach2 fly.png",
+    "FX enemy heal.png",
+  ];
+  let n = 0;
+  for (const rel of overlay) {
+    const src = join(srcSprites, rel);
+    if (!existsSync(src)) continue;
+    const dest = join(destSprites, rel);
+    cpSync(src, dest);
+    n++;
+  }
+  if (n > 0) console.log(`Overlayed ${n} combat sprites from ${srcSprites}`);
+}
+
 /** Java rebuildExactSourceColors keys — committed seed, refreshed when dumping from Java. */
 function installExactSourcePaletteKeys() {
   const seed = join(webRoot, "data", "palette-exact-source-keys.json");
@@ -156,6 +198,7 @@ function packFromJava(javaRoot) {
   } else {
     throw new Error("Packer finished but neither dist/runtime-pack nor zip was found");
   }
+  overlayCombatSpritesFromJava(javaRoot);
 }
 
 function main() {

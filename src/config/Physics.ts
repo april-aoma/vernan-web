@@ -20,6 +20,40 @@ export const GRAVITY_RELEASE_MULT = 2.85;
 export const MAX_FALL = 3000;
 export const JUMP_SQUAT_FRAMES = 5;
 
+/** HEELIES (Java Physics). */
+export const HEELIES_COAST_CAP_MAX_MULT = 2.2;
+export const HEELIES_PUMP_MAX_TAP_FRAMES = 10;
+export const HEELIES_PUMPS_TO_CEILING = 5;
+export const HEELIES_STOP_FRAMES = 40;
+
+/** PINK_SCARF: hold jump while falling (Java Player.SCARF_*). */
+export const SCARF_FLOAT_GRAVITY_SCALE = 1 / 3;
+export const SCARF_GLIDE_AIR_SPEED_BONUS = 45;
+export const SCARF_AIR_CONTROL_MULT = 3;
+
+/** PONCHO mid-air flap (Java Physics.PONCHO_FLAP_*). */
+export const PONCHO_FLAP_HEIGHT_PX = 12;
+export const PONCHO_FLAP_FALLING_HEIGHT_PX = 16;
+export const PONCHO_FLAP_COOLDOWN_FRAMES = 20;
+export const PONCHO_FLAP_STRETCH_Y = 1.06;
+export const PONCHO_FLAP_STRETCH_RECOVER_FRAMES = 8;
+
+export function ponchoFlapUpwardVy(peakHeightPx: number): number {
+  return Math.sqrt(2 * GRAVITY * peakHeightPx);
+}
+
+/** TAMIL_OM aura (Java Physics.TAMIL_OM_*). */
+export const TAMIL_OM_AURA_RADIUS_PX = 30;
+export const TAMIL_OM_AURA_DEFLECT_STRENGTH = 0.1;
+
+/** KURIBO_SHOE stomp (Java Physics.KURIBO_STOMP_*). */
+export const KURIBO_STOMP_BOUNCE_JUMP_FRAC = 1.0;
+export const KURIBO_STOMP_BOUNCE_JUMP_HELD_FRAC = 1.1;
+export const KURIBO_STOMP_KNOCK_ANGLE_RAD = 0.6;
+export const KURIBO_STOMP_KNOCK_MAG_SCALE = 1.5;
+export const KURIBO_STOMP_HITSTUN_MULT = 2.0;
+export const KURIBO_STOMP_GROUND_RICOCHET_VY = -80;
+
 /** SHY_MASK: passive gravity multiplier (Java Physics.SHY_MASK_GRAVITY_MULT). */
 export const SHY_MASK_GRAVITY_MULT = 1.54;
 /** SHY_MASK: hold Down on ground to charge superjump (60 Hz frames). */

@@ -112,6 +112,18 @@ export function resolvePlayerCostumePose(
 
   if (player.isSubweaponAnimating()) {
     const idx = player.subweaponAnimFrameIndex();
+    if (player.subweaponUsesAttack0Strip() && layeredBodyAnimReady(bodyLibrary, "attack0")) {
+      const useAir = player.subweaponUsesAirSpecialStrip();
+      return pose(
+        useAir ? "AIR_ATTACK" : "ATTACK",
+        idx,
+        "attack0",
+        bodyCtx,
+        player.facing,
+        0,
+        0,
+      );
+    }
     if (layeredBodyAnimReady(bodyLibrary, "specialattack0")) {
       const useAir = player.subweaponUsesAirSpecialStrip();
       return pose(
@@ -160,13 +172,19 @@ export function resolvePlayerCostumePose(
   } else if (player.climbing && layeredBodyAnimReady(bodyLibrary, "climb")) {
     costumeState = "CLIMB";
     costumeFrameIndex = player.climbFrame();
-  } else {
-    useCrouchArt =
-      player.crouching ||
-      player.isCrouchJumpMode() ||
-      player.isJumpSquatting() ||
-      player.isLandingLocked();
-    if (useCrouchArt && layeredBodyAnimReady(bodyLibrary, "crouch")) {
+    } else {
+      useCrouchArt =
+        player.crouching ||
+        player.isCrouchJumpMode() ||
+        player.isJumpSquatting() ||
+        player.isLandingLocked();
+      if (
+        player.isHeelysSkatePose() &&
+        layeredBodyAnimReady(bodyLibrary, "skate")
+      ) {
+        costumeState = "SKATE";
+        costumeFrameIndex = player.walkFrame();
+      } else if (useCrouchArt && layeredBodyAnimReady(bodyLibrary, "crouch")) {
       costumeState = "CROUCH";
       costumeFrameIndex = 0;
     } else if (

@@ -30,6 +30,14 @@ export interface CombatEnemy {
   applyShieldBlockStrike(strike: WeaponStrike): void;
   /** Flint fire loop tick (bosses / regular enemies). */
   applyFlintFireLoopDamage?(amount: number, fireCx: number, fireCy: number): boolean;
+  /** Smoke cloud loop tick. */
+  applySmokeLoopDamage?(
+    amount: number,
+    smokeCx: number,
+    smokeCy: number,
+    smokeVx: number,
+    smokeVy: number,
+  ): boolean;
   /** Grab reach latch (Nephilim). */
   tryGrabLatch?(playerHurt: HitboxPose): boolean;
   isGrabHoldingPlayer?(): boolean;

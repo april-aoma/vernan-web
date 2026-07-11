@@ -248,6 +248,7 @@ export class Possessed implements CombatEnemy {
   private contactActiveTimer = 0;
   /** Solid-red hitstun flash (not electrocute). */
   hitlagSolidRed = false;
+  hitlagElectrocute = false;
   hitlagShakeX = 0;
   hitlagShakeY = 0;
   readonly blackHeartBeat = new BlackHeartBeatDeferral();
