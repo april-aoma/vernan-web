@@ -99,6 +99,18 @@ export function ensureVernanDialogStyles(): void {
       border: 1px solid #3a4656;
       background: #0b0d10;
     }
+    .vsd-tabs[data-cols="2"] {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .vsd-tabs[data-cols="1"] {
+      grid-template-columns: 1fr;
+    }
+    .vsd-tabs-2 {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .vsd-tabs-2[data-cols="1"] {
+      grid-template-columns: 1fr;
+    }
     .vsd-tab {
       appearance: none;
       border: none;
@@ -113,7 +125,13 @@ export function ensureVernanDialogStyles(): void {
       padding: 0.5rem 0.2rem;
       cursor: pointer;
     }
-    .vsd-tab:last-child { border-right: none; }
+    .vsd-tab[hidden] {
+      display: none !important;
+    }
+    .vsd-tab:last-child,
+    .vsd-tab:nth-last-child(1 of :not([hidden])) {
+      border-right: none;
+    }
     .vsd-tab:hover { color: #c8d2e6; }
     .vsd-tab[aria-selected="true"] {
       color: #d7eefc;
@@ -125,6 +143,10 @@ export function ensureVernanDialogStyles(): void {
     }
     .vsd-session {
       flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
       min-height: 4.5rem;
       margin-bottom: 0.45rem;
       padding: 0.5rem 0.65rem;
@@ -135,6 +157,10 @@ export function ensureVernanDialogStyles(): void {
     .vsd-session[data-empty="false"] {
       background: #122818;
       border-color: #3a7a48;
+    }
+    .vsd-session-main {
+      flex: 1 1 auto;
+      min-width: 0;
     }
     .vsd-session-label {
       font-size: 0.58rem;
@@ -161,6 +187,31 @@ export function ensureVernanDialogStyles(): void {
       font-size: 0.7rem;
       color: #7d8a98;
       min-height: 1rem;
+    }
+    .vsd-session-logout {
+      flex: 0 0 auto;
+      appearance: none;
+      border: 1px solid #5a3a3a;
+      background: #2a1818;
+      color: #e8b0b0;
+      font: inherit;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      padding: 0.4rem 0.65rem;
+      cursor: pointer;
+    }
+    .vsd-session-logout:hover {
+      border-color: #7a4a4a;
+      color: #ffc8c8;
+    }
+    .vsd-session-logout:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .vsd-session[data-empty="true"] .vsd-session-logout {
+      display: none;
     }
     .vsd-error {
       flex: 0 0 auto;
@@ -290,9 +341,6 @@ export function ensureVernanDialogStyles(): void {
 
     .vsd-panel-login {
       height: 28rem;
-    }
-    .vsd-tabs-2 {
-      grid-template-columns: repeat(2, 1fr);
     }
     .vsd-form-login[data-mode="auth"] .vsd-form-action {
       visibility: visible;

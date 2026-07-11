@@ -54,6 +54,8 @@ export function openLoginDialog(): Promise<void> {
     const sessionEl = document.createElement("div");
     sessionEl.className = "vsd-session";
     sessionEl.dataset.empty = "true";
+    const sessionMain = document.createElement("div");
+    sessionMain.className = "vsd-session-main";
     const sessionLabel = document.createElement("div");
     sessionLabel.className = "vsd-session-label";
     sessionLabel.textContent = "Not signed in";
@@ -63,7 +65,8 @@ export function openLoginDialog(): Promise<void> {
     const sessionUser = document.createElement("div");
     sessionUser.className = "vsd-session-user";
     sessionUser.textContent = "\u00a0";
-    sessionEl.append(sessionLabel, sessionName, sessionUser);
+    sessionMain.append(sessionLabel, sessionName, sessionUser);
+    sessionEl.append(sessionMain);
 
     const errorEl = document.createElement("div");
     errorEl.className = "vsd-error";
@@ -141,10 +144,25 @@ export function openLoginDialog(): Promise<void> {
     };
 
     const syncFieldInteractivity = () => {
-      authDisplay.input.disabled = busy;
-      authUser.input.disabled = busy;
-      authPass.input.disabled = busy;
-      authActionBtn.disabled = busy;
+      const locked = busy || isLoggedIn();
+      authDisplay.input.disabled = locked;
+      authUser.input.disabled = locked;
+      authPass.input.disabled = locked;
+      authActionBtn.disabled = locked;
+    };
+
+    const syncAuthTabs = (loggedIn: boolean) => {
+      if (loggedIn) {
+        tabLogin.textContent = "Log out";
+        tabRegister.hidden = true;
+        tabs.dataset.cols = "1";
+        tabLogin.setAttribute("aria-selected", "true");
+        tabRegister.setAttribute("aria-selected", "false");
+      } else {
+        tabLogin.textContent = "Log in";
+        tabRegister.hidden = false;
+        tabs.dataset.cols = "2";
+      }
     };
 
     const syncSessionUi = () => {
@@ -156,16 +174,17 @@ export function openLoginDialog(): Promise<void> {
         sessionName.textContent = session.displayName;
         sessionName.style.color = VERIFIED_GREEN;
         sessionUser.textContent = `@${session.username}`;
-        tabLogin.textContent = "Log out";
         authDisplay.input.value = session.displayName;
+        formHint.textContent = "You're signed in. Use Log out to switch accounts.";
+        authActionBtn.textContent = "Log in";
       } else {
         sessionEl.dataset.empty = "true";
         sessionLabel.textContent = "Not signed in";
         sessionName.textContent = "\u00a0";
         sessionName.style.color = "";
         sessionUser.textContent = "\u00a0";
-        tabLogin.textContent = "Log in";
       }
+      syncAuthTabs(loggedIn);
       closeBtn.disabled = busy;
       syncFieldInteractivity();
     };
@@ -194,10 +213,12 @@ export function openLoginDialog(): Promise<void> {
 
     const showTab = (next: Tab) => {
       if (busy) return;
+      if (isLoggedIn()) return;
       setError(null);
       tabLogin.setAttribute("aria-selected", next === "login" ? "true" : "false");
       tabRegister.setAttribute("aria-selected", next === "register" ? "true" : "false");
       syncAuthPane(next);
+      syncSessionUi();
       syncFieldInteractivity();
       authDisplay.input.focus();
     };
@@ -213,7 +234,7 @@ export function openLoginDialog(): Promise<void> {
     };
 
     const doAuth = async () => {
-      if (busy) return;
+      if (busy || isLoggedIn()) return;
       setBusy(true);
       setError(null);
       try {
@@ -228,7 +249,6 @@ export function openLoginDialog(): Promise<void> {
         }
         setBusy(false);
         syncSessionUi();
-        showTab("login");
       } catch (err) {
         setBusy(false);
         setError(err instanceof Error ? err.message : "Auth failed");
@@ -266,7 +286,7 @@ export function openLoginDialog(): Promise<void> {
     tabRegister.addEventListener("click", () => showTab("register"));
 
     syncSessionUi();
-    showTab("login");
+    if (!isLoggedIn()) showTab("login");
   });
 }
 

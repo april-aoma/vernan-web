@@ -94,6 +94,8 @@ function openRemoteSubmitDialog(summary: RunSummary): Promise<SubmitDialogResult
     const sessionEl = document.createElement("div");
     sessionEl.className = "vsd-session";
     sessionEl.dataset.empty = "true";
+    const sessionMain = document.createElement("div");
+    sessionMain.className = "vsd-session-main";
     const sessionLabel = document.createElement("div");
     sessionLabel.className = "vsd-session-label";
     sessionLabel.textContent = "Not signed in";
@@ -103,7 +105,8 @@ function openRemoteSubmitDialog(summary: RunSummary): Promise<SubmitDialogResult
     const sessionUser = document.createElement("div");
     sessionUser.className = "vsd-session-user";
     sessionUser.textContent = "\u00a0";
-    sessionEl.append(sessionLabel, sessionName, sessionUser);
+    sessionMain.append(sessionLabel, sessionName, sessionUser);
+    sessionEl.append(sessionMain);
 
     const errorEl = document.createElement("div");
     errorEl.className = "vsd-error";
@@ -224,6 +227,18 @@ function openRemoteSubmitDialog(summary: RunSummary): Promise<SubmitDialogResult
       showTab("guest");
     };
 
+    const syncAuthTabs = (loggedIn: boolean) => {
+      if (loggedIn) {
+        tabLogin.textContent = "Log out";
+        tabRegister.hidden = true;
+        tabs.dataset.cols = "2";
+      } else {
+        tabLogin.textContent = "Log in";
+        tabRegister.hidden = false;
+        tabs.dataset.cols = "3";
+      }
+    };
+
     const syncSessionUi = () => {
       const session = loadAuthSession();
       const loggedIn = session != null;
@@ -234,8 +249,6 @@ function openRemoteSubmitDialog(summary: RunSummary): Promise<SubmitDialogResult
         // Inline color so verified green cannot be lost to stale CSS.
         sessionName.style.color = VERIFIED_GREEN;
         sessionUser.textContent = `@${session.username}`;
-        tabLogin.textContent = "Log out";
-        // Keep guest name field aligned with the signed-in display name.
         guestName.input.value = session.displayName;
         authDisplay.input.value = session.displayName;
       } else {
@@ -244,8 +257,8 @@ function openRemoteSubmitDialog(summary: RunSummary): Promise<SubmitDialogResult
         sessionName.textContent = "\u00a0";
         sessionName.style.color = "";
         sessionUser.textContent = "\u00a0";
-        tabLogin.textContent = "Log in";
       }
+      syncAuthTabs(loggedIn);
       submitBtn.disabled = busy || !loggedIn;
       guestBtn.disabled = busy;
       cancelBtn.disabled = busy;
@@ -266,6 +279,10 @@ function openRemoteSubmitDialog(summary: RunSummary): Promise<SubmitDialogResult
 
     const showTab = (next: Tab) => {
       if (busy) return;
+      if (isLoggedIn() && (next === "login" || next === "register")) {
+        // Signed-in submit UI has no login/create tabs — only Guest + Log out.
+        return;
+      }
       setError(null);
       for (const [btnEl, id] of [
         [tabGuest, "guest"],
@@ -281,12 +298,14 @@ function openRemoteSubmitDialog(summary: RunSummary): Promise<SubmitDialogResult
           session != null
             ? `Signed in as ${session.displayName} (@${session.username}). Submit & quit uses your verified name.`
             : "Enter a name and submit as guest.";
+        syncSessionUi();
         syncFieldInteractivity();
         guestName.input.focus();
         guestName.input.select();
       } else {
         form.dataset.mode = "auth";
         syncAuthPane(next === "register" ? "register" : "login");
+        syncSessionUi();
         syncFieldInteractivity();
         authDisplay.input.focus();
       }
