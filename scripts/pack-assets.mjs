@@ -56,7 +56,22 @@ function copyPackDir(fromDir) {
     throw new Error(`No pack contents found under ${fromDir}`);
   }
   installExactSourcePaletteKeys();
+  ensureRuntimeManifest();
   console.log(`Synced ${copied} entries → ${outAssets}`);
+}
+
+/** Layered costumes / Vernan body need runtime-manifest.json path listings. */
+function ensureRuntimeManifest() {
+  const manifest = join(outAssets, "runtime-manifest.json");
+  if (existsSync(manifest)) return;
+  console.warn(`Missing ${manifest} — rebuilding from public/assets …`);
+  const r = spawnSync(process.execPath, [join(webRoot, "scripts", "rebuild-runtime-manifest.mjs")], {
+    cwd: webRoot,
+    stdio: "inherit",
+  });
+  if (r.status !== 0) {
+    throw new Error(`rebuild-runtime-manifest.mjs exited ${r.status}`);
+  }
 }
 
 /**

@@ -1793,6 +1793,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       try {
         const manifest = await assets.loadJson<{ files?: { path: string }[] }>("runtime-manifest.json");
         const manifestPaths = (manifest.files ?? []).map((f) => f.path);
+        if (manifestPaths.length === 0) {
+          throw new Error("runtime-manifest.json has no files[] — run npm run rebuild-manifest");
+        }
         const layersFile = await loadCostumeLayers(assets.url("data/costume_layers.json"));
         const drawConfig = await CostumeDrawConfig.load(() =>
           assets.loadJson("data/costume_slots.json"),
@@ -1806,9 +1809,17 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         );
         if (bodyLibrary.hasIdle) {
           costumeBundle = { bodyLibrary, artCache, drawConfig, layersFile };
+        } else {
+          console.warn(
+            "[vernan] costume bundle skipped: Vernan body idle art missing from runtime-manifest",
+          );
         }
       } catch (err) {
-        console.warn("[vernan] costume bundle failed to load", err);
+        console.warn(
+          "[vernan] costume bundle failed to load (layered costumes disabled). " +
+            "Ensure public/assets/runtime-manifest.json exists (npm run rebuild-manifest).",
+          err,
+        );
         costumeBundle = null;
       }
 
@@ -2751,6 +2762,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           e.applyVision(playerSnapPre, seeRPre);
         }
       }
+      // Ice solids before enemy motion (Java GamePanel: ice tick → enemies → player).
+      for (const block of iceBlocks) block.tick(FIXED_DT);
       tickEnemyPeerPhysics(session.enemies, map, player.x + player.w * 0.5, FIXED_DT);
       for (const e of session.enemies) {
         if (e instanceof Multilimber) {
@@ -2764,8 +2777,84 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           }
         }
       }
-      for (const block of iceBlocks) block.tick(FIXED_DT);
       player.setIceBlockCollisionContext(iceBlocks, feetOnIce(player, iceBlocks));
+      player.bindFrameCombatHooks({
+        onMeleeHit: (e, strike, sword, vfx) => {
+          const hurt = e.damageReceivePose();
+          const contact = contactBetweenAabbs(sword, hurt);
+          const kind =
+            vfx === "shield_break"
+              ? HitVfxKind.SHIELD_BREAK
+              : vfx === "shield_block"
+                ? HitVfxKind.SHIELD
+                : vfx === "fallback"
+                  ? HitVfxKind.FALLBACK
+                  : resolvePlayerMeleeHitVfx(
+                      player.swordVisualId(),
+                      player.inventory,
+                      false,
+                      false,
+                    );
+          HitVfx.spawn(
+            hitVfxList,
+            kind,
+            e,
+            strike.contactWorldX ?? contact.x,
+            strike.contactWorldY ?? contact.y,
+            strike.freezeFrames,
+            player.x + player.w * 0.5,
+          );
+        },
+        onElectrocution: (e, strike, contact) => {
+          HitVfx.spawn(
+            hitVfxList,
+            HitVfxKind.ELECTRIC,
+            e,
+            contact.x,
+            contact.y,
+            strike.freezeFrames,
+            player.x + player.w * 0.5,
+          );
+        },
+        tryWorldStrike: () => {
+          const blockFreeze = applySwordBreakables({
+            player,
+            map,
+            roomId: session!.roomId,
+            rooms: session!.dungeon.rooms,
+            seams: session!.dungeon.secretSeams,
+            layout: session!.dungeon.layout,
+            runSeed: session!.dungeon.runSeed,
+            camera,
+            brickChunks,
+            worldPickups,
+            project: tilesetProject,
+            snapshotTile: (tx, ty) =>
+              snapshotBreakableTile(
+                map,
+                tx,
+                ty,
+                session!,
+                sheetAtlas,
+                tilesetProject,
+                floorOrdinal,
+                tileWorldRenderer,
+              ),
+            snapshotDecoTile: (tileId) => {
+              // Authored sheet only — deco must not remap to floor primarySheetId.
+              return sheetAtlas?.snapshotTileId(tileId) ?? null;
+            },
+            activeSeamOpenAnim,
+            seamAnimPlayableScrollOverride,
+          });
+          const iceFreeze = trySwordStrikeIce(player, iceBlocks, (block) => {
+            const snap = snapshotIceHoldSprite(block);
+            const payload = iceBlockPayload(snap, block.lootCopy(), block.mirrorSourceX);
+            shatterIceBlockPayload(payload, block.x, block.y);
+          });
+          return Math.max(blockFreeze, iceFreeze);
+        },
+      });
       player.update(
         FIXED_DT,
         input,
@@ -2775,6 +2864,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         session.enemies,
         gardeningGlovesSupport,
       );
+      player.bindFrameCombatHooks(null);
       CrawlerHatRiding.correctHullPenetration(player, session.enemies, crawlerHatStacks);
       const wallDust = player.disc.consumeWallSlideDustSpawn();
       if (wallDust) RisingDustFx.spawnStripPuff(risingDustFx, wallDust[0], wallDust[1]);
@@ -2968,82 +3058,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           warpOrbProjectiles.splice(i, 1);
         }
       }
-      const enemyFreeze = player.applyAttackHits(session.enemies, (e, strike, sword, vfx) => {
-        const hurt = e.damageReceivePose();
-        const contact = contactBetweenAabbs(sword, hurt);
-        const kind =
-          vfx === "shield_break"
-            ? HitVfxKind.SHIELD_BREAK
-            : vfx === "shield_block"
-              ? HitVfxKind.SHIELD
-              : resolvePlayerMeleeHitVfx(
-                  player.swordVisualId(),
-                  player.inventory,
-                  false,
-                  false,
-                );
-        HitVfx.spawn(
-          hitVfxList,
-          kind,
-          e,
-          strike.contactWorldX ?? contact.x,
-          strike.contactWorldY ?? contact.y,
-          strike.freezeFrames,
-          player.x + player.w * 0.5,
-        );
-      });
-      const blockFreeze = applySwordBreakables({
-        player,
-        map,
-        roomId: session.roomId,
-        rooms: session.dungeon.rooms,
-        seams: session.dungeon.secretSeams,
-        layout: session.dungeon.layout,
-        runSeed: session.dungeon.runSeed,
-        camera,
-        brickChunks,
-        worldPickups,
-        project: tilesetProject,
-        snapshotTile: (tx, ty) =>
-          snapshotBreakableTile(
-            map,
-            tx,
-            ty,
-            session!,
-            sheetAtlas,
-            tilesetProject,
-            floorOrdinal,
-            tileWorldRenderer,
-          ),
-        snapshotDecoTile: (tileId) => {
-          // Authored sheet only — deco must not remap to floor primarySheetId.
-          return sheetAtlas?.snapshotTileId(tileId) ?? null;
-        },
-        activeSeamOpenAnim,
-        seamAnimPlayableScrollOverride,
-      });
-      const iceFreeze = trySwordStrikeIce(player, iceBlocks, (block) => {
-        const snap = snapshotIceHoldSprite(block);
-        const payload = iceBlockPayload(snap, block.lootCopy(), block.mirrorSourceX);
-        shatterIceBlockPayload(payload, block.x, block.y);
-      });
-      if (enemyFreeze > 0 || blockFreeze > 0 || iceFreeze > 0) {
-        player.latchAttackHit(Math.max(enemyFreeze, blockFreeze, iceFreeze));
-      }
       collectWorldPickups(player, worldPickups, hudEconomy, pickupCollectFx);
-      player.applyEnemyContacts(session.enemies, (e, strike, contact) => {
-        HitVfx.spawn(
-          hitVfxList,
-          HitVfxKind.ELECTRIC,
-          e,
-          contact.x,
-          contact.y,
-          strike.freezeFrames,
-          player.x + player.w * 0.5,
-        );
-      });
-      const whipFreeze = player.applyWhipHits(session.enemies);
-      if (whipFreeze > 0) player.latchAttackHit(whipFreeze);
       applyPenismanBulletHits(session, player);
       applyJackBlueBoneHits(session, player);
       tickFamiliarSystems(map);
@@ -3356,7 +3371,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       for (const sc of smokeClouds) {
         drawSmokeCloud(g, sc, camera, smokeBmp);
       }
-      drawWhip(g, player, camera, whipPartBmp);
       drawFamiliars(
         g,
         camera,
@@ -3378,6 +3392,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           pickupOverlay.isActive() || kCandyHealSequence.isActive(),
           costumeBundle,
           ownedPalette,
+          whipPartBmp,
         );
         const carryThrown = gardeningGlovesSupport?.thrownProjectiles() ?? [];
         const heldCarry = player.carryPayload();
@@ -4319,6 +4334,7 @@ function drawPlayer(
   itemPickupPose = false,
   costumeBundle: CostumeRenderBundle | null = null,
   ownedPalette: ReadonlyMap<number, number> | undefined = undefined,
+  whipPartBmp: ImageBitmap | null = null,
 ): void {
   // Invuln blink only when not in solid-red hitstun (Java: solid red wins).
   if (
@@ -4336,16 +4352,30 @@ function drawPlayer(
   const bodySprites = lemonBody ? pickLemonBodySprites(sprites) : sprites;
   const shyFlash = player.shyMaskFlashAlpha();
   const kCandyWhite = player.kCandyWhiteFlashActive();
+  const dodgeFlash = player.airDodgeIntangibleFlashAlpha();
+  // Tint priority matches Java tintPlayerSpriteForDraw: k-candy → dodge white → shy → hurt red.
   const juice = {
     shakeX: player.hitlagShakeX,
     shakeY: player.hitlagShakeY,
     scaleX: player.renderSquashScaleX(),
     scaleY: player.renderSquashScaleY(),
-    solidRed: player.hitlagSolidRed && !kCandyWhite,
-    hurtTintAlpha: kCandyWhite ? 255 : shyFlash > 0 ? shyFlash : player.hurtTintAlpha(),
-    tintRgb: kCandyWhite ? 0xffffff : shyFlash > 0 ? player.shyMaskFlashRgb() : undefined,
+    solidRed: player.hitlagSolidRed && !kCandyWhite && dodgeFlash <= 0,
+    hurtTintAlpha: kCandyWhite
+      ? 255
+      : dodgeFlash > 0
+        ? dodgeFlash
+        : shyFlash > 0
+          ? shyFlash
+          : player.hurtTintAlpha(),
+    tintRgb: kCandyWhite || dodgeFlash > 0
+      ? 0xffffff
+      : shyFlash > 0
+        ? player.shyMaskFlashRgb()
+        : undefined,
     ownedPalette,
   };
+  const drawWhipOverlay = () =>
+    drawWhip(g, player, camera, whipPartBmp, juice.solidRed === true);
 
   if (costumeBundle) {
     let attackOverlay: AttackOverlayDraw | undefined;
@@ -4384,6 +4414,7 @@ function drawPlayer(
         itemPickupPose,
         juice,
         attackOverlay,
+        drawWhipOverlay: player.usesWhip() ? drawWhipOverlay : undefined,
       })
     ) {
       const shieldFacing =
@@ -4473,7 +4504,6 @@ function drawPlayer(
   }
 
   if (player.isAirDodgeActive() && sprites.airDodge) {
-    const flash = player.airDodgeIntangibleFlashAlpha();
     drawFeetPinnedStrip(
       g,
       sprites.airDodge,
@@ -4482,7 +4512,7 @@ function drawPlayer(
       feet,
       player.facing,
       camera,
-      flash > 0 ? { ...juice, hurtTintAlpha: Math.max(juice.hurtTintAlpha, flash / 255) } : juice,
+      juice,
     );
     return;
   }
@@ -4512,6 +4542,7 @@ function drawPlayer(
     if (player.heavyAttackFromAir() && sprites.heavyAttackAirLegs) {
       drawFeetPinnedStrip(g, sprites.heavyAttackAirLegs, idx, cx, feet, player.facing, camera, juice);
     }
+    drawWhipOverlay();
     return;
   }
 
@@ -4571,6 +4602,7 @@ function drawPlayer(
       visual === "stick",
       shieldOverlay,
     );
+    drawWhipOverlay();
     return;
   }
 
@@ -5133,12 +5165,16 @@ function drawWhip(
   pl: Player,
   camera: WorldCamera,
   bmp: ImageBitmap | null,
+  solidRed = false,
 ): void {
-  if (!pl.usesWhip() || !pl.whipSim.isActive() || !pl.whipSim.isDeployed()) return;
+  if (!pl.usesWhip() || !pl.whipSim.isActive()) return;
   const sim = pl.whipSim;
+  const zoom = CAMERA_ZOOM;
   g.save();
-  g.strokeStyle = "#cbdbfc";
-  g.lineWidth = Math.max(1, CAMERA_ZOOM);
+  g.strokeStyle = solidRed ? "#ff0000" : "#cbdbfc";
+  g.lineWidth = Math.max(2, 2 * zoom);
+  g.lineCap = "round";
+  g.lineJoin = "round";
   g.beginPath();
   for (let i = 0; i < sim.pointCount(); i++) {
     const dx = camera.worldToDeviceX(sim.pointX(i));
@@ -5149,27 +5185,87 @@ function drawWhip(
   g.stroke();
   if (bmp) {
     const cell = WhipSim.HANDLE_CELL_W;
-    const hx = camera.worldToDeviceX(sim.handleX() - cell * 0.5);
-    const hy = camera.worldToDeviceY(sim.handleY() - cell * 0.5);
-    const dw = Math.max(1, Math.round(CAMERA_ZOOM * cell));
+    const dw = Math.max(1, Math.round(zoom * cell));
+    const dh = dw;
     g.imageSmoothingEnabled = false;
-    g.drawImage(bmp, 0, 0, cell, cell, hx, hy, dw, dw);
-    const ang = sim.headSegmentAngleRad();
-    const tipDx = camera.worldToDeviceX(sim.tipX());
-    const tipDy = camera.worldToDeviceY(sim.tipY());
-    g.translate(tipDx, tipDy);
-    g.rotate(ang);
-    g.drawImage(
+    drawWhipPartSprite(
+      g,
+      bmp,
+      0,
+      0,
+      cell,
+      cell,
+      camera.worldToDeviceX(sim.handleX()),
+      camera.worldToDeviceY(sim.handleY()),
+      pl.whipHandleRotRad(),
+      zoom,
+      WhipSim.HANDLE_ROPE_LOCAL_X,
+      WhipSim.HANDLE_ROPE_LOCAL_Y,
+      dw,
+      dh,
+      solidRed,
+    );
+    const headAngle = sim.isDeployed()
+      ? sim.headSegmentAngleRad()
+      : pl.whipCoiledTipRotRad();
+    drawWhipPartSprite(
+      g,
       bmp,
       cell,
       0,
       cell,
       cell,
-      -Math.round(CAMERA_ZOOM * WhipSim.HEAD_ROPE_LOCAL_X),
-      -Math.round(CAMERA_ZOOM * WhipSim.HEAD_ROPE_LOCAL_Y),
+      camera.worldToDeviceX(sim.tipX()),
+      camera.worldToDeviceY(sim.tipY()),
+      headAngle,
+      zoom,
+      WhipSim.HEAD_ROPE_LOCAL_X,
+      WhipSim.HEAD_ROPE_LOCAL_Y,
       dw,
-      dw,
+      dh,
+      solidRed,
     );
+  }
+  g.restore();
+}
+
+/** Java GamePanel.drawWhipPartSprite — rope-local pivot on handle/head art. */
+function drawWhipPartSprite(
+  g: CanvasRenderingContext2D,
+  bmp: ImageBitmap,
+  srcX: number,
+  srcY: number,
+  srcW: number,
+  srcH: number,
+  attachDeviceX: number,
+  attachDeviceY: number,
+  angleRad: number,
+  zoom: number,
+  ropeLocalX: number,
+  ropeLocalY: number,
+  dw: number,
+  dh: number,
+  solidRed: boolean,
+): void {
+  g.save();
+  g.translate(attachDeviceX, attachDeviceY);
+  g.rotate(angleRad);
+  const drawX = Math.round(-ropeLocalX * zoom);
+  const drawY = Math.round(-ropeLocalY * zoom);
+  if (solidRed) {
+    // SrcAtop red fill on the part cell (matches player solid-red hitstun tint).
+    const off = document.createElement("canvas");
+    off.width = srcW;
+    off.height = srcH;
+    const og = off.getContext("2d")!;
+    og.imageSmoothingEnabled = false;
+    og.drawImage(bmp, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+    og.globalCompositeOperation = "source-atop";
+    og.fillStyle = "#ff0000";
+    og.fillRect(0, 0, srcW, srcH);
+    g.drawImage(off, 0, 0, srcW, srcH, drawX, drawY, dw, dh);
+  } else {
+    g.drawImage(bmp, srcX, srcY, srcW, srcH, drawX, drawY, dw, dh);
   }
   g.restore();
 }

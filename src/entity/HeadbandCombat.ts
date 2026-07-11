@@ -190,6 +190,11 @@ export class HeadbandCombat {
     return this.kind_ === "side_attack";
   }
 
+  /** sideattack0 spin loops only — endlag is vulnerable (Java isHeadbandSideAttackInvulnerable). */
+  isSideAttackInvulnerable(): boolean {
+    return this.isSideAttack() && this.sideAttackLoop < HEADBAND_SIDE_ATTACK_END_LOOP;
+  }
+
   sideAttackLatchedFacing(): number {
     return this.sideLatchedFacing;
   }

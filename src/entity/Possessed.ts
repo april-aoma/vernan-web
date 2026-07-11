@@ -256,7 +256,7 @@ export class Possessed implements CombatEnemy {
   private mapW = 256;
   private mapH = 256;
   private cameraView: WorldRect | null = null;
-  private seesPlayer = false;
+  private visionSeesPlayer = false;
   private playerCx = NaN;
   private playerCy = NaN;
   private playerVx = 0;
@@ -441,7 +441,11 @@ export class Possessed implements CombatEnemy {
     const body = this.partSims.find((p) => p.name === "body");
     const cx = body?.cx ?? this.x + this.w * 0.5;
     const cy = body?.cy ?? this.y + this.h * 0.5;
-    this.seesPlayer = seesPlayerAt(cx, cy, player.cx, player.cy, seeRadius);
+    this.visionSeesPlayer = seesPlayerAt(cx, cy, player.cx, player.cy, seeRadius);
+  }
+
+  seesPlayer(): boolean {
+    return this.visionSeesPlayer;
   }
 
   bulletsCopy(): readonly PossessedBullet[] {
@@ -803,7 +807,7 @@ export class Possessed implements CombatEnemy {
     } else if (this.phase === "C") {
       targetVx = 0;
       targetVy = 0;
-    } else if (this.seesPlayer && Number.isFinite(this.playerCy)) {
+    } else if (this.visionSeesPlayer && Number.isFinite(this.playerCy)) {
       const dx = this.playerCx - cx;
       const dy = this.playerCy - cy;
       const d = Math.hypot(dx, dy);
@@ -845,7 +849,7 @@ export class Possessed implements CombatEnemy {
     this.vx += (targetVx - this.vx) * lerp;
     this.vy += (targetVy - this.vy) * lerp;
 
-    if (this.seesPlayer) this.facingRight = this.playerCx > cx;
+    if (this.visionSeesPlayer) this.facingRight = this.playerCx > cx;
 
     this.x += this.vx * dt;
     this.y += this.vy * dt;
@@ -973,7 +977,7 @@ export class Possessed implements CombatEnemy {
     if (
       this.canDodgeAndCounter() &&
       this.dodgeCooldown <= 0 &&
-      this.seesPlayer &&
+      this.visionSeesPlayer &&
       Number.isFinite(this.playerCy)
     ) {
       const cx = this.x + this.w * 0.5;
@@ -994,7 +998,7 @@ export class Possessed implements CombatEnemy {
       }
     }
 
-    if (this.phase === "B" && this.seesPlayer && this.shootCooldown <= 0) {
+    if (this.phase === "B" && this.visionSeesPlayer && this.shootCooldown <= 0) {
       this.firing = true;
       this.counterShot = false;
       this.pendingAttack = this.chooseAttack();

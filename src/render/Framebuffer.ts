@@ -27,8 +27,7 @@ export class Framebuffer {
     this.canvas = document.createElement("canvas");
     this.canvas.width = INTERNAL_WIDTH;
     this.canvas.height = INTERNAL_HEIGHT;
-    this.canvas.style.width = `${DISPLAY_WIDTH}px`;
-    this.canvas.style.height = `${DISPLAY_HEIGHT}px`;
+    this.setCssSize(DISPLAY_WIDTH, DISPLAY_HEIGHT);
     this.canvas.style.imageRendering = "pixelated";
     this.canvas.style.display = "block";
     this.canvas.style.background = "#000";
@@ -40,12 +39,18 @@ export class Framebuffer {
     this.ctx.imageSmoothingEnabled = false;
   }
 
+  /** CSS display size (internal buffer stays 512×320). */
+  setCssSize(widthPx: number, heightPx: number): void {
+    this.canvas.style.width = `${Math.max(1, Math.round(widthPx))}px`;
+    this.canvas.style.height = `${Math.max(1, Math.round(heightPx))}px`;
+  }
+
   clear(fill = "#101418"): void {
     this.internalCtx.fillStyle = fill;
     this.internalCtx.fillRect(0, 0, INTERNAL_WIDTH, INTERNAL_HEIGHT);
   }
 
-  /** Blit internal buffer to the visible canvas (1:1 pixels; CSS scales to 1024×640). */
+  /** Blit internal buffer to the visible canvas (1:1 pixels; CSS scales for display). */
   present(): void {
     this.ctx.drawImage(this.internal, 0, 0);
   }

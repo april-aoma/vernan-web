@@ -284,7 +284,7 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 
 ### Phase terrain-core notes
 
-- **RoomGenerator** thickened toward Java `generate`: `maxVerticalReachTilesForGridY` (easy 2 / standard 3), `enforceMaxWalkableGroundYStep`, GEN-LADDER-1 random `H`, floating `-` platforms (NORMAL + BOSS), step breakables in generate + softlock strip (`ProceduralBreakableNav`), pillar/play-floor caps with content `pillarThinSeed`
+- **RoomGenerator** thickened toward Java `generate`: `maxVerticalReachTilesForGridY` (easy 2 / standard 3), `enforceMaxWalkableGroundYStep`, GEN-LADDER-1 random `H`, floating `-` platforms (NORMAL + BOSS), step breakables in generate + softlock strip (`ProceduralBreakableNav`), pillar/play-floor caps with content `pillarThinSeed`, PROP-PIT-GAP narrow-pit widen, PROP-TRAV climb via `hasTraversableClimbBetween` + `canReachBetween`
 - **Post–Pass B order** (GEN-ORDER-1): secret content → `LadderVerticalSeamAlign.applyAll` → `applyPostDungeonPasses` → `placeSecretEntrances` → `applyFinalShaftPass` → keyblocks → enemies
 - **Secret loot**: `applySecretPostGenerationContent` (pedestal / key×3 / heart×3 / coin×10; SUPER cluster); `mountDeferredRoomPickups` thin hook in `mount.ts`
 - Still stubbed: placed props, `start.json`, full PendingGroundedDeco deferral inside generate (deco stamps after final terrain via enrich)

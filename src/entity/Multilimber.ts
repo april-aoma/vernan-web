@@ -224,6 +224,10 @@ export class Multilimber implements CombatEnemy {
     );
   }
 
+  seesPlayer(): boolean {
+    return this.seesPlayerForSteer;
+  }
+
   getAnimFrame(): number {
     return this.animFrame;
   }

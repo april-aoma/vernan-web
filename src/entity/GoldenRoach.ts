@@ -103,7 +103,7 @@ export class GoldenRoach implements CombatEnemy {
   private aggro = false;
   private forcedFly = false;
   private hurtLocked = false;
-  private seesPlayer = false;
+  private visionSeesPlayer = false;
   private animFrame = 0;
   private animAccum = 0;
   private animFrameSec = 0.125;
@@ -170,10 +170,14 @@ export class GoldenRoach implements CombatEnemy {
     const roachSee = seeRadiusPx * SEE_RADIUS_MULT;
     const cx = this.centerX();
     const cy = this.centerY();
-    this.seesPlayer =
+    this.visionSeesPlayer =
       this.lastMap != null &&
       seesPlayerWithSolidLos(this.lastMap, cx, cy, playerCx, playerCy, roachSee);
-    if (this.seesPlayer) this.aggro = true;
+    if (this.visionSeesPlayer) this.aggro = true;
+  }
+
+  seesPlayer(): boolean {
+    return this.visionSeesPlayer;
   }
 
   update(dt: number, map: TileMap, playerX: number): void {
@@ -207,7 +211,7 @@ export class GoldenRoach implements CombatEnemy {
     }
 
     const playerCenterY = this.playerFeetCenterYGuess(map, playerX);
-    if (this.aggro && this.seesPlayer) {
+    if (this.aggro && this.visionSeesPlayer) {
       this.steerAggro(playerX, playerCenterY, dt);
     }
     if (this.mode === "walk") {
@@ -252,7 +256,7 @@ export class GoldenRoach implements CombatEnemy {
   private tickWalkSkitterPlan(dt: number, playerX: number, playerCenterY: number): void {
     this.skitterTimerSec -= dt;
     if (this.skitterTimerSec <= 0) {
-      if (this.aggro && this.seesPlayer && this.onClusterSurface()) {
+      if (this.aggro && this.visionSeesPlayer && this.onClusterSurface()) {
         const playerCluster = this.clusters.clusterIdAtWorld(playerX, playerCenterY);
         if (this.clusters.clusterSteps(this.clusterId, playerCluster) >= 0) {
           this.skitterTowardOnCluster(playerX, playerCenterY);

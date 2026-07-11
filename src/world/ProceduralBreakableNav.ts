@@ -3,6 +3,12 @@
  * Simulates all listed breakables destroyed and checks exits remain reachable.
  */
 
+import {
+  TILE_BREAKABLE,
+  TILE_DOOR,
+  TileMap,
+} from "./TileMap";
+
 export type ExitSpec = {
   doorWest: boolean;
   doorEast: boolean;
@@ -15,6 +21,57 @@ export type ExitSpec = {
 };
 
 export const MAX_VERTICAL_REACH_TILES = 3;
+
+/**
+ * Vernan can walk/jump/fall between any start and any goal tile (opened shells: door and
+ * breakable cells treated as empty). Java ProceduralBreakableNav.canReachBetween.
+ */
+export function canReachBetween(
+  map: TileMap,
+  _groundY: number[],
+  starts: Array<[number, number]>,
+  goals: Array<[number, number]>,
+): boolean {
+  if (starts.length === 0 || goals.length === 0) return true;
+  const w = map.getWidth();
+  const h = map.getHeight();
+  const grid = navGridWithOpenedShells(map);
+  const goalSet = new Set<number>();
+  for (const [gx, gy] of goals) goalSet.add(pack(gx, gy));
+  const seeds: number[] = [];
+  for (const [sx, sy] of starts) {
+    if (isStandable(grid, w, h, null, sx, sy)) seeds.push(pack(sx, sy));
+  }
+  if (seeds.length === 0) return false;
+  const reachable = bfsReachableStandpoints(
+    grid,
+    w,
+    h,
+    null,
+    seeds,
+    MAX_VERTICAL_REACH_TILES,
+  );
+  for (const g of goalSet) {
+    if (reachable.has(g)) return true;
+  }
+  return false;
+}
+
+function navGridWithOpenedShells(map: TileMap): string[][] {
+  const w = map.getWidth();
+  const h = map.getHeight();
+  const grid: string[][] = [];
+  for (let y = 0; y < h; y++) {
+    const row: string[] = [];
+    for (let x = 0; x < w; x++) {
+      const t = map.tileAt(x, y);
+      if (t === TILE_DOOR || t === TILE_BREAKABLE) row.push(".");
+      else row.push(TileMap.tileToAsciiChar(t));
+    }
+    grid.push(row);
+  }
+  return grid;
+}
 
 /** @returns false if breaking all listed breakables would softlock. */
 export function isNavigableAfterBreaking(
@@ -276,7 +333,7 @@ function bfsReachableStandpoints(
   grid: string[][],
   w: number,
   h: number,
-  proceduralBreakable: boolean[][],
+  proceduralBreakable: boolean[][] | null,
   seeds: number[],
   maxReach: number,
 ): Set<number> {
@@ -307,7 +364,7 @@ function tryWalk(
   grid: string[][],
   w: number,
   h: number,
-  proceduralBreakable: boolean[][],
+  proceduralBreakable: boolean[][] | null,
   seen: Set<number>,
   q: number[],
   x: number,
@@ -325,7 +382,7 @@ function tryJump(
   grid: string[][],
   w: number,
   h: number,
-  proceduralBreakable: boolean[][],
+  proceduralBreakable: boolean[][] | null,
   seen: Set<number>,
   q: number[],
   x: number,
@@ -345,7 +402,7 @@ function tryFall(
   grid: string[][],
   w: number,
   h: number,
-  proceduralBreakable: boolean[][],
+  proceduralBreakable: boolean[][] | null,
   seen: Set<number>,
   q: number[],
   x: number,

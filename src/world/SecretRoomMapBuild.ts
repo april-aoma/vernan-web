@@ -1,4 +1,5 @@
 import { RoomKind } from "./DungeonTypes";
+import { canReachBetween } from "./ProceduralBreakableNav";
 import type { GeneratedRoom, RoomConnectivity } from "./RoomGenerator";
 import { hasDualHorizontalSeams, runwayFloorsConnected } from "./SecretDualSeamNav";
 import type { NeighborSecretFaces, SecretRoomSeams } from "./SecretHorizontalSeamSpec";
@@ -19,6 +20,15 @@ export const DOOR_RUNWAY_TILES = 8;
 
 /** Java SecretRoomMapBuild.MAX_SECRET_STEP_HEIGHT_TILES. */
 export const MAX_SECRET_STEP_HEIGHT_TILES = 3;
+
+/**
+ * Interior pit between flanks: a 2-tile-wide air gap with flanks ≥3 tiles tall is illegal
+ * (`##  ##`); ≥3 tiles wide is legal. A 1-tile gap (`#.#`) with ≥3-tall flanks is also illegal
+ * (PROP-PIT-GAP-2).
+ */
+const MIN_INTERIOR_GAP_WIDTH = 3;
+/** Flank height (rows) at which a narrow gap becomes an unjumpable pit. */
+const NARROW_GAP_MIN_FLANK_HEIGHT = 3;
 
 /** Default max contiguous solid/breakable above play floor (Java INTERIOR_PILLAR_DEFAULT_CAP). */
 const INTERIOR_PILLAR_DEFAULT_CAP = 2;
@@ -476,8 +486,9 @@ function hasArenaFloorBelowOnGrid(grid: string[][], h: number, x: number, y: num
 }
 
 /**
- * Trim solids stacked above play floor when they exceed legal step/climb height
- * (Java SecretRoomMapBuild.capInteriorSolidPillarsOnMap / enforceInteriorTraversalTerrain).
+ * Trim solids stacked above play floor when they exceed legal step/climb height, then widen
+ * illegal narrow pits (Java SecretRoomMapBuild.capInteriorSolidPillarsOnMap /
+ * enforceInteriorTraversalTerrain).
  */
 export function capInteriorSolidPillarsOnMap(
   map: TileMap,
@@ -487,8 +498,51 @@ export function capInteriorSolidPillarsOnMap(
   pillarThinSeed: bigint,
   maxStep = MAX_SECRET_STEP_HEIGHT_TILES,
 ): void {
+  enforceInteriorTraversalTerrain(
+    map,
+    ladderTx,
+    leftDoorX,
+    rightDoorX,
+    pillarThinSeed,
+    maxStep,
+  );
+}
+
+function enforceInteriorTraversalTerrain(
+  map: TileMap,
+  ladderTx: number,
+  leftDoorX: number,
+  rightDoorX: number,
+  pillarThinSeed: bigint,
+  maxStep: number,
+): void {
   const w = map.getWidth();
+  const h = map.getHeight();
   const floor = groundYFromMap(map);
+  trimInteriorSolidsAboveFloor(
+    map,
+    w,
+    floor,
+    ladderTx,
+    leftDoorX,
+    rightDoorX,
+    pillarThinSeed,
+    maxStep,
+  );
+  fixNarrowInteriorPits(map, w, h, ladderTx, leftDoorX, rightDoorX);
+}
+
+/** Trim solids stacked above F(x) when they exceed the legal step/climb height to neighbors. */
+function trimInteriorSolidsAboveFloor(
+  map: TileMap,
+  w: number,
+  floor: number[],
+  ladderTx: number,
+  leftDoorX: number,
+  rightDoorX: number,
+  pillarThinSeed: bigint,
+  maxStep: number,
+): void {
   for (let x = 2; x < w - 2; x++) {
     if (isStepColumnExcluded(x, leftDoorX, rightDoorX, ladderTx)) continue;
     const maxAbove = maxAllowedInteriorSolidRun(
@@ -529,7 +583,7 @@ function maxAllowedInteriorSolidRun(
     const step = Math.abs(f - floor[nx]!);
     maxNeighborStep = Math.max(maxNeighborStep, step);
     if (step > maxStep) {
-      if (hasLocalClimbInStepBand(map, f, floor[nx]!, x, nx)) {
+      if (hasTraversableClimbBetween(map, floor, x, nx, f, floor[nx]!)) {
         maxRun = Math.max(maxRun, step);
       } else {
         maxRun = Math.max(maxRun, maxStep);
@@ -561,7 +615,34 @@ function shouldThinThreeHighInteriorPillar(
   return (mix & 3n) !== 0n;
 }
 
-/** Thin climb check: ladder/platform in the step band on either column. */
+/**
+ * True when Vernan can walk/jump/climb from the low-side play floor to the high side (PROP-TRAV).
+ * Requires H/- in the step band and a nav path between standpoints.
+ */
+function hasTraversableClimbBetween(
+  map: TileMap,
+  floor: number[],
+  x: number,
+  nx: number,
+  floorX: number,
+  floorN: number,
+): boolean {
+  if (floorX === floorN) return true;
+  if (!hasLocalClimbInStepBand(map, floorX, floorN, x, nx)) return false;
+  const lowCol = floorX > floorN ? x : nx;
+  const highCol = floorX > floorN ? nx : x;
+  const lowFeet = Math.max(floorX, floorN) - 1;
+  const highFeet = Math.min(floorX, floorN) - 1;
+  if (lowFeet < 1 || highFeet < 1) return false;
+  return canReachBetween(
+    map,
+    floor,
+    [[lowCol, lowFeet]],
+    [[highCol, highFeet]],
+  );
+}
+
+/** H/- on column x or nx between the two play-floor rows (inclusive). */
 function hasLocalClimbInStepBand(
   map: TileMap,
   floorX: number,
@@ -569,16 +650,224 @@ function hasLocalClimbInStepBand(
   x: number,
   nx: number,
 ): boolean {
-  if (floorX === floorN) return true;
   const lo = Math.min(floorX, floorN);
   const hi = Math.max(floorX, floorN);
-  for (const col of [x, nx]) {
-    for (let y = lo; y < hi; y++) {
+  const h = map.getHeight();
+  for (let y = lo; y <= hi; y++) {
+    if (y < 1 || y >= h - 1) continue;
+    for (const col of [x, nx]) {
       const t = map.tileAt(col, y);
       if (t === TILE_LADDER || t === TILE_PLATFORM) return true;
     }
   }
   return false;
+}
+
+/**
+ * PROP-PIT-GAP-1/2: 2-wide (`##  ##`) and 1-wide (`#.#`) air gaps with flanks ≥3 rows tall
+ * are illegal — widen to ≥ MIN_INTERIOR_GAP_WIDTH so Vernan cannot soft-lock.
+ */
+function fixNarrowInteriorPits(
+  map: TileMap,
+  w: number,
+  h: number,
+  ladderTx: number,
+  leftDoorX: number,
+  rightDoorX: number,
+): void {
+  for (let y = 1; y < h - 1; y++) {
+    let x = 2;
+    while (x < w - 2) {
+      if (!isInteriorAir(map, x, y)) {
+        x++;
+        continue;
+      }
+      const gapStart = x;
+      while (x < w - 2 && isInteriorAir(map, x, y)) x++;
+      const gapEnd = x - 1;
+      const gapW = gapEnd - gapStart + 1;
+      if (gapW !== 1 && gapW !== 2) continue;
+      if (
+        isStepColumnExcluded(gapStart, leftDoorX, rightDoorX, ladderTx) ||
+        isStepColumnExcluded(gapEnd, leftDoorX, rightDoorX, ladderTx) ||
+        isStepColumnExcluded(gapStart - 1, leftDoorX, rightDoorX, ladderTx) ||
+        isStepColumnExcluded(gapEnd + 1, leftDoorX, rightDoorX, ladderTx)
+      ) {
+        continue;
+      }
+      if (!isSolidFlank(map, gapStart - 1, y) || !isSolidFlank(map, gapEnd + 1, y)) {
+        continue;
+      }
+      const gapTop = y;
+      let gapBottom = y;
+      while (
+        gapBottom < h - 2 &&
+        isInteriorAirInGap(map, gapStart, gapEnd, gapBottom + 1)
+      ) {
+        gapBottom++;
+      }
+      const leftH = solidFlankHeightBesideGap(map, gapStart, gapTop, gapBottom, -1);
+      const rightH = solidFlankHeightBesideGap(map, gapEnd, gapTop, gapBottom, 1);
+      if (leftH < NARROW_GAP_MIN_FLANK_HEIGHT || rightH < NARROW_GAP_MIN_FLANK_HEIGHT) {
+        continue;
+      }
+      if (gapW === 2) {
+        widenTwoTileGapAtTop(map, gapStart, gapEnd, gapTop, leftDoorX, rightDoorX, ladderTx);
+      } else {
+        widenOneTileGapFullDepth(
+          map,
+          gapStart,
+          gapTop,
+          gapBottom,
+          leftDoorX,
+          rightDoorX,
+          ladderTx,
+        );
+      }
+    }
+  }
+}
+
+function isInteriorAir(map: TileMap, x: number, y: number): boolean {
+  const t = map.tileAt(x, y);
+  return t === TILE_EMPTY || t === TILE_LADDER;
+}
+
+function isInteriorAirInGap(
+  map: TileMap,
+  gapStart: number,
+  gapEnd: number,
+  y: number,
+): boolean {
+  for (let x = gapStart; x <= gapEnd; x++) {
+    if (!isInteriorAir(map, x, y)) return false;
+  }
+  return true;
+}
+
+function isSolidFlank(map: TileMap, x: number, y: number): boolean {
+  const t = map.tileAt(x, y);
+  return t === TILE_SOLID || t === TILE_BREAKABLE;
+}
+
+function solidFlankHeightBesideGap(
+  map: TileMap,
+  gapEdge: number,
+  gapTop: number,
+  gapBottom: number,
+  side: number,
+): number {
+  const col = gapEdge + side;
+  let h = 0;
+  for (let y = gapTop; y <= gapBottom; y++) {
+    if (!isSolidFlank(map, col, y)) break;
+    h++;
+  }
+  return h;
+}
+
+function widenOneTileGapFullDepth(
+  map: TileMap,
+  gapX: number,
+  gapTop: number,
+  gapBottom: number,
+  leftDoorX: number,
+  rightDoorX: number,
+  ladderTx: number,
+): void {
+  for (let y = gapTop; y <= gapBottom; y++) {
+    widenOneTileGapRow(map, gapX, y, leftDoorX, rightDoorX, ladderTx);
+  }
+}
+
+function widenOneTileGapRow(
+  map: TileMap,
+  gapX: number,
+  y: number,
+  leftDoorX: number,
+  rightDoorX: number,
+  ladderTx: number,
+): void {
+  let clearedLeft = 0;
+  let clearedRight = 0;
+  while (1 + clearedLeft + clearedRight < MIN_INTERIOR_GAP_WIDTH) {
+    let progressed = false;
+    if (clearedLeft <= clearedRight) {
+      if (
+        tryClearOneTileGapFlank(
+          map,
+          gapX - clearedLeft - 1,
+          y,
+          leftDoorX,
+          rightDoorX,
+          ladderTx,
+        )
+      ) {
+        clearedLeft++;
+        progressed = true;
+      }
+    }
+    if (1 + clearedLeft + clearedRight >= MIN_INTERIOR_GAP_WIDTH) break;
+    if (clearedRight < clearedLeft || !progressed) {
+      if (
+        tryClearOneTileGapFlank(
+          map,
+          gapX + clearedRight + 1,
+          y,
+          leftDoorX,
+          rightDoorX,
+          ladderTx,
+        )
+      ) {
+        clearedRight++;
+        progressed = true;
+      }
+    }
+    if (!progressed) break;
+  }
+}
+
+function tryClearOneTileGapFlank(
+  map: TileMap,
+  col: number,
+  y: number,
+  leftDoorX: number,
+  rightDoorX: number,
+  ladderTx: number,
+): boolean {
+  if (col < 1 || col >= map.getWidth() - 1) return false;
+  if (isStepColumnExcluded(col, leftDoorX, rightDoorX, ladderTx)) return false;
+  if (!isSolidFlank(map, col, y) || map.tileAt(col, y) === TILE_BREAKABLE) return false;
+  map.setTile(col, y, TILE_EMPTY);
+  return true;
+}
+
+function widenTwoTileGapAtTop(
+  map: TileMap,
+  gapStart: number,
+  gapEnd: number,
+  gapTop: number,
+  leftDoorX: number,
+  rightDoorX: number,
+  ladderTx: number,
+): void {
+  const innerLeft = gapStart - 1;
+  const innerRight = gapEnd + 1;
+  if (
+    !isStepColumnExcluded(innerLeft, leftDoorX, rightDoorX, ladderTx) &&
+    isSolidFlank(map, innerLeft, gapTop) &&
+    map.tileAt(innerLeft, gapTop) !== TILE_BREAKABLE
+  ) {
+    map.setTile(innerLeft, gapTop, TILE_EMPTY);
+    return;
+  }
+  if (
+    !isStepColumnExcluded(innerRight, leftDoorX, rightDoorX, ladderTx) &&
+    isSolidFlank(map, innerRight, gapTop) &&
+    map.tileAt(innerRight, gapTop) !== TILE_BREAKABLE
+  ) {
+    map.setTile(innerRight, gapTop, TILE_EMPTY);
+  }
 }
 
 /**
@@ -601,7 +890,7 @@ export function enforceInteriorPlayFloorSteps(
       const fb = floor[x + 1]!;
       const step = Math.abs(fa - fb);
       if (step <= maxStep) continue;
-      if (hasLocalClimbInStepBand(map, fa, fb, x, x + 1)) continue;
+      if (hasTraversableClimbBetween(map, floor, x, x + 1, fa, fb)) continue;
       if (fa < fb) {
         const target = fb - maxStep;
         if (!isStepColumnExcluded(x, leftDoorX, rightDoorX, ladderTx) && target > fa) {

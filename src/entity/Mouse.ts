@@ -122,6 +122,8 @@ export class Mouse implements PeerWalkingEnemy {
     return this.hp < this.maxHp;
   }
 
+  private visionSeesPlayer = false;
+
   applyVision(player: PlayerCombatSnapshot, seeRadius: number): void {
     const br = this.rect();
     const nowSees = seesPlayerAt(
@@ -131,10 +133,15 @@ export class Mouse implements PeerWalkingEnemy {
       player.cy,
       seeRadius,
     );
+    this.visionSeesPlayer = nowSees;
     if (nowSees) {
       if (!this.activated) this.faceToward(player.cx);
       this.activated = true;
     }
+  }
+
+  seesPlayer(): boolean {
+    return this.visionSeesPlayer;
   }
 
   /** Initial patrol faces Vernan's center (call once at spawn / wake). */

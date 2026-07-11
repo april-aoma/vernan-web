@@ -169,10 +169,19 @@ export function resolvePlayerCostumePose(
       0,
       Math.min(HURT_AIR_SHEET_FRAMES - 1, player.hurtAirFrameIndex()),
     );
+  } else if (player.isAirDodgeActive() && layeredBodyAnimReady(bodyLibrary, "airdodge")) {
+    costumeState = "AIR_DODGE";
+    costumeFrameIndex = player.airDodgeCostumeFrameIndex();
+  } else if (player.isWallSlideActive() && layeredBodyAnimReady(bodyLibrary, "wallslide")) {
+    costumeState = "WALLSLIDE";
+    costumeFrameIndex = player.vy < 0 ? 1 : 0;
   } else if (player.climbing && layeredBodyAnimReady(bodyLibrary, "climb")) {
     costumeState = "CLIMB";
     costumeFrameIndex = player.climbFrame();
-    } else {
+  } else if (player.isSlideActive() && layeredBodyAnimReady(bodyLibrary, "slide")) {
+    costumeState = "SLIDE";
+    costumeFrameIndex = 0;
+  } else {
       useCrouchArt =
         player.crouching ||
         player.isCrouchJumpMode() ||
@@ -197,10 +206,14 @@ export function resolvePlayerCostumePose(
       costumeFrameIndex = player.jumpFrame();
     } else {
       const speed = Math.abs(player.vx);
-      const moving = speed > WALK_SPEED_THRESHOLD || player.isWalkOffLedgeActive();
+      const coastGlide = player.isAirDodgeGroundCoast();
+      const moving =
+        (speed > WALK_SPEED_THRESHOLD && (!coastGlide || player.isHorizontalSteerHeld())) ||
+        player.isWalkOffLedgeActive();
       const displayWalkFrame = player.walkFrame();
       const playerFacingSign = player.facing >= 0 ? 1 : -1;
       const turning =
+        !coastGlide &&
         !player.isWalkOffLedgeActive() &&
         layeredBodyAnimReady(bodyLibrary, "turn") &&
         ((turnAnimFramesLeft > 0 && player.onGround) ||

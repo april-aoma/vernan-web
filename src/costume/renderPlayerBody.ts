@@ -43,6 +43,8 @@ export type RenderLayeredPlayerOpts = {
   itemPickupPose: boolean;
   juice: JuiceDrawOpts;
   attackOverlay?: AttackOverlayDraw;
+  /** Java overlayBeforeTopmost whip (after body / over-body, before TOPMOST). */
+  drawWhipOverlay?: () => void;
 };
 
 /** Draw Vernan with layered body + costume interleave. Returns true when drawn. */
@@ -78,7 +80,6 @@ export function tryRenderLayeredPlayer(opts: RenderLayeredPlayerOpts): boolean {
 
   const feet = player.spriteFeetWorldY();
   const cx = player.x + player.w * 0.5;
-  const attackOverlay = opts.attackOverlay;
 
   drawLayeredVernanWithCostumes({
     g: opts.g,
@@ -101,16 +102,19 @@ export function tryRenderLayeredPlayer(opts: RenderLayeredPlayerOpts): boolean {
     holdOverhead: holdCarry,
     feetAnchorBodyH: pose.feetAnchorBodyH,
     overlayBeforeTopmost:
-      attackOverlay != null
+      opts.attackOverlay != null || opts.drawWhipOverlay != null
         ? () => {
-            drawAttackWeaponOverlays(
-              opts.g,
-              opts.camera,
-              player,
-              feet,
-              attackOverlay,
-              opts.juice,
-            );
+            if (opts.attackOverlay != null) {
+              drawAttackWeaponOverlays(
+                opts.g,
+                opts.camera,
+                player,
+                feet,
+                opts.attackOverlay,
+                opts.juice,
+              );
+            }
+            opts.drawWhipOverlay?.();
           }
         : undefined,
   });

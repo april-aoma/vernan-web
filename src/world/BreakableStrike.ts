@@ -58,7 +58,7 @@ export type BreakableStrikeContext = {
 
 /**
  * Sword vs TILE_BREAKABLE + breakable deco overlays (Java trySwordStrikeTiles / tryStrikeBreakableDeco).
- * Call from mount after player.applyAttackHits — does not edit Player.ts.
+ * Invoked from Player pre-move world-strike hook (mount bindFrameCombatHooks).
  * @returns hitlag frames to apply (BLOCK_BREAK_HITLAG_FRAMES), or 0 if none / already latched.
  */
 export function destroyBreakableAt(tx: number, ty: number, ctx: BreakableStrikeContext): void {

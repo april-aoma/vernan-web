@@ -2,12 +2,28 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0b0d10" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Vernan" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
     <title>Vernan (web)</title>
     <style>
       :root {
         color-scheme: dark;
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --bg: #0b0d10;
+        --safe-t: env(safe-area-inset-top, 0px);
+        --safe-r: env(safe-area-inset-right, 0px);
+        --safe-b: env(safe-area-inset-bottom, 0px);
+        --safe-l: env(safe-area-inset-left, 0px);
       }
       * {
         box-sizing: border-box;
@@ -16,7 +32,7 @@
       body {
         margin: 0;
         min-height: 100%;
-        background: #0b0d10;
+        background: var(--bg);
         color: #d7dde5;
       }
       body {
@@ -41,6 +57,7 @@
       #vernan-root canvas {
         display: block;
         touch-action: none;
+        max-width: 100%;
       }
       #vernan-root:focus-visible {
         box-shadow: 0 0 0 2px #6ec8ff;
@@ -112,41 +129,111 @@
         letter-spacing: 0.1em;
         text-decoration: none;
         text-transform: uppercase;
+        cursor: pointer;
+      }
+      button.nav-btn {
+        appearance: none;
       }
       .nav-btn:hover {
         background: rgba(110, 200, 255, 0.22);
         border-color: #6ec8ff;
       }
-      .nav-btn[aria-current="page"] {
+      .nav-btn[aria-current="page"],
+      .nav-btn[aria-pressed="true"] {
         background: rgba(110, 200, 255, 0.22);
         border-color: #6ec8ff;
         color: #d7eefc;
       }
+      .fs-exit-btn {
+        position: fixed;
+        top: max(8px, var(--safe-t));
+        right: max(8px, var(--safe-r));
+        z-index: 20;
+        appearance: none;
+        margin: 0;
+        padding: 0.35rem 0.55rem;
+        border: 1px solid rgba(110, 200, 255, 0.45);
+        background: rgba(11, 13, 16, 0.82);
+        color: #6ec8ff;
+        font-family: inherit;
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .fs-exit-btn:hover {
+        background: rgba(110, 200, 255, 0.18);
+        border-color: #6ec8ff;
+      }
+      .fs-exit-btn:focus-visible {
+        outline: 1px solid #6ec8ff;
+        outline-offset: 2px;
+      }
       code {
         color: #b7c4d2;
+      }
+
+      /* Fullscreen API + Add-to-Home-Screen standalone */
+      html.immersive,
+      html.immersive body {
+        height: 100%;
+        height: 100dvh;
+        overflow: hidden;
+        overscroll-behavior: none;
+        touch-action: none;
+      }
+      html.immersive body {
+        display: grid;
+        place-items: center;
+        padding: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l);
+        gap: 0;
+        background: #000;
+      }
+      html.immersive .page-chrome {
+        display: none !important;
+      }
+      html.immersive #vernan-root {
+        width: 100%;
+        height: 100%;
+        display: grid;
+        place-items: center;
+      }
+      html.immersive #vernan-root:focus-visible {
+        box-shadow: none;
+      }
+      html.immersive #vernan-root canvas {
+        max-width: none;
       }
     </style>
   </head>
   <body>
-    <h1>Vernan</h1>
-    <nav class="nav-row" aria-label="Site">
+    <h1 class="page-chrome">Vernan</h1>
+    <nav class="nav-row page-chrome" aria-label="Site">
       <a class="nav-btn" href="./leaderboard.html">Leaderboard</a>
       <a class="nav-btn" href="./crashes.html">Crashes</a>
+      <button type="button" class="nav-btn" id="fullscreen-btn" aria-pressed="false">
+        Fullscreen
+      </button>
     </nav>
     <div id="vernan-root" tabindex="0" aria-label="Vernan game"></div>
-    <p class="hint">
+    <p class="hint page-chrome">
       Click the canvas for keyboard focus. Move with arrows/WASD, jump Z/Space,
       attack X, crouch Down, climb ladders with Up/Down. Stand in a door and press
       Up/W to change rooms. Pause with Enter/Esc, then <code>Q</code> to submit &amp; quit
       (also available on the death screen).
       F3 toggles debug. Seed via <code>?seed=12345</code>.
+      On phones: Fullscreen, or Add to Home Screen for a standalone app.
     </p>
-    <div class="page-footer">
+    <div class="page-footer page-chrome">
       <button type="button" class="report-crash-btn" id="report-crash-btn">
         Report crash
       </button>
       <p class="report-crash-status" id="report-crash-status" aria-live="polite"></p>
     </div>
+    <button type="button" class="fs-exit-btn" id="exit-immersive-btn" hidden>
+      Exit
+    </button>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

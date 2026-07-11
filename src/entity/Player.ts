@@ -1,6 +1,7 @@
 import {
   freezeFrames,
   type Aabb,
+  type MeleeHitVfxTag,
   type WeaponStrike,
 } from "../combat/CombatMath";
 import { applyBlackHeartBursts } from "../combat/BlackHeartBurstCombat";
@@ -222,6 +223,10 @@ export class Player {
   private kuriboHopClearedSinceStomp = false;
   private kuriboStompAwaitingApexAfterBounce = false;
   private pendingKuriboBounce = false;
+  /** Leftover air-dodge i-frames banked on stomp; applied after bounce (Java pendingKuriboMigratedIFrames). */
+  private pendingKuriboMigratedIFrames = 0;
+  private kuriboMigratedIFrames = 0;
+  private kuriboMigratedFlashFrame = 0;
   /** PONCHO mid-air flap cooldown (frames). */
   private ponchoFlapCooldown = 0;
   /** CRAWLER_HAT: blocks jump / poncho while mounted (set by mount). */
@@ -285,6 +290,24 @@ export class Player {
   private tickCombatEnemies: readonly CombatEnemy[] = [];
   /** Optional callback when black-heart bursts land (mount spawns HitVfx). */
   onBlackHeartBurstHit?: (enemy: CombatEnemy, strike: WeaponStrike) => void;
+  /** Per-frame combat hooks from mount (HitVfx / breakables); cleared each tick. */
+  private frameMeleeHit:
+    | ((
+        enemy: CombatEnemy,
+        strike: WeaponStrike,
+        sword: Aabb,
+        vfx: MeleeHitVfxTag,
+      ) => void)
+    | null = null;
+  private frameElectrocution:
+    | ((
+        enemy: CombatEnemy,
+        strike: WeaponStrike,
+        contact: { x: number; y: number },
+      ) => void)
+    | null = null;
+  /** World strike (breakables + ice); returns freeze frames. */
+  private frameWorldStrike: (() => number) | null = null;
 
   /** Defensive hitstun sprite shake (world px); resampled each freeze tick. */
   hitlagShakeX = 0;
@@ -303,6 +326,8 @@ export class Player {
   private jumpHeld = false;
   private wasOnGround = false;
   private crouchQueuedFromLanding = false;
+  /** Left/right held this tick (Java horizontalSteerHeld) — coast walk pose + jump speed. */
+  private horizontalSteerHeld = false;
   private walkAnimAccum = 0;
   private walkAnimFrame = 0;
   private walkOffFrozenFrame = 0;
@@ -388,6 +413,10 @@ export class Player {
     this.hurtTintRemaining = 0;
     this.wasCrouching = false;
     this.pendingHurtKnockbackHalved = false;
+    this.pendingKuriboBounce = false;
+    this.pendingKuriboMigratedIFrames = 0;
+    this.kuriboMigratedIFrames = 0;
+    this.kuriboMigratedFlashFrame = 0;
     this.clearBlackHeartBeat();
   }
 
@@ -608,6 +637,15 @@ export class Player {
     return this.hurtLocked || this.defensiveHitstunRemaining > 0;
   }
 
+  private attackCommitLock(): boolean {
+    return (
+      this.attackPhase === 2 ||
+      this.attackPhase === 3 ||
+      this.headband.isActive() ||
+      (this.disc.isHeavyActive() && this.disc.heavyFacingLocked())
+    );
+  }
+
   private tickHurtTint(dt: number): void {
     if (this.hurtTintRemaining > 0) {
       this.hurtTintRemaining = Math.max(0, this.hurtTintRemaining - dt);
@@ -661,12 +699,42 @@ export class Player {
   }
 
   /**
-   * While sim is frozen (timestop / zero substeps), still prime jump/attack buffers
+   * Mount registers HitVfx / world-strike callbacks for this sim tick
+   * (Java applyAttackHits worldStrike + panel HitVfx).
+   */
+  bindFrameCombatHooks(hooks: {
+    onMeleeHit?: (
+      enemy: CombatEnemy,
+      strike: WeaponStrike,
+      sword: Aabb,
+      vfx: MeleeHitVfxTag,
+    ) => void;
+    onElectrocution?: (
+      enemy: CombatEnemy,
+      strike: WeaponStrike,
+      contact: { x: number; y: number },
+    ) => void;
+    tryWorldStrike?: () => number;
+  } | null): void {
+    this.frameMeleeHit = hooks?.onMeleeHit ?? null;
+    this.frameElectrocution = hooks?.onElectrocution ?? null;
+    this.frameWorldStrike = hooks?.tryWorldStrike ?? null;
+  }
+
+  /**
+   * While sim is frozen (timestop / zero substeps), still prime jump/dodge buffers
    * from press edges so taps during a hitch aren't lost (Java primeLagInputBuffers).
+   * Attack is edge-driven in updateAttack — not buffered here.
    */
   primeLagInputBuffers(input: Input): void {
+    if (this.blocksJumpInput()) return;
     if (input.jumpPressed) this.jumpBufferTimer = JUMP_BUFFER;
-    if (input.attackPressed) this.attackBufferTimer = ATTACK_BUFFER;
+    if (input.dodgePressed) this.disc.primeDodgeBufferFromLag();
+  }
+
+  /** Carry or headband currently blocks jump priming (Java blocksJumpInput). */
+  private blocksJumpInput(): boolean {
+    return this.carry.blocksJump() || this.headband.isActive();
   }
 
   update(
@@ -686,22 +754,48 @@ export class Player {
     this.tickHurtTint(dt);
     this.squash.tick(dt);
     this.tickBlackHeartBeat(enemies);
-
-    // Buffer jump / attack even during hitlag so presses aren't eaten.
-    if (input.jumpPressed && this.getupLockFrames === 0) this.jumpBufferTimer = JUMP_BUFFER;
-    if (input.attackPressed) this.attackBufferTimer = ATTACK_BUFFER;
-
-    // Offensive hitlag (sword land): freeze player; still allow contact to queue defensive stun.
-    // No shake/red on offensive hitlag (Java HitlagState).
-    if (this.hitlagFrames > 0) {
-      this.hitlagFrames--;
-      return;
-    }
+    this.tickKuriboMigratedIFrames();
 
     this.prevPedestalGroundContact = this.tickPedestalGroundContact;
     this.wasOnGround = this.onGround;
     this.justLanded = false;
     this.landedThisTick = false;
+
+    // Offensive + defensive timers tick together while !hurtLocked (Java combat freeze).
+    // No early-return on offensive alone — that stacked freezes and blocked grab/Kuribo.
+    if (!this.hurtLocked) {
+      const prevOff = this.hitlagFrames;
+      const prevDef = this.defensiveHitstunRemaining;
+      if (this.hitlagFrames > 0) this.hitlagFrames--;
+      this.defensiveHitstunRemaining = Math.max(0, this.defensiveHitstunRemaining - dt);
+      if (prevOff > 0 && this.hitlagFrames <= 0 && this.pendingKuriboBounce) {
+        this.finishPendingKuriboBounce(input);
+      }
+      // Visual hitlag is only for getting hit (defensive), not hits Vernan lands.
+      if (this.defensiveHitstunRemaining > 0) {
+        this.hitlagSolidRed = true;
+        this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
+        this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
+      } else {
+        this.hitlagSolidRed = false;
+        this.hitlagShakeX = 0;
+        this.hitlagShakeY = 0;
+      }
+      if (
+        prevDef > 0 &&
+        this.defensiveHitstunRemaining <= 0 &&
+        this.pendingHurtKnockSign !== 0
+      ) {
+        const sign = this.pendingHurtKnockSign;
+        this.pendingHurtKnockSign = 0;
+        this.hitlagSolidRed = false;
+        this.hitlagShakeX = 0;
+        this.hitlagShakeY = 0;
+        this.startHurtReaction(sign, input, map);
+      } else if (this.defensiveHitstunRemaining > 0) {
+        this.tickHurtAirAnim(dt);
+      }
+    }
 
     // Hurt knockback lock: gravity + collide only until land (Java hurtLocked early return).
     if (this.hurtLocked) {
@@ -711,28 +805,6 @@ export class Player {
       this.updateHurtLocked(dt, map, input.jump);
       this.tickHurtAirAnim(dt);
       return;
-    }
-
-    // Defensive hitstun timer + visuals (Java ticks before grab; no early return here).
-    if (this.defensiveHitstunRemaining > 0) {
-      this.hitlagSolidRed = true;
-      this.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      this.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
-      const prev = this.defensiveHitstunRemaining;
-      this.defensiveHitstunRemaining = Math.max(0, this.defensiveHitstunRemaining - dt);
-      if (prev > 0 && this.defensiveHitstunRemaining <= 0 && this.pendingHurtKnockSign !== 0) {
-        const sign = this.pendingHurtKnockSign;
-        this.pendingHurtKnockSign = 0;
-        this.hitlagSolidRed = false;
-        this.hitlagShakeX = 0;
-        this.hitlagShakeY = 0;
-        this.startHurtReaction(sign, input, map);
-      }
-      this.tickHurtAirAnim(dt);
-    } else if (!this.hurtLocked) {
-      this.hitlagSolidRed = false;
-      this.hitlagShakeX = 0;
-      this.hitlagShakeY = 0;
     }
 
     // Clear one-frame render hold at tick start (Java); pose draw used the prior frame.
@@ -746,14 +818,31 @@ export class Player {
       return;
     }
 
-    if (this.defensiveHitstunRemaining > 0) {
+    // Shared combat freeze: offensive hitlag and/or defensive stun (Java combatFreeze).
+    const combatFreeze =
+      this.hitlagFrames > 0 || this.defensiveHitstunRemaining > 0;
+    if (combatFreeze) {
+      this.disc.tickDodgeBuffer(dt, input, this.discHost());
+      this.disc.tickHeavyScreenShake();
+      // Java still applies slide / headband-side hits during combat freeze.
+      this.applyCombatFreezeHits();
       this.tickAnim(dt);
       return;
     }
 
+    // Java: clear jump buffer/squat when carry/headband blocks jump.
+    if (this.blocksJumpInput()) {
+      if (this.jumpSquatRemaining > 0) {
+        this.jumpSquatRemaining = 0;
+        this.shyMaskCharge.cancelSuperJumpWindup();
+      }
+      this.jumpBufferTimer = 0;
+    }
+
     const getupMoveLock = this.getupLockFrames > 0;
     const getupActionLock = getupMoveLock;
-    const landingLocked = this.landingLockFrames > 0;
+    const landingLocked =
+      this.landingLockFrames > 0 && this.onGround && this.jumpSquatRemaining === 0;
     let downRaw = input.down && !input.up;
     let upHeld = input.up;
     // Latch direction held through pose + one follow-through frame (Java).
@@ -790,17 +879,35 @@ export class Player {
 
     this.disc.tickChordBuffers(dt, input, this.discHost());
     this.disc.tickDodgeBuffer(dt, input, this.discHost());
+
+    // Pre-move combat (Java): whip + melee hits, then advance attack anim.
+    this.updateWhipSim(dt, input, map);
+    this.applyPreMoveCombatHits();
     this.disc.updateHeavy(dt, input, this.discHost());
     this.disc.tickHeavyScreenShake();
-
     this.updateAttack(dt, input);
     this.headband.tryBeginFromInput(input, this.headbandHost());
     this.headband.update(dt, input, this.headbandHost());
 
     const left = input.left;
     const right = input.right;
+    this.horizontalSteerHeld = left || right;
     if (input.jumpPressed && !getupActionLock) {
       this.disc.tryWallJumpOnPress(dt, left, right, this.discHost());
+    }
+    // Jump buffer primes only on the free (non-combat-freeze) path (Java).
+    if (
+      input.jumpPressed &&
+      !this.crawlerHatBlockJump &&
+      !this.disc.slideActive &&
+      !this.disc.wallSlideActive &&
+      !this.disc.airDodgeActionLock() &&
+      !getupActionLock &&
+      !this.blocksJumpInput()
+    ) {
+      this.jumpBufferTimer = JUMP_BUFFER;
+    } else if (this.jumpSquatRemaining === 0) {
+      this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - dt);
     }
     if (!getupActionLock) {
       this.disc.trySlideFromChord(input, map, left, right, landingLocked, this.discHost());
@@ -823,6 +930,9 @@ export class Player {
       !this.isSubweaponAnimating() &&
       !this.climbing &&
       !getupActionLock &&
+      !this.disc.slideActive &&
+      !this.attackCommitLock() &&
+      !this.disc.airDodgeActive &&
       !this.shyMaskChargeSuppressed();
     this.shyMaskCharge.tick(
       this.stats.shyMaskStacks > 0,
@@ -837,6 +947,32 @@ export class Player {
       }
     }
 
+    // Crouch height before move (Java applyHitboxHeight before integrate).
+    if (!this.climbing) {
+      if (mouthMountedThisTick) {
+        this.crouching = false;
+      } else if (this.normalJumpAirborne && !this.crouchJumpMode) {
+        this.crouching = false;
+      } else {
+        this.crouching = this.onGround && crouchHeld;
+      }
+      this.applyCrouchHeight(map);
+      if (this.crouchJumpMode && !this.onGround) {
+        this.crouching = true;
+      }
+    } else {
+      this.crouching = false;
+    }
+    if (this.crouching && !this.wasCrouching) {
+      VernanAnimCueRuntime.applyOnEnter(
+        this.squash,
+        (cue) => this.applyAnimCueImpulse(cue),
+        "crouch",
+        this.onGround,
+      );
+    }
+    this.wasCrouching = this.crouching;
+
     if (getupMoveLock) {
       this.vx = 0;
       this.vy = 0;
@@ -847,11 +983,13 @@ export class Player {
       this.updateClimbMove(dt, input, map, upHeld, downRaw);
     } else {
       const steerDir = (left ? -1 : 0) + (right ? 1 : 0);
+      this.disc.reconcileFullWavedashGround();
+      this.disc.applyFullWavedashPendingAerial(this.discHost());
       this.disc.applyMovementOverrides(this.discHost(), steerDir);
       this.applyHorizontalIntent(dt, input, crouchHeld, landingLocked);
       const groundJumpClaimsJump =
         this.jumpBufferTimer > 0 && (this.onGround || this.coyoteTimer > 0);
-      this.applyJumpLogic(dt, crouchHeld);
+      this.applyJumpLogic(dt, crouchHeld, map, left, right);
       this.applyPonchoAndScarfAirMobility(input, groundJumpClaimsJump);
       if (!this.disc.shouldSkipGravity(this.discHost())) {
         this.applyGravity(dt);
@@ -865,7 +1003,9 @@ export class Player {
       this.vx = 0;
       this.vy = 0;
     } else if (!this.disc.runAirDodgeMoveStep(dt, map, this.discHost())) {
+      this.disc.tickFullWavedashAroundMove(map, this.discHost());
       this.moveAndCollide(dt, map);
+      this.disc.afterFullWavedashMove(map, this.discHost());
     }
     this.heelys.syncPumpOnMomentumStop(this.stats.heelysStacks, this.vx, this.stats);
     if (this.stats.heelysStacks > 0 && Math.abs(this.vx) > 1e-6 && this.onGround) {
@@ -916,9 +1056,8 @@ export class Player {
     this.detectWalkOff();
     this.finishJumpSquat(map, dt, input);
     this.tickExtendedFall(dt);
-    this.applyLandingFromTouchdown();
-    this.disc.onLand(this.discHost());
-    this.landingLockFrames = this.landingLockMutable.value;
+    const landSteer = (left ? -1 : 0) + (right ? 1 : 0);
+    this.applyLandingFromTouchdown(landSteer);
     if (this.pendingLandingDustQueue) {
       this.queueLandingDust();
       this.pendingLandingDustQueue = false;
@@ -933,38 +1072,8 @@ export class Player {
         recover,
       );
     }
-    if (!this.climbing) {
-      // Java: mouth mount clears crouch for the begin frame even while Down is held for latch.
-      if (mouthMountedThisTick) {
-        this.crouching = false;
-      } else if (this.normalJumpAirborne && !this.crouchJumpMode) {
-        this.crouching = false;
-      } else {
-        this.crouching = this.onGround && crouchHeld;
-      }
-      this.applyCrouchHeight(map);
-      if (this.crouchJumpMode && !this.onGround) {
-        this.crouching = true;
-      }
-    } else {
-      this.crouching = false;
-    }
-    if (this.crouching && !this.wasCrouching) {
-      VernanAnimCueRuntime.applyOnEnter(
-        this.squash,
-        (cue) => this.applyAnimCueImpulse(cue),
-        "crouch",
-        this.onGround,
-      );
-    }
-    this.wasCrouching = this.crouching;
-    this.tickLandingLock();
-    this.updateWhipSim(dt, input, map);
-    if (this.pendingKuriboBounce && this.hitlagFrames <= 0) {
-      this.finishPendingKuriboBounce(input);
-    }
 
-    // Getup countdown at end of tick (Java): freeze climb, then finish mount/dismount.
+    // Getup countdown before contacts (Java getup → contacts → landing lock).
     if (this.getupLockFrames > 0) {
       this.vx = 0;
       this.vy = 0;
@@ -981,6 +1090,15 @@ export class Player {
         this.getupLatchUp = false;
       }
     }
+
+    // Post-move contacts (Java applyEnemyContacts).
+    this.applyEnemyContacts(
+      this.tickCombatEnemies as CombatEnemy[],
+      this.frameElectrocution ?? undefined,
+    );
+
+    this.tickLandingLock();
+    this.applyLandingLockCrouchAndSlide(map, input, left, right);
 
     this.tickAnim(dt);
     this.tickHurtAirAnim(dt);
@@ -1061,6 +1179,27 @@ export class Player {
     return this.disc.isHeavyActive() ? 48 : 32;
   }
 
+  /** Authored handle rotation for the current attack frame (world radians). */
+  whipHandleRotRad(): number {
+    if (!this.usesWhip()) return 0;
+    return this.mirrorWhipRotRad(
+      WhipAnchorValues.handleRotDeg(this.whipAnchorStrip(), this.whipFrameIndex()),
+    );
+  }
+
+  /** Coiled tip rotation — authored on wind-up, procedural on later frames (world radians). */
+  whipCoiledTipRotRad(): number {
+    if (!this.usesWhip()) return 0;
+    return this.mirrorWhipRotRad(
+      WhipAnchorValues.tipRestRotDeg(this.whipAnchorStrip(), this.whipFrameIndex()),
+    );
+  }
+
+  private mirrorWhipRotRad(textureDeg: number): number {
+    const deg = this.facing < 0 ? -textureDeg : textureDeg;
+    return (deg * Math.PI) / 180;
+  }
+
   /**
    * Hold-X recover wiggle hits only (Java applyWhipWiggleHits).
    * Crack damage goes through {@link applyAttackHits} via whip {@link attackHitboxPose}.
@@ -1069,6 +1208,7 @@ export class Player {
     if (!this.usesWhip() || !this.whipWiggleActive || !this.whipSim.isActive()) return 0;
     const pose = this.whipSim.hitboxPose();
     if (!pose) return 0;
+    const sword = pose.bounds();
     let maxFreeze = 0;
     const baseDmg =
       this.effectiveOutgoingDamage(this.stats.outgoingDamage()) *
@@ -1085,6 +1225,7 @@ export class Player {
       const dmg = region === "TIP" ? baseDmg * WhipSim.TIP_DAMAGE_MULT : baseDmg;
       let ff = this.scaleOutgoingHitstun(freezeFrames(dmg));
       if (region === "TIP") ff += WhipSim.TIP_HITLAG_BONUS_FRAMES;
+      const contact = contactBetweenHurtAndEnemy(sword, e.rect());
       const strike: WeaponStrike = {
         damage: dmg,
         freezeFrames: ff,
@@ -1092,6 +1233,8 @@ export class Player {
         attackerW: this.w,
         facing: this.facing,
         knockKind,
+        contactWorldX: contact.x,
+        contactWorldY: contact.y,
       };
       if (e.applyWeaponStrike(strike)) {
         maxFreeze = Math.max(maxFreeze, ff);
@@ -1099,6 +1242,7 @@ export class Player {
         KaleidoscopeEyeCombat.notifyEnemyHpLoss(e, dmg);
         this.applySwordHitItemProcs(e);
         this.whipWiggleHitCooldown.set(e, WhipTuningValues.WIGGLE_HIT_COOLDOWN_SEC);
+        this.frameMeleeHit?.(e, strike, sword, region === "TIP" ? "slash" : "fallback");
       }
     }
     if (maxFreeze > 0) this.hitlagFrames = Math.max(this.hitlagFrames, maxFreeze);
@@ -1115,6 +1259,8 @@ export class Player {
   private updateHurtLocked(dt: number, map: TileMap, jumpHeldHurt: boolean): void {
     this.cancelAttack();
     this.jumpSquatRemaining = 0;
+    // Sample after knock forces airborne (Java local wasOnGround inside hurtLocked block).
+    const wasOnGround = this.onGround;
     const scarfFloatLocked =
       this.stats.pinkScarfStacks > 0 && this.vy > 0 && jumpHeldHurt;
     const gLocked = GRAVITY * (scarfFloatLocked ? SCARF_FLOAT_GRAVITY_SCALE : 1);
@@ -1126,7 +1272,7 @@ export class Player {
     if (this.overlapsSolid(map, this.collisionPoseAt(this.x, this.y))) {
       this.nudgeCollisionPoseOutOfSolids(map);
     }
-    if (!this.wasOnGround && this.onGround) {
+    if (!wasOnGround && this.onGround) {
       if (this.normalJumpAirborne && !this.crouchJumpMode && !this.climbing) {
         this.finishJumpLandingCollision(map);
       }
@@ -1135,6 +1281,11 @@ export class Player {
       this.hurtAirAnimAccum = 0;
       this.hurtAirFrame = 0;
     }
+    // Still take contact checks during hurt knockback (Java); iframes gate damage.
+    this.applyEnemyContacts(
+      this.tickCombatEnemies as CombatEnemy[],
+      this.frameElectrocution ?? undefined,
+    );
   }
 
   /**
@@ -1291,7 +1442,7 @@ export class Player {
   }
 
   isLandingLocked(): boolean {
-    return this.landingLockFrames > 0;
+    return this.landingLockFrames > 0 && this.onGround && this.jumpSquatRemaining === 0;
   }
 
   /** True while mount/dismount getup movement lock is active (Java isGetupLocked). */
@@ -1502,6 +1653,7 @@ export class Player {
       get landingLockFrames() { return p.landingLockFrames; },
       getupLockFrames: p.getupLockFrames,
       get jumpSquatRemaining() { return p.jumpSquatRemaining; },
+      set jumpSquatRemaining(v: number) { p.jumpSquatRemaining = v; },
       get jumpBufferTimer() { return p.jumpBufferTimer; },
       set jumpBufferTimer(v: number) { p.jumpBufferTimer = v; },
       get coyoteTimer() { return p.coyoteTimer; },
@@ -1515,6 +1667,8 @@ export class Player {
       set walkOffLedgeActive(v: boolean) { p.walkOffLedgeActive = v; },
       get jumpHeld() { return p.jumpHeld; },
       set jumpHeld(v: boolean) { p.jumpHeld = v; },
+      get feetOnIce() { return p.tickFeetOnIce; },
+      get crawlerHatBlockJump() { return p.crawlerHatBlockJump; },
       extendedFallFrames: p.extendedFallFrames,
       landingLockFramesMutable: p.landingLockMutable,
       get landedThisTick() { return p.landedThisTick; },
@@ -1565,6 +1719,8 @@ export class Player {
         p.horizontalWallContactSide = 0;
       },
       standsOnWavedashSupport: (map) => p.standsOnWavedashSupport(map),
+      wavedashDeckFromPlatformHullOverlap: (map) => p.wavedashDeckFromPlatformHullOverlap(map),
+      snapFootToFloorY: (deckY) => p.snapFootToFloorY(deckY),
       gardeningHost: p.tickGardeningHost,
       fuzzyHatStacks: p.inventory.stacksOf("FUZZY_HAT"),
       headbandStacks: p.inventory.stacksOf("HEADBAND"),
@@ -1596,20 +1752,67 @@ export class Player {
     return this.polygonOverlapsHorizontalBlockingSolids(pose, map, vxProbe, prevFeet, predictedFeet);
   }
 
-  /** Ground / coyote / pedestal deck for jumpsquat wavedash (Java standsOnFullWavedashSupport). */
-  standsOnWavedashSupport(_map: TileMap): boolean {
+  /** Ground / coyote / platform-or-pedestal deck for jumpsquat wavedash (Java standsOnFullWavedashSupport). */
+  standsOnWavedashSupport(map: TileMap): boolean {
     if (this.onGround || this.coyoteTimer > 0) return true;
-    if (!this.tickPedestalPlatforms?.length) return false;
-    const feet = this.poseForFeetSupport().bounds();
-    return StandSurfaceQuery.feetOverlapPedestalHull(
-      feet.x,
-      feet.x + feet.w,
-      this.tickPedestalPlatforms,
-    );
+    return this.wavedashDeckFromPlatformHullOverlap(map) != null;
+  }
+
+  /**
+   * Wavedash / coast: stand hull overlaps a platform tile's full cell (or pedestal extra),
+   * with feet on that deck's surface (Java wavedashDeckFromPlatformHullOverlap).
+   */
+  wavedashDeckFromPlatformHullOverlap(map: TileMap): number | null {
+    const pose = this.standCollisionPoseAt(this.x, this.y);
+    const r = pose.bounds();
+    const footY = r.y + r.h;
+    const ts = TILE_SIZE;
+    const leftTile = Math.floor((r.x + 0.001) / ts);
+    const rightTile = Math.floor((r.x + r.w - 0.001) / ts);
+    const topTile = Math.floor((r.y + 0.001) / ts);
+    const bottomTile = Math.floor((r.y + r.h - 0.001) / ts);
+    let best: number | null = null;
+    for (let ty = topTile; ty <= bottomTile; ty++) {
+      if (ty < 0 || ty >= map.height) continue;
+      for (let tx = leftTile; tx <= rightTile; tx++) {
+        if (!map.isPlatformTile(tx, ty)) continue;
+        if (this.dropsThroughOneWayPlatformTile(map, tx, ty)) continue;
+        const tile = { x: tx * ts, y: ty * ts, w: ts, h: ts };
+        if (!pose.intersectsRect(tile)) continue;
+        const deckTop = ty * ts;
+        if (!this.wavedashFeetOnDeck(footY, deckTop)) continue;
+        if (best == null || deckTop > best) best = deckTop;
+      }
+    }
+    if (this.tickPedestalPlatforms) {
+      for (const p of this.tickPedestalPlatforms) {
+        const deckRect = { x: p.x, y: p.y, w: p.w, h: Math.max(1, p.h) };
+        if (
+          r.x + r.w <= deckRect.x + 1e-6 ||
+          r.x >= deckRect.x + deckRect.w - 1e-6 ||
+          r.y + r.h <= deckRect.y + 1e-6 ||
+          r.y >= deckRect.y + deckRect.h - 1e-6
+        ) {
+          continue;
+        }
+        const deckTop = p.y;
+        if (!this.wavedashFeetOnDeck(footY, deckTop)) continue;
+        if (best == null || deckTop > best) best = deckTop;
+      }
+    }
+    return best;
+  }
+
+  private wavedashFeetOnDeck(footY: number, deckTop: number): boolean {
+    return footY >= deckTop - 1e-3 && footY <= deckTop + PLATFORM_DECK_SLACK_PX + 1e-3;
   }
 
   isPlayerDamageImmune(): boolean {
-    return this.disc.isPlayerDamageImmune();
+    return (
+      this.disc.isPlayerDamageImmune() ||
+      this.headband.isSideAttackInvulnerable() ||
+      this.kuriboMigratedIFrames > 0
+    );
   }
 
   heavyAttackScreenShakeDeviceX(): number {
@@ -1641,6 +1844,9 @@ export class Player {
   }
 
   airDodgeIntangibleFlashAlpha(): number {
+    if (this.kuriboMigratedIFrames > 0) {
+      return this.disc.kuriboMigratedFlashAlpha(this.kuriboMigratedFlashFrame);
+    }
     return this.disc.airDodgeIntangibleFlashAlpha();
   }
 
@@ -1794,6 +2000,10 @@ export class Player {
       this.resetGrabAnim();
       return false;
     }
+    if (this.disc.slideActive) {
+      this.resetGrabAnim();
+      return false;
+    }
     if (this.hurtLocked) {
       this.resetGrabAnim();
       return false;
@@ -1846,11 +2056,13 @@ export class Player {
 
   private applyGrabBoxHold(box: HitboxPose, map: TileMap): void {
     this.grabHeld = true;
+    this.disc.cancelAirDodgeFromGrab();
     this.vx = 0;
     this.vy = 0;
     this.climbing = false;
     this.crouching = false;
     this.jumpSquatRemaining = 0;
+    this.hitlagFrames = 0;
     this.cancelAttack();
     this.cancelSubweaponAnim();
     this.resolveGrabHoldPosition(box, map);
@@ -2065,7 +2277,7 @@ export class Player {
       enemy: CombatEnemy,
       strike: WeaponStrike,
       sword: Aabb,
-      vfx: "slash" | "shield_break" | "shield_block",
+      vfx: MeleeHitVfxTag,
     ) => void,
   ): number {
     if (this.headband.isActive()) {
@@ -2149,6 +2361,7 @@ export class Player {
         const hitDmg = region === "TIP" ? dmg * WhipSim.TIP_DAMAGE_MULT : dmg;
         let ff = this.scaleOutgoingHitstun(freezeFrames(hitDmg));
         if (region === "TIP") ff += WhipSim.TIP_HITLAG_BONUS_FRAMES;
+        const contact = contactBetweenHurtAndEnemy(sword, e.rect());
         const strike: WeaponStrike = {
           damage: hitDmg,
           freezeFrames: ff,
@@ -2156,6 +2369,8 @@ export class Player {
           attackerW: this.w,
           facing: this.facing,
           knockKind,
+          contactWorldX: contact.x,
+          contactWorldY: contact.y,
         };
         const hit = e.applyWeaponStrike(strike);
         if (hit) {
@@ -2164,7 +2379,7 @@ export class Player {
           AutismCombat.notifyPlayerDamageDealt(e, hitDmg);
           KaleidoscopeEyeCombat.notifyEnemyHpLoss(e, hitDmg);
           this.applySwordHitItemProcs(e);
-          onHit?.(e, strike, sword, "slash");
+          onHit?.(e, strike, sword, region === "TIP" ? "slash" : "fallback");
         }
         continue;
       }
@@ -2225,6 +2440,48 @@ export class Player {
     this.hitlagFrames = Math.max(this.hitlagFrames, freezeFrames);
   }
 
+  /**
+   * Melee + whip wiggle + world strike before movement (Java pre-move combat).
+   * Mount supplies HitVfx / breakables via {@link #bindFrameCombatHooks}.
+   */
+  private applyPreMoveCombatHits(): void {
+    const enemies = this.tickCombatEnemies as CombatEnemy[];
+    const onHit = this.frameMeleeHit ?? undefined;
+    // Java order: heavy → whip wiggle → sword/headband/slide (applyAttackHits), then world.
+    let maxFreeze = 0;
+    if (this.disc.isHeavyActive()) {
+      maxFreeze = Math.max(
+        maxFreeze,
+        this.disc.applyHeavyHits(this.discHost(), enemies, (e, strike, sword, vfx) =>
+          onHit?.(e, strike, sword, vfx),
+        ),
+      );
+    }
+    maxFreeze = Math.max(maxFreeze, this.applyWhipHits(enemies));
+    if (!this.disc.isHeavyActive()) {
+      maxFreeze = Math.max(maxFreeze, this.applyAttackHits(enemies, onHit));
+    }
+    const worldFreeze = this.frameWorldStrike?.() ?? 0;
+    if (maxFreeze > 0 || worldFreeze > 0) {
+      this.latchAttackHit(Math.max(maxFreeze, worldFreeze));
+    }
+  }
+
+  /** Slide / headband-side hits while combat-frozen (Java combatFreeze body). */
+  private applyCombatFreezeHits(): void {
+    const enemies = this.tickCombatEnemies as CombatEnemy[];
+    const onHit = this.frameMeleeHit ?? undefined;
+    if (this.disc.slideActive) {
+      const slideFreeze = this.disc.applySlideHits(this.discHost(), enemies, (e, strike, sword) =>
+        onHit?.(e, strike, sword, "slash"),
+      );
+      if (slideFreeze > 0) this.latchAttackHit(slideFreeze);
+    }
+    if (this.headband.isSideAttack()) {
+      const hbFreeze = this.headband.applyHits(this.headbandHost(), enemies, onHit);
+      if (hbFreeze > 0) this.latchAttackHit(hbFreeze);
+    }
+  }
 
   private tickKuriboStompRearm(): void {
     if (this.kuriboStompAwaitingApexAfterBounce && this.vy >= 0) {
@@ -2255,14 +2512,27 @@ export class Player {
     if (!fromAirDodge && this.vy <= 0) return false;
     if (e.isDead() || e.isInCombatHitstun()) return false;
     if ((e as { isKuriboStompCorpseActive?: () => boolean }).isKuriboStompCorpseActive?.()) return false;
+    if (e.kuriboStompOverlaps) {
+      if (!e.kuriboStompOverlaps(vernanHurt)) return false;
+    } else {
+      const hurt = e.damageReceivePose();
+      if (!vernanHurt.intersectsRect(hurt)) return false;
+    }
     const enemyHurt = e.damageReceivePose();
-    if (!vernanHurt.intersectsRect(enemyHurt)) return false;
     const pb = vernanHurt.bounds();
     const playerCy = pb.y + pb.h * 0.5;
     if (playerCy < enemyHurt.y || playerCy > enemyHurt.y + enemyHurt.h) return false;
 
+    if (fromAirDodge) {
+      const remaining = this.disc.remainingAirDodgeIntangibleFrames();
+      if (remaining > 0) {
+        this.pendingKuriboMigratedIFrames = Math.max(this.pendingKuriboMigratedIFrames, remaining);
+      }
+      this.disc.cancelAirDodgeForKuriboStomp();
+    }
+
     const fuzzyStacks = this.inventory.stacksOf("FUZZY_HAT");
-    let stompHitlagFrames = this.scaleOutgoingHitstun(
+    const stompHitlagFrames = this.scaleOutgoingHitstun(
       Math.ceil(freezeFrames(1, 1) * KURIBO_STOMP_HITSTUN_MULT),
     );
     const contact = contactBetweenHurtAndEnemy(pb, e.rect());
@@ -2291,7 +2561,13 @@ export class Player {
     return true;
   }
 
-  /** Call after offensive hitlag ends when a stomp landed. */
+  private tickKuriboMigratedIFrames(): void {
+    if (this.kuriboMigratedIFrames <= 0) return;
+    this.kuriboMigratedFlashFrame++;
+    this.kuriboMigratedIFrames--;
+  }
+
+  /** Call when offensive hitlag expires after a stomp (Java finishKuriboStompBounce). */
   finishPendingKuriboBounce(input: Input): void {
     if (!this.pendingKuriboBounce) return;
     this.pendingKuriboBounce = false;
@@ -2301,6 +2577,11 @@ export class Player {
     this.vy = -this.stats.jumpVel * frac;
     this.onGround = false;
     this.kuriboStompAwaitingApexAfterBounce = true;
+    if (this.pendingKuriboMigratedIFrames > 0) {
+      this.kuriboMigratedIFrames = this.pendingKuriboMigratedIFrames;
+      this.kuriboMigratedFlashFrame = 0;
+      this.pendingKuriboMigratedIFrames = 0;
+    }
     this.walkOffLedgeActive = false;
     this.normalJumpAirborne = true;
     this.crouchJumpMode = false;
@@ -2318,19 +2599,24 @@ export class Player {
       contact: { x: number; y: number },
     ) => void,
   ): void {
-    if (this.health.isDead || this.health.isInvulnerable || this.isPlayerDamageImmune()) return;
-    if (this.hurtLocked) return;
-    if (this.defensiveHitstunRemaining > 0) return;
-    this.tickKuriboStompRearm();
+    if (this.health.isDead) return;
+    if (this.stats.kuriboShoeStacks > 0) this.tickKuriboStompRearm();
     const vernanHurt = this.hurtboxPose();
-    const fromAirDodge = this.disc.isAirDodgeIntangible();
-    if (this.stats.kuriboShoeStacks > 0) {
+    const kuriboAirDodgeStomp =
+      this.stats.kuriboShoeStacks > 0 &&
+      this.disc.airDodgeActive &&
+      this.disc.isAirDodgeIntangible();
+    const kuriboFalling =
+      this.stats.kuriboShoeStacks > 0 && (this.vy > 0 || kuriboAirDodgeStomp);
+    if (kuriboFalling) {
       for (const e of enemies) {
-        if (this.tryKuriboStomp(e, vernanHurt, fromAirDodge, onElectrocution)) {
-          return;
+        if (this.tryKuriboStomp(e, vernanHurt, kuriboAirDodgeStomp, onElectrocution)) {
+          break;
         }
       }
+      return;
     }
+    if (this.isPlayerDamageImmune()) return;
     const hurt = this.hurtbox();
     const fuzzyStacks = this.inventory.stacksOf("FUZZY_HAT");
     for (const e of enemies) {
@@ -2349,13 +2635,18 @@ export class Player {
           onElectrocution?.(e, strike, contact);
         }
       }
+      if (e.seesPlayer && !e.seesPlayer()) continue;
       const dmg =
         e.contactDamageToPlayer() * KaleidoscopeEyeCombat.playerDamageMultiplier();
       const result = this.applyPlayerHealthDamage(dmg, CONTACT_DAMAGE_IFRAMES);
       if (!result.applied) return;
+      const fz = freezeFrames(dmg);
+      if (!blackHeartRetaliationActive(result.retaliation)) {
+        e.applyOffensiveHitlag?.(fz);
+      }
       const away =
         this.x + this.w * 0.5 >= e.rect().x + e.rect().w * 0.5 ? 1 : -1;
-      this.beginDefensiveHitstunForDamage(freezeFrames(dmg), away, result.retaliation);
+      this.beginDefensiveHitstunForDamage(fz, away, result.retaliation);
       return;
     }
   }
@@ -2377,11 +2668,19 @@ export class Player {
    * Knockback + control lock until land (Java startHurtReaction) with clip + one-shot DI.
    */
   startHurtReaction(horizontalSign: number, input?: Input, map?: TileMap): void {
+    this.hitlagFrames = 0;
     this.defensiveHitstunRemaining = 0;
     this.pendingHurtKnockSign = 0;
+    this.pendingKuriboBounce = false;
+    this.pendingKuriboMigratedIFrames = 0;
+    this.kuriboMigratedIFrames = 0;
+    this.kuriboMigratedFlashFrame = 0;
 
     this.hurtLocked = true;
     this.cancelAttack();
+    this.disc.cancelHeavyAttack();
+    this.headband.cancel();
+    this.cancelSubweaponAnim();
     this.cancelGetup();
     this.carry.onHurtOrDeath(this, this.tickGardeningHost, false);
     this.jumpSquatRemaining = 0;
@@ -2394,6 +2693,7 @@ export class Player {
     this.walkOffLedgeActive = false;
     this.crouchJumpMode = false;
     this.normalJumpAirborne = false;
+    this.disc.cancelMovementStatesFromHurt();
     this.hurtTintRemaining = HURT_TINT_SECONDS;
     this.hitlagSolidRed = false;
     this.hitlagShakeX = 0;
@@ -2770,6 +3070,8 @@ export class Player {
 
   private updateAttack(dt: number, input: Input): void {
     if (this.disc.isHeavyActive() || this.disc.airDodgeActionLock()) return;
+    // Latch only while updateAttack runs (skipped during combat freeze — Java parity).
+    if (input.attackPressed) this.attackBufferTimer = ATTACK_BUFFER;
     this.attackBufferTimer = Math.max(0, this.attackBufferTimer - dt);
     const downHeld = input.down && !input.up;
     if (this.attackPhase === 0) {
@@ -2874,12 +3176,39 @@ export class Player {
     }
   }
 
+  /**
+   * When landing lock ends with Down queued, crouch and maybe start pending slide
+   * (Java landing-lock end block).
+   */
+  private applyLandingLockCrouchAndSlide(
+    map: TileMap,
+    input: Input,
+    left: boolean,
+    right: boolean,
+  ): void {
+    if (
+      !this.onGround ||
+      this.landingLockFrames !== 0 ||
+      this.jumpSquatRemaining !== 0 ||
+      !this.crouchQueuedFromLanding
+    ) {
+      return;
+    }
+    this.crouching = true;
+    this.duckHeld = true;
+    this.applyHitboxHeight(PLAYER_CROUCH_H, map);
+    this.crouchQueuedFromLanding = false;
+    this.disc.tryPendingSlideAfterLandingLock(map, input, left, right, this.discHost());
+  }
+
   private detectWalkOff(): void {
     if (
       this.wasOnGround &&
       !this.onGround &&
       this.jumpSquatRemaining === 0 &&
       this.vy >= 0 &&
+      !this.disc.suppressesWalkOffLatch() &&
+      !this.tickPedestalGroundContact &&
       !this.headband.isUpAttack() &&
       !this.headband.isSideAttack()
     ) {
@@ -2920,8 +3249,9 @@ export class Player {
   /**
    * On touchdown: variable landing lock from extended-fall airtime, or fixed attack land lock.
    * Java: `landingLockFrames = (extendedFallFrames / 5) * 2` (+ walk-off floor 5, cap 20).
+   * Also ends air-dodge / clears airDodgeLockedUntilLand (Java endAirDodgeOnLand on land edge).
    */
-  private applyLandingFromTouchdown(): void {
+  private applyLandingFromTouchdown(steerDir: number): void {
     if (this.wasOnGround || !this.onGround) return;
 
     this.landedThisTick = true;
@@ -2937,12 +3267,25 @@ export class Player {
       this.walkOffLedgeActive = false;
       this.extendedFallFrames = 0;
       this.fallPhaseTimer = 0;
+      this.disc.onPedestalRampTouchdown();
       return;
     }
 
+    const pinnedFullWavedashResume = this.disc.pinnedFullWavedashResume();
+    const wavedashTouchdown = this.disc.endAirDodgeOnLandIfNeeded(steerDir, this.discHost());
+
     this.pendingLandingDustQueue = true;
 
-    this.normalJumpAirborne = false;
+    if (pinnedFullWavedashResume) {
+      this.walkOffLedgeActive = false;
+    } else {
+      this.normalJumpAirborne = false;
+    }
+
+    // Air frisbee throw cancels on landing (Java).
+    if (this.isSubweaponAnimating() && !this.subweaponStartedOnGround) {
+      this.cancelSubweaponAnim();
+    }
 
     // Any in-progress swing landing from air cancels with fixed lock (Java ATTACK_LANDING_LOCK_FRAMES).
     // Includes true air swings and jumpsquat X rising attacks (ground-latched but airborne).
@@ -2955,12 +3298,21 @@ export class Player {
       this.walkOffLedgeActive = false;
       this.climbing = false;
       this.climbShaftTx = -1;
+      this.disc.endWallSlide();
       return;
     }
 
-    // Air frisbee throw cancels on landing (Java).
-    if (this.isSubweaponAnimating() && !this.subweaponStartedOnGround) {
-      this.cancelSubweaponAnim();
+    if (this.disc.isHeavyActive()) {
+      this.disc.cancelHeavyAttack();
+      this.landingLockFrames = ATTACK_LANDING_LOCK_FRAMES;
+      this.extendedFallFrames = 0;
+      this.fallPhaseTimer = 0;
+      this.justLanded = true;
+      this.walkOffLedgeActive = false;
+      this.climbing = false;
+      this.climbShaftTx = -1;
+      this.disc.endWallSlide();
+      return;
     }
 
     let lock = Math.floor(this.extendedFallFrames / 5) * 2;
@@ -2968,13 +3320,23 @@ export class Player {
       lock = Math.max(lock, WALK_OFF_LANDING_LOCK_FRAMES);
     }
     lock = Math.min(lock, LANDING_LOCK_MAX);
+    // Java AIR_DODGE_FORCED_LANDING_LAG is currently unreachable (cleared in endAirDodgeOnLand
+    // before the lag check) — match that order; do not re-apply here.
     this.landingLockFrames = lock;
     this.extendedFallFrames = 0;
     this.fallPhaseTimer = 0;
     this.justLanded = lock > 0;
     this.walkOffLedgeActive = false;
-    // Don't clear climbing here — climb latch may re-grab on same tick; floor land already
-    // cleared climb in resolveVertical when solid foot contact ends climb.
+    this.climbing = false;
+    this.disc.endWallSlide();
+
+    if (wavedashTouchdown && this.attackPhase === 0) {
+      this.landedThisTick = true;
+      this.landingLockFrames = Math.max(this.landingLockFrames, 1);
+      this.extendedFallFrames = 0;
+      this.fallPhaseTimer = 0;
+      this.justLanded = true;
+    }
   }
 
   private queueLandingDust(): void {
@@ -3128,20 +3490,21 @@ export class Player {
     else if (this.jumpSquatRemaining === 0) {
       this.coyoteTimer = Math.max(0, this.coyoteTimer - dt);
     }
-    this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - dt);
   }
 
   private applyCrouchHeight(map: TileMap): void {
     if (this.climbing) return;
     let targetH = PLAYER_STAND_H;
-    if (this.jumpSquatRemaining > 0) {
-      targetH = this.crouchJumpMode ? PLAYER_CROUCH_H : PLAYER_STAND_H;
-    } else if (this.crouchJumpMode && !this.onGround) {
+    // Short crouch-jump hitbox only after lift-off — not during jumpsquat (Java).
+    if (this.crouchJumpMode && !this.onGround && this.jumpSquatRemaining === 0) {
+      targetH = PLAYER_CROUCH_H;
+    } else if (this.headband.isCrouchKick() && this.onGround) {
       targetH = PLAYER_CROUCH_H;
     } else if (!this.onGround) {
       targetH = PLAYER_STAND_H;
+    } else if (this.jumpSquatRemaining > 0 || (!this.onGround && this.vy < 0)) {
+      targetH = PLAYER_STAND_H;
     } else {
-      // Java: targetH = crouching ? CROUCH_H : STAND_H (not raw Down — mount begin clears crouch while latch holds Down).
       targetH = this.crouching ? PLAYER_CROUCH_H : PLAYER_STAND_H;
     }
     this.applyHitboxHeight(targetH, map);
@@ -3182,14 +3545,41 @@ export class Player {
       this.attackPhase >= 2 ||
       this.disc.heavyFacingLocked() ||
       this.disc.slideMoveLock() ||
-      this.disc.wallSlideMoveLock() ||
-      this.disc.airDodgeMoveLock();
+      this.disc.wallSlideMoveLock();
+    const airDodgeMoveLock = this.disc.airDodgeMoveLock();
     const subweaponFacingLocked = this.isSubweaponAnimating() && this.subweaponFrameIndex > 0;
     const heavyFacingLocked = this.disc.heavyFacingLocked();
     const carryFacingLocked = this.carry.isThrowing() && this.carry.throwFrameIndex() > 0;
     const carryMoveLock = this.carry.blocksMovement();
     const grounded = this.onGround || this.jumpSquatRemaining > 0;
     const traction = this.tickFeetOnIce ? ICE_TRACTION_MULT : 1;
+
+    let dir = 0;
+    if (!(crouchHeld && this.jumpSquatRemaining === 0 && this.onGround)) {
+      if (input.left) dir -= 1;
+      if (input.right) dir += 1;
+    }
+
+    // Air-dodge sets vx/vy in applyMovementOverrides — do not brake or re-steer (Java moveLocked).
+    if (airDodgeMoveLock) {
+      this.finalizeHeelysPose(0);
+      return;
+    }
+
+    // Post-dodge ground coast owns horizontal speed (Java airDodgeGroundCoast branch before ground accel).
+    if (this.disc.airDodgeGroundCoast) {
+      if (
+        dir !== 0 &&
+        !subweaponFacingLocked &&
+        !carryFacingLocked &&
+        !heavyFacingLocked &&
+        !this.disc.wallSlideActive
+      ) {
+        this.facing = dir;
+      }
+      this.finalizeHeelysPose(dir);
+      return;
+    }
 
     if (commitLock) {
       if (grounded) {
@@ -3201,13 +3591,17 @@ export class Player {
       return;
     }
 
-    let dir = 0;
-    if (!(crouchHeld && this.jumpSquatRemaining === 0 && this.onGround)) {
-      if (input.left) dir -= 1;
-      if (input.right) dir += 1;
-    }
     if (dir !== 0 && !subweaponFacingLocked && !carryFacingLocked && !heavyFacingLocked && !this.disc.wallSlideActive) {
+      const facingBefore = this.facing;
       this.facing = dir;
+      // Subweapon frame-0 B-reverse (Java).
+      if (
+        this.isSubweaponAnimating() &&
+        this.subweaponFrameIndex === 0 &&
+        this.facing !== facingBefore
+      ) {
+        this.vx = -this.vx;
+      }
     }
 
     if (carryMoveLock) {
@@ -3378,7 +3772,21 @@ export class Player {
     }
   }
 
-  private applyJumpLogic(_dt: number, crouchHeld: boolean): void {
+  isAirDodgeGroundCoast(): boolean {
+    return this.disc.airDodgeGroundCoast;
+  }
+
+  isHorizontalSteerHeld(): boolean {
+    return this.horizontalSteerHeld;
+  }
+
+  private applyJumpLogic(
+    _dt: number,
+    crouchHeld: boolean,
+    map: TileMap,
+    left: boolean,
+    right: boolean,
+  ): void {
     // Getup clears jumpsquat. Sword does not — X during squat starts a rising attack (Java).
     if (this.getupLockFrames > 0) {
       if (this.jumpSquatRemaining > 0) {
@@ -3392,13 +3800,23 @@ export class Player {
     if (this.jumpSquatRemaining > 0) {
       this.vy = 0;
       this.jumpSquatMaxAbsVx = Math.max(this.jumpSquatMaxAbsVx, Math.abs(this.vx));
+      if (this.disc.airDodgeGroundCoast) {
+        const steer = (left ? -1 : 0) + (right ? 1 : 0);
+        this.jumpSquatMaxAbsVx = Math.max(
+          this.jumpSquatMaxAbsVx,
+          this.disc.airDodgeCoastCombinedAbsVx(steer),
+        );
+      }
       return;
     }
 
     // Block starting a new jumpsquat while swinging; existing wind-up already handled above.
     if (this.attackPhase !== 0) return;
+    if (this.disc.isHeavyActive()) return;
+    if (this.disc.airDodgeActionLock()) return;
 
-    const canJump = this.onGround || this.coyoteTimer > 0;
+    // Java standsOnFullWavedashSupport — ground, coyote, or platform/pedestal deck hull.
+    const canJump = this.standsOnWavedashSupport(map);
     // Allow jump during landing lock (clears it) — Java's only landing-lock cancel.
     // Crouch jump: Down held while grounded still starts jumpsquat.
     // SHY_MASK: block jump while charging (not yet fully charged).
@@ -3411,7 +3829,20 @@ export class Player {
       )
     ) {
       this.jumpSquatRemaining = this.stats.jumpSquatFrames;
+      VernanAnimCueRuntime.applyOnEnter(
+        this.squash,
+        (cue) => this.applyAnimCueImpulse(cue),
+        "jumpsquat",
+        this.onGround,
+      );
       this.jumpSquatMaxAbsVx = Math.abs(this.vx);
+      if (this.disc.airDodgeGroundCoast) {
+        const steer = (left ? -1 : 0) + (right ? 1 : 0);
+        this.jumpSquatMaxAbsVx = Math.max(
+          this.jumpSquatMaxAbsVx,
+          this.disc.airDodgeCoastCombinedAbsVx(steer),
+        );
+      }
       this.jumpBufferTimer = 0;
       this.vy = 0;
       this.shyMaskCharge.latchSuperJumpWindup();
@@ -3420,6 +3851,7 @@ export class Player {
         crouchHeld &&
         !(this.stats.shyMaskStacks > 0 && this.shyMaskCharge.charged());
       this.landingLockFrames = 0;
+      this.landedThisTick = false;
       this.crouchQueuedFromLanding = false;
       this.walkOffLedgeActive = false;
       this.climbing = false;
@@ -3427,38 +3859,58 @@ export class Player {
     }
   }
 
-  /** Ground/coyote support for jumpsquat lift-off (Java standsOnFullWavedashSupport, minus wavedash). */
-  private standsOnJumpSupport(): boolean {
-    return this.onGround || this.coyoteTimer > 0;
+  /** Ground / coyote / platform deck for jumpsquat start + lift-off (Java standsOnFullWavedashSupport). */
+  private standsOnJumpSupport(map: TileMap): boolean {
+    return this.standsOnWavedashSupport(map);
   }
 
   /**
-   * Decrement jumpsquat after collide/walk-off, then apply impulse + first vertical step (Java ~3714).
+   * Decrement jumpsquat after collide/walk-off, then apply impulse + first vertical step (Java ~3938).
+   * Dodge buffer / pending during squat wins → full wavedash (no jump impulse).
    */
   private finishJumpSquat(map: TileMap, dt: number, input: Input): void {
     if (this.jumpSquatRemaining <= 0) return;
     this.jumpSquatRemaining--;
     if (this.jumpSquatRemaining !== 0) return;
-    if (!this.standsOnJumpSupport()) return;
+    if (!this.standsOnJumpSupport(map)) return;
 
     const left = input.left;
     const right = input.right;
+    const steerDir = (left ? -1 : 0) + (right ? 1 : 0);
     if (this.disc.tryJumpsquatCompletionAirDodge(input, map, left, right, this.discHost())) {
       return;
+    }
+
+    const jumpFromAirDodgeCoast = this.disc.airDodgeGroundCoast;
+    if (jumpFromAirDodgeCoast) {
+      this.disc.clearCoastForJumpLiftOff();
     }
 
     const shyMaskSuperJump = this.shyMaskCharge.consumeSuperJumpAtLiftOff();
     let vel = shyMaskSuperJump ? SHY_MASK_SUPER_JUMP_VEL : this.stats.jumpVel;
     this.jumpSquatMaxAbsVx = Math.max(this.jumpSquatMaxAbsVx, Math.abs(this.vx));
-    const speedGate = Math.max(this.stats.maxGroundSpeed, this.stats.maxAirSpeed) * 0.99;
-    if (!shyMaskSuperJump && this.jumpSquatMaxAbsVx >= speedGate) {
+    if (jumpFromAirDodgeCoast) {
+      this.jumpSquatMaxAbsVx = Math.max(
+        this.jumpSquatMaxAbsVx,
+        this.disc.airDodgeCoastCombinedAbsVx(steerDir),
+      );
+    }
+    const highRunSpeed =
+      !shyMaskSuperJump &&
+      (this.jumpSquatMaxAbsVx >= this.stats.maxGroundSpeed * 0.99 ||
+        (jumpFromAirDodgeCoast && Math.abs(this.vx) >= this.stats.maxGroundSpeed * 0.99));
+    const highAirSpeed =
+      !shyMaskSuperJump && this.jumpSquatMaxAbsVx >= this.stats.maxAirSpeed * 0.99;
+    if (highRunSpeed || highAirSpeed) {
       vel *= HIGH_SPEED_JUMP_VEL_MULT;
     }
     this.vy = -vel;
     this.onGround = false;
+    this.disc.airDodgeAvailable = true;
     this.coyoteTimer = 0;
     this.jumpBufferTimer = 0;
     this.walkOffLedgeActive = false;
+    this.jumpHeld = true;
 
     if (this.crouchJumpMode) {
       this.applyHitboxHeight(PLAYER_CROUCH_H, map);
@@ -3481,10 +3933,14 @@ export class Player {
       );
     }
 
-    this.vx = Math.max(
-      -this.stats.maxAirSpeed,
-      Math.min(this.stats.maxAirSpeed, this.vx),
-    );
+    // Coast jump keeps wavedash horizontal momentum; normal jump caps to air speed.
+    if (!jumpFromAirDodgeCoast) {
+      const jumpVxCap =
+        this.stats.heelysStacks > 0
+          ? this.heelys.airSpeedCap(this.stats.heelysStacks, this.stats.maxAirSpeed, this.stats)
+          : this.stats.maxAirSpeed;
+      this.vx = Math.max(-jumpVxCap, Math.min(jumpVxCap, this.vx));
+    }
 
     // Stand hull before jump strip — prev feet must match grounded pose (Java poseBeforeLift).
     const beforeImpulse = this.hitboxPose();
@@ -3890,13 +4346,14 @@ export class Player {
     this.disc.refreshAirDodgeFromLadder();
   }
 
-  /** Sword/heavy/headband/subweapon/slide/throw must finish before ladder latch or mount. */
+  /** Sword/heavy/headband/subweapon/slide/throw/air-dodge must finish before ladder latch or mount. */
   private blocksLadderLatch(): boolean {
     return (
       this.isAttacking() ||
       this.isSubweaponAnimating() ||
       this.carry.isThrowing() ||
-      this.disc.slideActive
+      this.disc.slideActive ||
+      this.disc.airDodgeBlocksLadderLatch()
     );
   }
 
@@ -4338,7 +4795,7 @@ export class Player {
     if (footY < deck - 1e-3) return;
     this.snapFootToFloorY(deck);
     this.tickPedestalGroundContact = true;
-    if (!this.climbing && this.vy >= -1e-3) {
+    if (!this.climbing && this.vy >= -1e-3 && !this.disc.fullWavedashDefersGroundFlag()) {
       this.onGround = true;
     }
   }
@@ -4362,7 +4819,8 @@ export class Player {
     this.onGround = false;
     this.resolveVertical(map, feetBeforeVertical, prevTop);
     // Java: always probe both jump feet when vertical resolve did not land (not jump-hull gated).
-    if (!this.onGround) {
+    // Forced-aerial wavedash frame keeps onGround false until after-move re-pin.
+    if (!this.onGround && !this.disc.fullWavedashDefersGroundFlag()) {
       this.onGround = this.isGrounded(map);
     }
     this.followPedestalDeckWhileGrounded();
@@ -4616,7 +5074,9 @@ export class Player {
       if (Number.isFinite(landing.bestFloorY)) {
         this.snapFootToFloorY(landing.bestFloorY, landing.snapLead, landing.snapTrail);
         this.vy = 0;
-        this.onGround = true;
+        if (!this.disc.fullWavedashDefersGroundFlag()) {
+          this.onGround = true;
+        }
         if (this.climbing) {
           this.climbing = false;
           this.climbShaftTx = -1;
@@ -4635,7 +5095,9 @@ export class Player {
         if (Number.isFinite(iceDeck)) {
           this.snapFootToFloorY(iceDeck, true, true);
           this.vy = 0;
-          this.onGround = true;
+          if (!this.disc.fullWavedashDefersGroundFlag()) {
+            this.onGround = true;
+          }
         }
       }
     } else if (this.vy < 0) {

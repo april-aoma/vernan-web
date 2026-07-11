@@ -186,6 +186,9 @@ export type WeaponStrike = {
   hitVfxKind?: HitVfxKind;
 };
 
+/** Melee HitVfx tag from Player → mount (whip chain/handle uses fallback). */
+export type MeleeHitVfxTag = "slash" | "shield_break" | "shield_block" | "fallback";
+
 /** Frisbee / telekinetic debris hits (Java ProjectileStrike). */
 export type ProjectileStrike = {
   damage: number;

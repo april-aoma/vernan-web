@@ -2,6 +2,7 @@ import {
   installCrashHandlers,
   submitCrashReport,
 } from "./diagnostics/crashReporter";
+import { installGameDisplay } from "./display/gameDisplay";
 import { mount } from "./mount";
 
 installCrashHandlers();
@@ -14,6 +15,16 @@ if (!(root instanceof HTMLElement)) {
 mount(root, {
   // Resolve against the page URL so GitHub Pages / subpath hosts work with Vite `base: "./"`.
   assetBase: new URL("assets/", window.location.href).href,
+});
+
+const fullscreenBtn = document.querySelector("#fullscreen-btn");
+const exitImmersiveBtn = document.querySelector("#exit-immersive-btn");
+installGameDisplay({
+  root,
+  toggleButton:
+    fullscreenBtn instanceof HTMLButtonElement ? fullscreenBtn : null,
+  exitButton:
+    exitImmersiveBtn instanceof HTMLButtonElement ? exitImmersiveBtn : null,
 });
 
 const reportBtn = document.querySelector("#report-crash-btn");

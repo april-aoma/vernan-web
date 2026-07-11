@@ -2,6 +2,7 @@ import {
   freezeFrames,
   type Aabb,
   type KnockbackKind,
+  type MeleeHitVfxTag,
   type WeaponStrike,
 } from "../combat/CombatMath";
 import { HitboxPose } from "../collision/HitboxPose";
@@ -14,6 +15,7 @@ import {
 import { PLAYER_CROUCH_H, PLAYER_STAND_H, PLATFORM_DECK_SLACK_PX } from "../config/Physics";
 import { SLIDE_KICK_ACTIVE_LOCAL, SLIDE_KICK_ACTIVE_PIVOT_X } from "../config/HitboxValues";
 import { enemyIntersectsMelee } from "../combat/MeleeIntersection";
+import { ICE_TRACTION_MULT } from "../combat/IceBlockFx";
 import { WhipSim } from "../combat/whip/WhipSim";
 import type { Input } from "../input/Input";
 import { AutismCombat } from "../item/effect/AutismCombat";
@@ -56,7 +58,9 @@ const AIR_DODGE_MOVE_START_FRAME = 0;
 const AIR_DODGE_MOVE_END_FRAME = 7;
 const AIR_DODGE_INTANGIBLE_START = 4;
 const AIR_DODGE_INTANGIBLE_END = 29;
-const AIR_DODGE_FORCED_LANDING_LAG = 20;
+/** Java keeps this constant; land path clears endedInAir before the lag check, so it is unused. */
+const _AIR_DODGE_FORCED_LANDING_LAG = 20;
+void _AIR_DODGE_FORCED_LANDING_LAG;
 const AIR_DODGE_DISTANCE_PX = 20;
 const AIR_DODGE_BUFFER = 0.18;
 const AIR_DODGE_EASE_OUT_FRAC = 0.3;
@@ -136,6 +140,9 @@ export interface DiscMechanicsHost {
   jumpSquatRemaining: number;
   jumpBufferTimer: number;
   coyoteTimer: number;
+  /** True when feet are on ice (Java iceTractionMult). */
+  feetOnIce: boolean;
+  crawlerHatBlockJump: boolean;
   attackPhase: number;
   normalJumpAirborne: boolean;
   crouchJumpMode: boolean;
@@ -186,6 +193,9 @@ export interface DiscMechanicsHost {
   horizontalWallContactSide: number;
   clearHorizontalWallContact(): void;
   standsOnWavedashSupport(map: TileMap): boolean;
+  /** Platform / pedestal deck under stand hull for full wavedash pin (world Y), or null. */
+  wavedashDeckFromPlatformHullOverlap(map: TileMap): number | null;
+  snapFootToFloorY(deckY: number): void;
   gardeningHost: GardeningGlovesHost | null;
   fuzzyHatStacks: number;
   headbandStacks: number;
@@ -242,7 +252,10 @@ export class DiscMechanics {
   airDodgeGroundCoast = false;
   airDodgeAvailable = true;
   private airDodgeFromJumpsquat = false;
+  private fullWavedashAerialLatch = false;
   private fullWavedashPendingAerialFrame = false;
+  private fullWavedashPinnedDeckY = Number.NaN;
+  private fullWavedashCoastActive = false;
   airDodgeLockedUntilLand = false;
   airDodgeEndedInAir = false;
   private pendingJumpsquatAirDodge = false;
@@ -287,6 +300,11 @@ export class DiscMechanics {
     if (!this.airDodgeActive && host.jumpSquatRemaining === 0) {
       this.dodgeBufferTimer = Math.max(0, this.dodgeBufferTimer - dt);
     }
+  }
+
+  /** Timestop / skipped-sim lag: prime dodge only (Java primeLagInputBuffers). */
+  primeDodgeBufferFromLag(): void {
+    this.dodgeBufferTimer = AIR_DODGE_BUFFER;
   }
 
   tryAirDodgeFromBuffer(
@@ -369,6 +387,22 @@ export class DiscMechanics {
     }
   }
 
+  /** Landing-lock end: start pending slide chord same tick (Java). */
+  tryPendingSlideAfterLandingLock(
+    map: TileMap,
+    input: Input,
+    left: boolean,
+    right: boolean,
+    host: DiscMechanicsHost,
+  ): void {
+    if (!this.slideChordPending) return;
+    if (!this.canStartSlide(map, host)) return;
+    if (this.tryBeginSlide(map, left, right, host)) {
+      host.jumpBufferTimer = 0;
+      this.consumeSlideChordInput(input);
+    }
+  }
+
   tryWallJumpOnPress(dt: number, left: boolean, right: boolean, host: DiscMechanicsHost): void {
     if (!this.wallSlideActive) return;
     this.tryWallJump(dt, left, right, host);
@@ -439,26 +473,39 @@ export class DiscMechanics {
       host.vx = 0;
     } else if (this.slideActive) {
       host.facing = this.slideFacing;
-      host.vx = this.slideFacing * this.slideSpeedBase;
+      const ice = host.feetOnIce ? ICE_TRACTION_MULT : 1;
+      host.vx = this.slideFacing * this.slideSpeedBase * ice;
       host.vy = 0;
     } else if (this.airDodgeActive) {
+      // Java: after displacement window, grounded uses coast vx; airborne zeros horizontal
+      // and zeros vy while gravity is suppressed.
       if (!this.airDodgeInDisplacementPhase()) {
-        host.vx = this.airDodgeVelX;
-        if (!this.airDodgeSuppressesGravity()) {
-          // vy from gravity
+        if (host.onGround) {
+          host.vx = this.airDodgeVelX;
+          host.vy = 0;
+        } else {
+          host.vx = 0;
+          if (this.airDodgeSuppressesGravity()) {
+            host.vy = 0;
+          }
         }
       }
     } else if (this.airDodgeGroundCoast) {
+      const traction = host.feetOnIce ? ICE_TRACTION_MULT : 1;
       this.airDodgeVelX = approach(
         this.airDodgeVelX,
         0,
-        host.stats.groundFriction * (1 / 60),
+        host.stats.groundFriction * traction * (1 / FIXED_STEP_HZ),
       );
       host.vx = this.airDodgeCoastCombinedVx(steerDir);
+      host.vy = 0;
       if (Math.abs(this.airDodgeVelX) < 1e-3) {
         this.airDodgeGroundCoast = false;
+        this.fullWavedashCoastActive = false;
+        this.fullWavedashPinnedDeckY = Number.NaN;
         this.airDodgeVelX = 0;
         host.vx = this.airDodgeSavedWalkVx(steerDir);
+        this.clearAirDodgeSavedVelocity();
       }
     }
   }
@@ -489,12 +536,26 @@ export class DiscMechanics {
       return false;
     }
     const baseVy = host.vy;
+    if (this.fullWavedashGroundSupportActive()) {
+      this.updateFullWavedashPlatformSupport(map, host);
+    }
     const scheduledStep = this.prepareAirDodgeDisplacementForStep(dt, host);
     host.vx += this.airDodgeDispVelX;
     host.vy += this.airDodgeDispVelY;
     host.moveAndCollide(dt, map);
+    this.tickFullWavedashGroundAfterMove(map, host);
     this.mergeAirDodgeDisplacementVelocity(baseVy, scheduledStep, host);
     return true;
+  }
+
+  /** Non-displacement move while wavedashing — still re-pins platform support. */
+  tickFullWavedashAroundMove(map: TileMap, host: DiscMechanicsHost): void {
+    if (!this.fullWavedashGroundSupportActive()) return;
+    this.updateFullWavedashPlatformSupport(map, host);
+  }
+
+  afterFullWavedashMove(map: TileMap, host: DiscMechanicsHost): void {
+    this.tickFullWavedashGroundAfterMove(map, host);
   }
 
   afterMove(
@@ -525,21 +586,23 @@ export class DiscMechanics {
     }
   }
 
-  onLand(host: DiscMechanicsHost): void {
-    if (this.airDodgeActive || this.airDodgeLockedUntilLand) {
-      if (this.airDodgeEndedInAir) {
-        host.landingLockFramesMutable.value = Math.max(
-          host.landingLockFramesMutable.value,
-          AIR_DODGE_FORCED_LANDING_LAG,
-        );
-      }
-    }
+  /**
+   * Touchdown while air-dodge active or action-locked (Java land path).
+   * Clears {@link airDodgeLockedUntilLand}; returns true when wavedash land has slide momentum.
+   */
+  endAirDodgeOnLandIfNeeded(steerDir: number, host: DiscMechanicsHost): boolean {
+    if (!this.airDodgeActive && !this.airDodgeLockedUntilLand) return false;
+    return this.endAirDodgeOnLand(steerDir, host);
+  }
+
+  /** Pedestal ramp touchdown: refresh dodge availability if anim already finished. */
+  onPedestalRampTouchdown(): void {
     if (!this.airDodgeActive) {
       this.airDodgeAvailable = true;
     }
-    this.endWallSlide();
   }
 
+  /** Walk-off: restore one dodge (does not clear action lock — land/ladder/hurt does). */
   onWalkOff(): void {
     this.airDodgeAvailable = true;
   }
@@ -547,6 +610,22 @@ export class DiscMechanics {
   refreshAirDodgeFromLadder(): void {
     this.airDodgeAvailable = true;
     this.airDodgeLockedUntilLand = false;
+  }
+
+  /** Combined coast |vx| for jumpsquat speed gate (Java airDodgeCoastCombinedVx). */
+  airDodgeCoastCombinedAbsVx(steerDir: number): number {
+    return Math.abs(this.airDodgeCoastCombinedVx(steerDir));
+  }
+
+  /**
+   * Jumping out of post-dodge ground coast — clear coast/pin before lift-off
+   * (Java finishJumpSquat jumpFromAirDodgeCoast).
+   */
+  clearCoastForJumpLiftOff(): void {
+    this.airDodgeGroundCoast = false;
+    this.fullWavedashCoastActive = false;
+    this.fullWavedashPinnedDeckY = Number.NaN;
+    this.clearAirDodgeSavedVelocity();
   }
 
   isPlayerDamageImmune(): boolean {
@@ -561,6 +640,36 @@ export class DiscMechanics {
     );
   }
 
+  /** Frames of air-dodge intangibility still remaining (inclusive of current). */
+  remainingAirDodgeIntangibleFrames(): number {
+    if (!this.airDodgeActive) return 0;
+    return Math.max(0, AIR_DODGE_INTANGIBLE_END - this.airDodgeFramesElapsed + 1);
+  }
+
+  /**
+   * Kuribo stomp during air-dodge i-frames: end dodge, keep dodge spent until landing
+   * (Java cancelAirDodgeForKuriboStomp — does not restore airDodgeAvailable).
+   */
+  cancelAirDodgeForKuriboStomp(): void {
+    this.airDodgeActive = false;
+    this.airDodgeLockedUntilLand = false;
+    this.airDodgeFromJumpsquat = false;
+    this.fullWavedashAerialLatch = false;
+    this.fullWavedashPendingAerialFrame = false;
+    this.fullWavedashPinnedDeckY = Number.NaN;
+    this.fullWavedashCoastActive = false;
+    this.airDodgeEndedInAir = false;
+    this.airDodgeVelX = 0;
+    this.airDodgeCarryVx = 0;
+    this.airDodgeDispVelX = 0;
+    this.airDodgeDispVelY = 0;
+    this.airDodgeGroundCoast = false;
+    this.airDodgeRemainingPx = 0;
+    this.airDodgeFramesElapsed = 0;
+    this.clearAirDodgeSavedVelocity();
+    this.pendingJumpsquatAirDodge = false;
+  }
+
   airDodgeCostumeFrameIndex(): number {
     if (this.airDodgeFramesElapsed < AIR_DODGE_POSE0_FRAMES) return 0;
     if (this.airDodgeFramesElapsed >= AIR_DODGE_POSE2_START_FRAME) return 2;
@@ -570,6 +679,12 @@ export class DiscMechanics {
   airDodgeIntangibleFlashAlpha(): number {
     if (!this.isAirDodgeIntangible()) return 0;
     const flashOn = ((this.airDodgeFramesElapsed >> 1) & 1) === 0;
+    return flashOn ? AIR_DODGE_FLASH_ALPHA_ON : AIR_DODGE_FLASH_ALPHA_OFF;
+  }
+
+  /** Same flash cadence as air-dodge i-frames (Java kuriboMigratedFlashFrame). */
+  kuriboMigratedFlashAlpha(flashFrame: number): number {
+    const flashOn = ((flashFrame >> 1) & 1) === 0;
     return flashOn ? AIR_DODGE_FLASH_ALPHA_ON : AIR_DODGE_FLASH_ALPHA_OFF;
   }
 
@@ -635,7 +750,13 @@ export class DiscMechanics {
   }
 
   blocksLadderLatch(host: DiscMechanicsHost): boolean {
-    return host.attackPhase !== 0 || host.headbandActive() || host.isSubweaponAnimating() || this.slideActive;
+    return (
+      host.attackPhase !== 0 ||
+      host.headbandActive() ||
+      host.isSubweaponAnimating() ||
+      this.slideActive ||
+      this.airDodgeBlocksLadderLatch()
+    );
   }
 
   airDodgeBlocksLadderLatch(): boolean {
@@ -752,7 +873,7 @@ export class DiscMechanics {
       enemy: CombatEnemy,
       strike: WeaponStrike,
       sword: Aabb,
-      vfx: "slash" | "shield_break" | "shield_block",
+      vfx: MeleeHitVfxTag,
     ) => void,
   ): number {
     if (!this.heavyAttackActive || this.heavyAttackHitLanded) return 0;
@@ -798,6 +919,7 @@ export class DiscMechanics {
         const hitDmg = region === "TIP" ? dmg * WhipSim.TIP_DAMAGE_MULT : dmg;
         let ff = host.scaleOutgoingHitstun(freezeFrames(hitDmg));
         if (region === "TIP") ff += WhipSim.TIP_HITLAG_BONUS_FRAMES;
+        const contact = contactBetweenHurtAndEnemy(sword, e.rect());
         const strike: WeaponStrike = {
           damage: hitDmg,
           freezeFrames: ff,
@@ -805,6 +927,8 @@ export class DiscMechanics {
           attackerW: host.w,
           facing: host.facing,
           knockKind,
+          contactWorldX: contact.x,
+          contactWorldY: contact.y,
         };
         if (e.applyWeaponStrike(strike)) {
           any = true;
@@ -813,7 +937,7 @@ export class DiscMechanics {
           AutismCombat.notifyPlayerDamageDealt(e, hitDmg);
           KaleidoscopeEyeCombat.notifyEnemyHpLoss(e, hitDmg);
           host.applySwordHitItemProcs(e);
-          onHit?.(e, strike, sword, "slash");
+          onHit?.(e, strike, sword, region === "TIP" ? "slash" : "fallback");
         }
         continue;
       }
@@ -856,6 +980,47 @@ export class DiscMechanics {
     this.heavyAttackDamageConfirmed = false;
     this.heavyAttackStartedOnGround = false;
     this.heavyAttackScreenShakeArmed = false;
+  }
+
+  /**
+   * Clear slide / wall-slide / air-dodge when hurt knock starts
+   * (Java startHurtReaction: slideActive=false, endWallSlide, cancelAirDodgeFromGrab).
+   */
+  cancelMovementStatesFromHurt(): void {
+    this.slideActive = false;
+    this.slideHitEnemies.clear();
+    this.slideSpeedBase = 0;
+    this.slideDustAccumPx = 0;
+    this.endWallSlide();
+    this.cancelAirDodgeFromHurt();
+    this.airDodgeAvailable = true;
+  }
+
+  /** Java cancelAirDodgeFromGrab — end dodge and restore availability. */
+  private cancelAirDodgeFromHurt(): void {
+    this.airDodgeActive = false;
+    this.airDodgeLockedUntilLand = false;
+    this.airDodgeFromJumpsquat = false;
+    this.fullWavedashAerialLatch = false;
+    this.fullWavedashPendingAerialFrame = false;
+    this.fullWavedashPinnedDeckY = Number.NaN;
+    this.fullWavedashCoastActive = false;
+    this.airDodgeEndedInAir = false;
+    this.airDodgeAvailable = true;
+    this.airDodgeVelX = 0;
+    this.airDodgeCarryVx = 0;
+    this.airDodgeDispVelX = 0;
+    this.airDodgeDispVelY = 0;
+    this.airDodgeGroundCoast = false;
+    this.airDodgeRemainingPx = 0;
+    this.airDodgeFramesElapsed = 0;
+    this.clearAirDodgeSavedVelocity();
+    this.pendingJumpsquatAirDodge = false;
+  }
+
+  /** Public grab cancel (Java applyGrabBoxHold → cancelAirDodgeFromGrab). */
+  cancelAirDodgeFromGrab(): void {
+    this.cancelAirDodgeFromHurt();
   }
 
   // --- private helpers ---
@@ -921,6 +1086,8 @@ export class DiscMechanics {
     host.cancelAttack();
     host.cancelSubweaponAnim();
     host.crouchJumpMode = false;
+    host.jumpBufferTimer = 0;
+    host.jumpSquatRemaining = 0;
     this.slideActive = true;
     this.slideDistanceTraveled = 0;
     this.slideDustAccumPx = 0;
@@ -937,7 +1104,8 @@ export class DiscMechanics {
     this.slideSpeedBase = host.stats.heelysStacks > 0
       ? host.onHeelysSlideSpeedBase()
       : Math.max(Math.abs(host.vx), host.stats.maxGroundSpeed) * host.stats.slideSpeedMult;
-    host.vx = this.slideFacing * this.slideSpeedBase;
+    const ice = host.feetOnIce ? ICE_TRACTION_MULT : 1;
+    host.vx = this.slideFacing * this.slideSpeedBase * ice;
     host.vy = 0;
     host.walkOffLedgeActive = false;
     host.climbing = false;
@@ -1003,7 +1171,8 @@ export class DiscMechanics {
     }
   }
 
-  private endWallSlide(): void {
+  /** End wall-slide (also used from Player land path). */
+  endWallSlide(): void {
     this.wallSlideActive = false;
     this.wallSlideSide = 0;
     this.wallSlideDustAccumPx = 0;
@@ -1060,7 +1229,6 @@ export class DiscMechanics {
     host.landingLockFramesMutable.value = 0;
     host.landedThisTick = false;
     host.walkOffLedgeActive = false;
-    this.tryWallJump(dt, left, right, host);
   }
 
   private holdingTowardWall(wallSide: number, left: boolean, right: boolean): boolean {
@@ -1230,7 +1398,8 @@ export class DiscMechanics {
       host.grabHeld ||
       host.climbing ||
       this.slideActive ||
-      host.carryAnimating()
+      host.carryAnimating() ||
+      host.crawlerHatBlockJump
     ) {
       return false;
     }
@@ -1268,7 +1437,8 @@ export class DiscMechanics {
     if (host.carryHolding()) host.dropCarryForAirDodge(host.gardeningHost);
     this.airDodgeActive = true;
     this.airDodgeFramesElapsed = 0;
-    this.airDodgeRemainingPx = AIR_DODGE_DISTANCE_PX;
+    const traction = host.feetOnIce ? ICE_TRACTION_MULT : 1;
+    this.airDodgeRemainingPx = AIR_DODGE_DISTANCE_PX * traction;
     this.airDodgeUnitX = unitX;
     this.airDodgeUnitY = unitY;
     this.airDodgeFromJumpsquat = fromJumpsquat;
@@ -1280,10 +1450,17 @@ export class DiscMechanics {
     this.airDodgeDispVelX = 0;
     this.airDodgeDispVelY = 0;
     this.airDodgeGroundCoast = false;
+    host.jumpBufferTimer = 0;
     this.saveAirDodgeEntryVelocity(host);
+    this.airDodgeCarryVx = 0;
     this.endWallSlide();
     host.walkOffLedgeActive = false;
+    this.fullWavedashPinnedDeckY = Number.NaN;
+    this.fullWavedashCoastActive = false;
     if (fromJumpsquat) {
+      const pinnedDeck = host.wavedashDeckFromPlatformHullOverlap(map);
+      this.fullWavedashPinnedDeckY = pinnedDeck ?? Number.NaN;
+      this.fullWavedashAerialLatch = true;
       this.fullWavedashPendingAerialFrame = true;
       host.onGround = false;
       host.vx = 0;
@@ -1300,6 +1477,11 @@ export class DiscMechanics {
     this.airDodgeSavedVelocityPending = this.airDodgeSavedVx > 1e-3;
   }
 
+  private clearAirDodgeSavedVelocity(): void {
+    this.airDodgeSavedVx = 0;
+    this.airDodgeSavedVelocityPending = false;
+  }
+
   private airDodgeSavedWalkVx(steerDir: number): number {
     if (!this.airDodgeSavedVelocityPending || steerDir === 0) return 0;
     return steerDir * this.airDodgeSavedVx;
@@ -1311,6 +1493,75 @@ export class DiscMechanics {
 
   private airDodgeInDisplacementPhase(): boolean {
     return this.airDodgeFramesElapsed <= AIR_DODGE_MOVE_END_FRAME;
+  }
+
+  /** Clears the walk-off latch flag after the forced-aerial frame at dodge start. */
+  reconcileFullWavedashGround(): void {
+    if (!this.fullWavedashAerialLatch) return;
+    this.fullWavedashAerialLatch = false;
+  }
+
+  /** Keep onGround false for the forced-aerial wavedash frame. */
+  applyFullWavedashPendingAerial(host: DiscMechanicsHost): void {
+    if (this.fullWavedashPendingAerialFrame && this.airDodgeFromJumpsquat) {
+      host.onGround = false;
+    }
+  }
+
+  /** Walk-off must not fire during wavedash forced-aerial / pin support. */
+  suppressesWalkOffLatch(): boolean {
+    return this.fullWavedashAerialLatch || this.fullWavedashGroundSupportActive();
+  }
+
+  fullWavedashDefersGroundFlag(): boolean {
+    return this.fullWavedashPendingAerialFrame && this.airDodgeFromJumpsquat;
+  }
+
+  /** True when landing should preserve wavedash platform pin (skip normalJump clear). */
+  pinnedFullWavedashResume(): boolean {
+    return (
+      (this.airDodgeActive || this.fullWavedashCoastActive) &&
+      this.fullWavedashGroundSupportActive() &&
+      Number.isFinite(this.fullWavedashPinnedDeckY)
+    );
+  }
+
+  private fullWavedashGroundSupportActive(): boolean {
+    return this.airDodgeFromJumpsquat || this.fullWavedashCoastActive;
+  }
+
+  private fullWavedashTreatsAsGroundedForDisplacement(host: DiscMechanicsHost): boolean {
+    if (this.fullWavedashPendingAerialFrame) {
+      return Number.isFinite(this.fullWavedashPinnedDeckY);
+    }
+    return (
+      host.onGround ||
+      (this.fullWavedashGroundSupportActive() && Number.isFinite(this.fullWavedashPinnedDeckY))
+    );
+  }
+
+  private updateFullWavedashPlatformSupport(map: TileMap, host: DiscMechanicsHost): void {
+    if (!this.fullWavedashGroundSupportActive() || this.fullWavedashPendingAerialFrame || host.vy < 0) {
+      return;
+    }
+    const deck = host.wavedashDeckFromPlatformHullOverlap(map);
+    if (deck == null) {
+      this.fullWavedashPinnedDeckY = Number.NaN;
+      return;
+    }
+    this.fullWavedashPinnedDeckY = deck;
+    host.snapFootToFloorY(deck);
+    host.onGround = true;
+    host.vy = 0;
+    host.walkOffLedgeActive = false;
+  }
+
+  private tickFullWavedashGroundAfterMove(map: TileMap, host: DiscMechanicsHost): void {
+    if (!this.fullWavedashGroundSupportActive()) return;
+    if (this.fullWavedashPendingAerialFrame) {
+      this.fullWavedashPendingAerialFrame = false;
+    }
+    this.updateFullWavedashPlatformSupport(map, host);
   }
 
   private airDodgeTailWeightSum(fromMoveIdx: number): number {
@@ -1336,7 +1587,7 @@ export class DiscMechanics {
     );
   }
 
-  private prepareAirDodgeDisplacementForStep(dt: number, _host: DiscMechanicsHost): number {
+  private prepareAirDodgeDisplacementForStep(dt: number, host: DiscMechanicsHost): number {
     this.airDodgeDispVelX = 0;
     this.airDodgeDispVelY = 0;
     if (Math.hypot(this.airDodgeUnitX, this.airDodgeUnitY) <= 1e-6) return 0;
@@ -1344,7 +1595,9 @@ export class DiscMechanics {
     if (step <= 1e-9) return 0;
     this.airDodgeDispVelX = (step * this.airDodgeUnitX) / dt;
     this.airDodgeDispVelY = (step * this.airDodgeUnitY) / dt;
-    if (this.fullWavedashPendingAerialFrame) this.airDodgeDispVelY = 0;
+    if (this.fullWavedashTreatsAsGroundedForDisplacement(host)) {
+      this.airDodgeDispVelY = 0;
+    }
     return step;
   }
 
@@ -1355,8 +1608,11 @@ export class DiscMechanics {
     } else {
       this.airDodgeVelX = host.vx;
     }
-    if (this.fullWavedashPendingAerialFrame) host.vy = 0;
-    else host.vy = baseVy;
+    if (this.fullWavedashTreatsAsGroundedForDisplacement(host)) {
+      host.vy = 0;
+    } else {
+      host.vy = baseVy;
+    }
     if (scheduledStep > 1e-9) {
       this.airDodgeRemainingPx = Math.max(0, this.airDodgeRemainingPx - scheduledStep);
     }
@@ -1371,7 +1627,6 @@ export class DiscMechanics {
 
   private tickAirDodgeMovement(host: DiscMechanicsHost, steerDir: number): void {
     this.airDodgeFramesElapsed++;
-    if (this.fullWavedashPendingAerialFrame) this.fullWavedashPendingAerialFrame = false;
     if (this.airDodgeFramesElapsed >= AIR_DODGE_TOTAL_FRAMES) {
       this.finishAirDodgeAnimation(host, steerDir);
     }
@@ -1383,7 +1638,7 @@ export class DiscMechanics {
       this.airDodgeEndedInAir = true;
       this.airDodgeVelX = 0;
       this.airDodgeGroundCoast = false;
-      this.airDodgeSavedVelocityPending = false;
+      this.clearAirDodgeSavedVelocity();
       host.normalJumpAirborne = true;
       host.crouchJumpMode = false;
     } else {
@@ -1392,48 +1647,76 @@ export class DiscMechanics {
     }
   }
 
-  private endAirDodgeOnLand(steerDir: number, host: DiscMechanicsHost): void {
+  /** Dodge anim finished / touchdown — release charge, optional post-dodge coast (or heelies merge). */
+  private endAirDodgeOnLand(steerDir: number, host: DiscMechanicsHost): boolean {
+    this.syncAirDodgeLandingMomentum(host);
+    const wasFullWavedash = this.airDodgeFromJumpsquat;
     const combinedVx = this.airDodgeCoastCombinedVx(steerDir);
     const hadSlideMomentum = Math.abs(combinedVx) > 1e-3;
-    if (host.onGround && Math.abs(host.vx) > Math.abs(this.airDodgeVelX) + 1e-3) {
-      this.airDodgeVelX = host.vx;
-    }
     this.airDodgeActive = false;
     this.airDodgeLockedUntilLand = false;
     this.airDodgeFromJumpsquat = false;
+    this.fullWavedashAerialLatch = false;
+    this.fullWavedashPendingAerialFrame = false;
+    this.airDodgeEndedInAir = false;
     this.airDodgeRemainingPx = 0;
     this.airDodgeAvailable = true;
+    this.airDodgeDispVelX = 0;
+    this.airDodgeDispVelY = 0;
     if (host.onGround) {
       if (host.stats.heelysStacks > 0) {
         if (hadSlideMomentum) {
           host.vx = combinedVx;
           this.airDodgeVelX = 0;
           this.airDodgeGroundCoast = false;
-          this.airDodgeSavedVelocityPending = false;
+          this.clearAirDodgeSavedVelocity();
           host.onHeelysAirDodgeLanding(combinedVx);
         } else {
-          this.airDodgeVelX = 0;
-          this.airDodgeGroundCoast = false;
-          this.airDodgeSavedVelocityPending = false;
+          this.clearAirDodgeSavedVelocity();
         }
-      } else if (hadSlideMomentum) {
-        this.airDodgeGroundCoast = true;
-        host.vx = combinedVx;
       } else {
-        this.airDodgeGroundCoast = false;
-        this.airDodgeSavedVelocityPending = false;
+        this.beginAirDodgeGroundCoastIfNeeded(steerDir, host);
+      }
+      if (wasFullWavedash && this.airDodgeGroundCoast) {
+        this.fullWavedashCoastActive = true;
+      } else if (!this.airDodgeGroundCoast) {
+        this.fullWavedashPinnedDeckY = Number.NaN;
+        this.fullWavedashCoastActive = false;
+        if (host.stats.heelysStacks <= 0) {
+          this.clearAirDodgeSavedVelocity();
+        }
       }
     } else {
       this.airDodgeVelX = 0;
       this.airDodgeGroundCoast = false;
-      this.airDodgeSavedVelocityPending = false;
+      this.fullWavedashPinnedDeckY = Number.NaN;
+      this.fullWavedashCoastActive = false;
+      this.clearAirDodgeSavedVelocity();
+    }
+    return hadSlideMomentum && host.onGround;
+  }
+
+  private syncAirDodgeLandingMomentum(host: DiscMechanicsHost): void {
+    if (!host.onGround) return;
+    if (Math.abs(host.vx) > Math.abs(this.airDodgeVelX) + 1e-3) {
+      this.airDodgeVelX = host.vx;
+    }
+  }
+
+  private beginAirDodgeGroundCoastIfNeeded(steerDir: number, host: DiscMechanicsHost): void {
+    if (Math.abs(this.airDodgeCoastCombinedVx(steerDir)) > 1e-3) {
+      this.airDodgeGroundCoast = true;
+      host.vx = this.airDodgeCoastCombinedVx(steerDir);
+    } else {
+      this.airDodgeGroundCoast = false;
+      this.clearAirDodgeSavedVelocity();
     }
   }
 
   private syncAirDodgeCoastAfterMove(steerDir: number, host: DiscMechanicsHost): void {
     if (host.horizontalWallContactResolvedThisStep) {
       this.airDodgeVelX = 0;
-      this.airDodgeSavedVelocityPending = false;
+      this.clearAirDodgeSavedVelocity();
       host.vx = 0;
     } else {
       host.vx = this.airDodgeCoastCombinedVx(steerDir);

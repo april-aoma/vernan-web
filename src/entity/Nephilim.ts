@@ -253,7 +253,7 @@ export class Nephilim implements CombatEnemy {
   private idleSeqTimer = 0;
   private idleExtraPause = 0;
   private facingRight = false;
-  private seesPlayer = false;
+  private visionSeesPlayer = false;
   private playerCx = NaN;
   private playerCy = NaN;
   private dir = -1;
@@ -367,7 +367,17 @@ export class Nephilim implements CombatEnemy {
   applyVision(player: PlayerCombatSnapshot, seeRadius: number): void {
     this.playerCx = player.cx;
     this.playerCy = player.cy;
-    this.seesPlayer = seesPlayerAt(this.x, this.y, player.cx, player.cy, seeRadius);
+    this.visionSeesPlayer = seesPlayerAt(this.x, this.y, player.cx, player.cy, seeRadius);
+  }
+
+  seesPlayer(): boolean {
+    return this.visionSeesPlayer;
+  }
+
+  /** Java kuriboStompOverlaps — combat-active gate. */
+  kuriboStompOverlaps(playerHurt: HitboxPose): boolean {
+    if (!this.isCombatActive() || this.deathStarted) return false;
+    return playerHurt.intersectsRect(this.damageReceivePose());
   }
 
   setGrabStruggleMashing(mashing: boolean): void {
@@ -516,7 +526,7 @@ export class Nephilim implements CombatEnemy {
   private tickLifePhase(dt: number, rig: NephilimRigData): void {
     switch (this.lifePhase) {
       case "DORMANT":
-        if (this.seesPlayer) {
+        if (this.visionSeesPlayer) {
           this.lifePhase = "AWAKENING";
           this.awakenIdx = 0;
           this.awakenTimer = 0;
@@ -592,7 +602,7 @@ export class Nephilim implements CombatEnemy {
       if (Math.abs(this.vx) < 2) this.vx = 0;
       return;
     }
-    if (!this.seesPlayer || !this.onGround || !Number.isFinite(this.playerCx)) {
+    if (!this.visionSeesPlayer || !this.onGround || !Number.isFinite(this.playerCx)) {
       this.vx *= Math.max(0, 1 - dt * 6);
       return;
     }
@@ -655,7 +665,7 @@ export class Nephilim implements CombatEnemy {
     const settleVx = 8 + 14 * this.aggression();
     return (
       this.lifePhase === "ACTIVE" &&
-      this.seesPlayer &&
+      this.visionSeesPlayer &&
       this.onGround &&
       Number.isFinite(this.playerCx) &&
       Math.abs(this.vx) <= settleVx
@@ -1612,7 +1622,7 @@ export class Nephilim implements CombatEnemy {
   tryGrabLatch(playerHurt: HitboxPose): boolean {
     if (
       !this.isCombatActive() ||
-      !this.seesPlayer ||
+      !this.visionSeesPlayer ||
       !playerHurt ||
       this.grabLatched ||
       !this.isGrabReachPhase()
@@ -1779,7 +1789,7 @@ export class Nephilim implements CombatEnemy {
 
   private canTrackLiftFrustration(): boolean {
     return (
-      this.seesPlayer &&
+      this.visionSeesPlayer &&
       this.onGround &&
       this.lifePhase === "ACTIVE" &&
       this.isStandoffTrackingPlayer() &&
@@ -1817,7 +1827,7 @@ export class Nephilim implements CombatEnemy {
   }
 
   private isPlayerUnreachable(map: TileMap, rig: NephilimRigData): boolean {
-    if (!this.onGround || !this.seesPlayer || !Number.isFinite(this.playerCx) || !Number.isFinite(this.playerCy)) {
+    if (!this.onGround || !this.visionSeesPlayer || !Number.isFinite(this.playerCx) || !Number.isFinite(this.playerCy)) {
       return false;
     }
     if (Math.abs(this.lastHorzStepPx) >= LIFT_STUCK_MOVE_EPS || Math.abs(this.vx) > PLANTED_VEL_PX) {
@@ -1834,7 +1844,7 @@ export class Nephilim implements CombatEnemy {
   }
 
   private isEffectivelyStuck(map: TileMap, rig: NephilimRigData): boolean {
-    if (!this.onGround || !this.seesPlayer || !Number.isFinite(this.playerCx)) return false;
+    if (!this.onGround || !this.visionSeesPlayer || !Number.isFinite(this.playerCx)) return false;
     if (Math.abs(this.lastHorzStepPx) >= LIFT_STUCK_MOVE_EPS) return false;
     if (Math.abs(this.vx) > PLANTED_VEL_PX) return false;
     const gap = Math.abs(this.playerCx - this.x);
@@ -2785,7 +2795,7 @@ export class Nephilim implements CombatEnemy {
   }
 
   private canBeginGrab(): boolean {
-    return this.seesPlayer && this.onGround && this.isStandoffTrackingPlayer() && !this.anyArmChainLoose();
+    return this.visionSeesPlayer && this.onGround && this.isStandoffTrackingPlayer() && !this.anyArmChainLoose();
   }
 
   private anyArmChainLoose(): boolean {

@@ -35,8 +35,14 @@ let lastFingerprint = "";
 let lastSentAt = 0;
 let installed = false;
 
-/** Same live API host as scores (`?scoresApi=` / `VITE_SCORES_API`). */
-function liveApiBase(): string | null {
+/**
+ * Live scores/crashes worker. Same host as production scores
+ * (`?scoresApi=` / `VITE_SCORES_API`), with a hardcoded fallback so localhost
+ * can still POST crash reports without enabling live score submission.
+ */
+const DEFAULT_LIVE_API = "https://vernan-scores.henrysbasu.workers.dev";
+
+function liveApiBase(): string {
   try {
     const fromQuery = new URLSearchParams(window.location.search).get("scoresApi");
     if (fromQuery) return fromQuery.replace(/\/$/, "");
@@ -47,7 +53,7 @@ function liveApiBase(): string | null {
   if (typeof fromEnv === "string" && fromEnv.trim()) {
     return fromEnv.trim().replace(/\/$/, "");
   }
-  return null;
+  return DEFAULT_LIVE_API;
 }
 
 export function setCrashContext(next: CrashContext): void {
@@ -97,7 +103,6 @@ function buildPayload(input: CrashReportInput): CrashPayload {
 
 /**
  * Fire-and-forget crash report to the Cloudflare Worker.
- * No-ops when the live API is not configured.
  */
 export function reportCrash(input: CrashReportInput): void {
   void submitCrashReport(input);
@@ -109,8 +114,6 @@ export function reportCrash(input: CrashReportInput): void {
  */
 export async function submitCrashReport(input: CrashReportInput): Promise<boolean> {
   const api = liveApiBase();
-  if (!api) return false;
-
   const payload = buildPayload(input);
   const skipDedupe = payload.source === "manual";
   const fp = fingerprint(payload.message, payload.stack, payload.source);
@@ -167,9 +170,6 @@ function isCrashEntry(v: unknown): v is CrashEntry {
 /** Load recent crash reports from the live API (viewer page). */
 export async function listCrashes(limit = 50): Promise<CrashEntry[]> {
   const api = liveApiBase();
-  if (!api) {
-    throw new Error("Crash reports API is not configured.");
-  }
   const res = await fetch(`${api}/api/crashes?limit=${limit}`, { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(`Failed to load crashes (${res.status})`);

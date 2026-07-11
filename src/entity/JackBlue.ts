@@ -136,7 +136,7 @@ export class JackBlue implements PeerWalkingEnemy {
   hp: number;
   readonly maxHp: number;
 
-  private seesPlayer = false;
+  private visionSeesPlayer = false;
   private activated = false;
   private wiggleAnchorX = Number.NaN;
   private wiggleMoveDir = 1;
@@ -222,11 +222,15 @@ export class JackBlue implements PeerWalkingEnemy {
       snap.cy,
       seeRadius,
     );
-    this.seesPlayer = nowSees;
+    this.visionSeesPlayer = nowSees;
     if (nowSees) {
       if (!this.activated) this.faceToward(snap.cx);
       this.activated = true;
     }
+  }
+
+  seesPlayer(): boolean {
+    return this.visionSeesPlayer;
   }
 
   bonesCopy(): readonly JackBlueBone[] {
@@ -467,7 +471,7 @@ export class JackBlue implements PeerWalkingEnemy {
   }
 
   private canThrowBoneAt(playerX: number): boolean {
-    if (!this.activated || !this.seesPlayer || this.isThrowing()) return false;
+    if (!this.activated || !this.visionSeesPlayer || this.isThrowing()) return false;
     if (this.cameraViewWorld && !rectContainsFully(this.cameraViewWorld, this.rect())) return false;
     const br = this.rect();
     const cx = br.x + br.w * 0.5;

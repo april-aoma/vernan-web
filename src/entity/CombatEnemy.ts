@@ -28,6 +28,8 @@ export interface CombatEnemy {
   attackBlockedByShield(attack: Aabb): boolean;
   /** Shield block feedback — hitstun without HP loss. */
   applyShieldBlockStrike(strike: WeaponStrike): void;
+  /** Optional Kuribo stomp overlap gate (Java kuriboStompOverlaps; Nephilim combat-active). */
+  kuriboStompOverlaps?(playerHurt: HitboxPose): boolean;
   /** Flint fire loop tick (bosses / regular enemies). */
   applyFlintFireLoopDamage?(amount: number, fireCx: number, fireCy: number): boolean;
   /** Smoke cloud loop tick. */
@@ -60,4 +62,9 @@ export interface CombatEnemy {
   /** Forearm shield blocks projectiles without HP loss. */
   projectileBlockedByShield?(projectile: HitboxPose): boolean;
   applyProjectileShieldBlock?(strike: ProjectileStrike): void;
+  /**
+   * Vision gate for body contact (Java CombatEnemy.seesPlayer).
+   * Default true when unimplemented (Java Enemy default before/without vision).
+   */
+  seesPlayer?(): boolean;
 }
