@@ -7,3 +7,6 @@ account_id = "0eb5d31ce2d0428ce3aa240fb7655cff"
 binding = "SCORES"
 id = "bfbc8a98020a423293e604b4758d25d2"
 preview_id = "801f439d397c4c568134ac6c612db700"
+
+# Set production secret: npx wrangler secret put AUTH_SECRET
+# Local: copy .dev.vars.example → .dev.vars

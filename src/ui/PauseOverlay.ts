@@ -11,6 +11,8 @@ export const PAUSE_MENU_W = 220;
 export const PAUSE_MENU_PADDING = 8;
 
 export type PauseMenuHitRects = {
+  login: { x: number; y: number; w: number; h: number };
+  viewBoard: { x: number; y: number; w: number; h: number };
   submit: { x: number; y: number; w: number; h: number };
 };
 
@@ -39,8 +41,9 @@ export function drawPauseMenu(
   swordPickup: ImageBitmap | null,
   runSummary?: RunSummary,
   submitLocked = false,
+  loggedIn = false,
 ): PauseMenuHitRects {
-  const boxH = PAUSE_MENU_PADDING * 2 + (runSummary ? 72 : 36);
+  const boxH = PAUSE_MENU_PADDING * 2 + (runSummary ? 112 : 76);
   g.fillStyle = "rgba(10,12,16,0.863)";
   g.fillRect(PAUSE_MENU_X, PAUSE_MENU_Y, PAUSE_MENU_W, boxH);
   g.strokeStyle = "rgba(255,255,255,0.353)";
@@ -55,7 +58,10 @@ export function drawPauseMenu(
   g.fillStyle = "#c8d2e6";
   g.fillText("Debug: ` or F3", x, y);
 
-  let submit = { x: 0, y: 0, w: 0, h: 0 };
+  const btnW = PAUSE_MENU_W - PAUSE_MENU_PADDING * 2;
+  const btnH = 16;
+  const btnX = x;
+
   if (runSummary) {
     y += 16;
     g.fillStyle = "#9aa7b5";
@@ -67,26 +73,68 @@ export function drawPauseMenu(
     y += 14;
     g.fillText(`Seed ${runSummary.seed}`, x, y);
     y += 6;
-    const btnX = x;
-    const btnY = y;
-    const btnW = PAUSE_MENU_W - PAUSE_MENU_PADDING * 2;
-    const btnH = 16;
+  } else {
+    y += 10;
+  }
+
+  // Order: Login/Logout → View Leaderboard → Submit Score (parity with Java pause menu).
+  const login = drawOverlayButton(
+    g,
+    btnX,
+    y,
+    btnW,
+    btnH,
+    loggedIn ? "LOGOUT" : "LOGIN",
+    loggedIn ? "rgb(200,120,120)" : "rgb(93,207,110)",
+  );
+  y += btnH + 4;
+  const viewBoard = drawOverlayButton(
+    g,
+    btnX,
+    y,
+    btnW,
+    btnH,
+    "VIEW LEADERBOARD",
+    "rgb(180,190,210)",
+  );
+  y += btnH + 4;
+
+  let submit = { x: 0, y: 0, w: 0, h: 0 };
+  if (runSummary) {
     if (submitLocked) {
       g.fillStyle = "#a07878";
-      g.fillText("Submit locked (not leaderboard-viable)", btnX, btnY + 12);
+      g.fillText("Submit locked (not leaderboard-viable)", btnX, y + 12);
     } else {
-      g.fillStyle = "rgba(30, 90, 130, 0.85)";
-      g.fillRect(btnX, btnY, btnW, btnH);
-      g.strokeStyle = "rgba(110, 200, 255, 0.55)";
-      g.strokeRect(btnX + 0.5, btnY + 0.5, btnW - 1, btnH - 1);
-      g.fillStyle = "#d7eefc";
-      g.fillText("Q — Submit & quit", btnX + 6, btnY + 12);
-      submit = { x: btnX, y: btnY, w: btnW, h: btnH };
+      submit = drawOverlayButton(g, btnX, y, btnW, btnH, "SUBMIT SCORE", "rgb(120,170,255)");
     }
   }
 
   drawPauseMenuItemGrid(g, PAUSE_MENU_Y + boxH, player, catalog, itemBitmaps, swordPickup);
-  return { submit };
+  return { login, viewBoard, submit };
+}
+
+/** Matches Java GamePanel.drawOverlayButton (centered label + accent chrome). */
+function drawOverlayButton(
+  g: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  label: string,
+  accent: string,
+): { x: number; y: number; w: number; h: number } {
+  const m = /^rgb\((\d+),(\d+),(\d+)\)$/.exec(accent);
+  const r = m?.[1] ?? "120";
+  const gch = m?.[2] ?? "170";
+  const b = m?.[3] ?? "255";
+  g.fillStyle = `rgba(${r},${gch},${b},0.18)`;
+  g.fillRect(x, y, w, h);
+  g.strokeStyle = `rgb(${r},${gch},${b})`;
+  g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  g.fillStyle = "#ffffff";
+  g.font = "10px monospace";
+  g.fillText(label, x + (w - g.measureText(label).width) / 2, y + h * 0.5 + 3.5);
+  return { x, y, w, h };
 }
 
 function drawPauseMenuItemGrid(

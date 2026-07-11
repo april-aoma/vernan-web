@@ -14,6 +14,15 @@ const BACKGROUND_DIR = "sprites/background";
 
 type ManifestFile = { path: string };
 
+export type BackgroundLoadOptions = {
+  /**
+   * When false, only preset JSON is loaded so boot can finish without decoding every
+   * background PNG. Call {@link BackgroundPresetRegistry.ensureAllSprites} or
+   * {@link BackgroundPresetRegistry.ensurePresetSprites} later.
+   */
+  loadSprites?: boolean;
+};
+
 /**
  * Loads sprites/background/*.preset.json and PNG strips for in-game room backgrounds.
  * Mirrors Java BackgroundPresetRegistry, loading via AssetLoader + runtime-manifest.
@@ -23,20 +32,31 @@ export class BackgroundPresetRegistry {
   private readonly spritesMap = new Map<string, BackgroundSprite>();
   private readonly bossIds: string[] = [];
   private readonly secretIds: string[] = [];
+  private backgroundFiles: string[] = [];
+  private allSpritesLoaded = false;
 
   private constructor() {}
 
-  static async load(assets: AssetLoader): Promise<BackgroundPresetRegistry> {
+  static async load(
+    assets: AssetLoader,
+    opts: BackgroundLoadOptions = {},
+  ): Promise<BackgroundPresetRegistry> {
+    const loadSprites = opts.loadSprites !== false;
     const reg = new BackgroundPresetRegistry();
     try {
       const files = await listBackgroundFiles(assets);
-      await reg.loadSprites(assets, files);
-      await reg.loadPresets(assets, files);
+      reg.backgroundFiles = files;
+      const available = spriteBasenamesFromFiles(files);
+      if (loadSprites) {
+        await reg.loadSprites(assets, files);
+        reg.allSpritesLoaded = true;
+      }
+      await reg.loadPresets(assets, files, available);
       if (reg.bossIds.length === 0 && reg.secretIds.length === 0) {
         console.warn(`[background] No room presets found under ${BACKGROUND_DIR}`);
       } else {
         console.log(
-          `[background] Loaded boss=${JSON.stringify(reg.bossIds)} secret=${JSON.stringify(reg.secretIds)} sprites=${reg.spritesMap.size}`,
+          `[background] Loaded boss=${JSON.stringify(reg.bossIds)} secret=${JSON.stringify(reg.secretIds)} sprites=${reg.spritesMap.size}${loadSprites ? "" : " (deferred)"}`,
         );
       }
     } catch (ex) {
@@ -93,24 +113,68 @@ export class BackgroundPresetRegistry {
     return pickFromFamily(this.secretIds, roomContentSeed, SECRET_PRESET_PICK_SALT);
   }
 
+  /** Decode every background PNG (safe to call multiple times). */
+  async ensureAllSprites(assets: AssetLoader): Promise<void> {
+    if (this.allSpritesLoaded) return;
+    await this.loadSprites(assets, this.backgroundFiles);
+    this.allSpritesLoaded = true;
+  }
+
+  /** Decode PNGs referenced by one preset (room enter / boss/secret paint). */
+  async ensurePresetSprites(assets: AssetLoader, presetId: string): Promise<void> {
+    if (this.allSpritesLoaded) return;
+    const preset = this.presets.get(presetId);
+    if (!preset) return;
+    const needed = new Set<string>();
+    for (const layer of mapList(preset, "layers")) {
+      const spriteId = str(layer, "sprite", "");
+      if (spriteId) needed.add(spriteId);
+    }
+    await Promise.all(
+      [...needed].map(async (spriteId) => {
+        if (this.spritesMap.has(spriteId)) return;
+        const file = this.backgroundFiles.find((p) => {
+          const name = p.slice(BACKGROUND_DIR.length + 1);
+          return stripExt(name) === spriteId && name.toLowerCase().endsWith(".png");
+        });
+        if (!file) return;
+        const name = file.slice(BACKGROUND_DIR.length + 1);
+        try {
+          const bmp = await assets.loadImage(`${BACKGROUND_DIR}/${name}`);
+          const px = readAllArgb(bmp, bmp.width, bmp.height);
+          this.spritesMap.set(spriteId, spriteFromBitmap(spriteId, bmp, px));
+        } catch (ex) {
+          console.warn(`[background] Failed to read sprite ${name}`, ex);
+        }
+      }),
+    );
+  }
+
   private async loadSprites(assets: AssetLoader, files: string[]): Promise<void> {
     const pngs = files
       .filter((p) => p.toLowerCase().endsWith(".png"))
       .map((p) => p.slice(BACKGROUND_DIR.length + 1))
       .sort();
-    for (const name of pngs) {
-      const base = stripExt(name);
-      try {
-        const bmp = await assets.loadImage(`${BACKGROUND_DIR}/${name}`);
-        const px = readAllArgb(bmp, bmp.width, bmp.height);
-        this.spritesMap.set(base, spriteFromBitmap(base, bmp, px));
-      } catch (ex) {
-        console.warn(`[background] Failed to read sprite ${name}`, ex);
-      }
-    }
+    await Promise.all(
+      pngs.map(async (name) => {
+        const base = stripExt(name);
+        if (this.spritesMap.has(base)) return;
+        try {
+          const bmp = await assets.loadImage(`${BACKGROUND_DIR}/${name}`);
+          const px = readAllArgb(bmp, bmp.width, bmp.height);
+          this.spritesMap.set(base, spriteFromBitmap(base, bmp, px));
+        } catch (ex) {
+          console.warn(`[background] Failed to read sprite ${name}`, ex);
+        }
+      }),
+    );
   }
 
-  private async loadPresets(assets: AssetLoader, files: string[]): Promise<void> {
+  private async loadPresets(
+    assets: AssetLoader,
+    files: string[],
+    availableSprites: Set<string>,
+  ): Promise<void> {
     const presetNames = files
       .filter((p) => p.toLowerCase().endsWith(".preset.json"))
       .map((p) => p.slice(BACKGROUND_DIR.length + 1));
@@ -130,7 +194,7 @@ export class BackgroundPresetRegistry {
         if (familyPrefix(id) !== family) continue;
         preset["id"] = id;
         isolateLayerTransforms(preset);
-        if (!this.validatePresetLayers(id, preset)) continue;
+        if (!this.validatePresetLayers(id, preset, availableSprites)) continue;
         this.presets.set(id, preset);
         if (family === BOSS_PREFIX) this.bossIds.push(id);
         else this.secretIds.push(id);
@@ -142,7 +206,11 @@ export class BackgroundPresetRegistry {
     this.secretIds.sort((a, b) => compareFamilyIdsPrefixed(a, b, SECRET_PREFIX));
   }
 
-  private validatePresetLayers(id: string, preset: JsonMap): boolean {
+  private validatePresetLayers(
+    id: string,
+    preset: JsonMap,
+    availableSprites: Set<string>,
+  ): boolean {
     const layers = mapList(preset, "layers");
     if (layers.length === 0) {
       console.warn(`[background] Preset ${id} has no layers — skipped`);
@@ -151,7 +219,7 @@ export class BackgroundPresetRegistry {
     let resolved = 0;
     for (const layer of layers) {
       const spriteId = str(layer, "sprite", "");
-      if (this.spritesMap.has(spriteId)) resolved++;
+      if (this.spritesMap.has(spriteId) || availableSprites.has(spriteId)) resolved++;
       else console.warn(`[background] Preset ${id} references missing sprite '${spriteId}'`);
     }
     if (resolved === 0) {
@@ -160,6 +228,15 @@ export class BackgroundPresetRegistry {
     }
     return true;
   }
+}
+
+function spriteBasenamesFromFiles(files: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const p of files) {
+    if (!p.toLowerCase().endsWith(".png")) continue;
+    out.add(stripExt(p.slice(BACKGROUND_DIR.length + 1)));
+  }
+  return out;
 }
 
 /** Java Long.remainderUnsigned(pick, ids.size()). */

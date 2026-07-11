@@ -155,6 +155,8 @@ import {
 } from "./ui/CirclePad";
 import { HudEconomyDisplay } from "./ui/HudEconomy";
 import { openSubmitDialog } from "./ranking/SubmitDialog";
+import { openLoginDialog } from "./ranking/LoginDialog";
+import { isLoggedIn, logoutAccount } from "./ranking/authStore";
 import { submitScore } from "./ranking/scoresStore";
 import type { RunSummary } from "./ranking/types";
 import { reportUnknownCrash, setCrashContext } from "./diagnostics/crashReporter";
@@ -555,11 +557,18 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
    */
   let leaderboardLocked = false;
   let submitDialogOpen = false;
+  let loginDialogOpen = false;
   let pauseSubmitPending = false;
+  let pauseLoginPending = false;
+  let pauseViewBoardPending = false;
   let deathViewBoardPending = false;
   let deathRestartPending: "new" | "same" | null = null;
   let dungeonRestartInProgress = false;
-  let pauseMenuHits: PauseMenuHitRects = { submit: { x: 0, y: 0, w: 0, h: 0 } };
+  let pauseMenuHits: PauseMenuHitRects = {
+    login: { x: 0, y: 0, w: 0, h: 0 },
+    viewBoard: { x: 0, y: 0, w: 0, h: 0 },
+    submit: { x: 0, y: 0, w: 0, h: 0 },
+  };
   let deathMenuHits: DeathOverlayHitRects = {
     submit: { x: 0, y: 0, w: 0, h: 0 },
     viewBoard: { x: 0, y: 0, w: 0, h: 0 },
@@ -996,12 +1005,22 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   };
 
   const onTouchControlsPointerDown = (e: PointerEvent): void => {
-    if (submitDialogOpen) return;
+    if (submitDialogOpen || loginDialogOpen) return;
     const pt = canvasPointToInternal(e);
     if (!pt) return;
     const { ix, iy } = pt;
     const hudY0 = INTERNAL_HEIGHT - HUD_HEIGHT;
 
+    if (paused && pauseMenuHits.login.w > 0 && hitTestRect(ix, iy, pauseMenuHits.login)) {
+      e.preventDefault();
+      pauseLoginPending = true;
+      return;
+    }
+    if (paused && pauseMenuHits.viewBoard.w > 0 && hitTestRect(ix, iy, pauseMenuHits.viewBoard)) {
+      e.preventDefault();
+      pauseViewBoardPending = true;
+      return;
+    }
     if (paused && pauseMenuHits.submit.w > 0 && hitTestRect(ix, iy, pauseMenuHits.submit)) {
       e.preventDefault();
       pauseSubmitPending = true;
@@ -1131,8 +1150,27 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     window.open(leaderboardPageUrl().href, "_blank", "noopener,noreferrer");
   }
 
+  async function beginLoginFromPause(): Promise<void> {
+    if (submitDialogOpen || loginDialogOpen) return;
+    if (isLoggedIn()) {
+      await logoutAccount();
+      return;
+    }
+    loginDialogOpen = true;
+    paused = true;
+    softPointerControls.clear();
+    clearCirclePad();
+    input.clearHardwareState();
+    try {
+      await openLoginDialog();
+    } finally {
+      loginDialogOpen = false;
+      pauseLoginPending = false;
+    }
+  }
+
   async function beginSubmitAndQuit(): Promise<void> {
-    if (submitDialogOpen) return;
+    if (submitDialogOpen || loginDialogOpen) return;
     if (leaderboardLocked) {
       window.alert(
         "Scores cannot be submitted for this run (respawned in-room, or restarted on the same seed).",
@@ -1148,7 +1186,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       const summary = currentRunSummary();
       const result = await openSubmitDialog(summary);
       if (result.action !== "submit") return;
-      await submitScore(summary, result.playerName);
+      await submitScore(summary, result.playerName, { asGuest: result.asGuest });
       options.onScoreSubmitted?.(summary);
       // Brief delay so a mirror download (no remote API) is not cancelled by navigation.
       await new Promise((r) => setTimeout(r, 400));
@@ -1452,8 +1490,477 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   void assets.hasManifest();
 
+  let bootStatus = "Loading…";
+
+  const compositeClimb = async () => {
+    const climbLayers = await Promise.all(
+      CLIMB_BODY_PARTS.map((part) =>
+        loadStrip(assets, `sprites/vernan/climb ${part}.png`, VERNAN_CLIMB_FRAMES),
+      ),
+    );
+    return (
+      (await compositeBodyStrip(climbLayers)) ??
+      (await loadStrip(assets, "sprites/vernan climb.png", VERNAN_CLIMB_FRAMES))
+    );
+  };
+
+  const compositeHurt = async () => {
+    const hurtLayers = await Promise.all(
+      (["base", "hair"] as const).map((part) =>
+        loadStrip(assets, `sprites/vernan/hurt ${part}.png`, HURT_AIR_SHEET_FRAMES),
+      ),
+    );
+    return (
+      (await compositeBodyStrip(hurtLayers)) ??
+      (await loadStrip(assets, "sprites/vernan hurt air.png", HURT_AIR_SHEET_FRAMES))
+    );
+  };
+
+  const loadLayeredStrip = async (
+    parts: readonly string[],
+    pathFor: (part: string) => string,
+    frames: number,
+  ): Promise<SpriteStrip | null> => {
+    const layers = await Promise.all(parts.map((part) => loadStrip(assets, pathFor(part), frames)));
+    return (await compositeBodyStrip(layers)) ?? null;
+  };
+
+  const ensureFloorSheets = async (floor: number): Promise<void> => {
+    if (!sheetAtlas || !tilesetProject) return;
+    const primary = tilesetProject.primarySheetIdForFloor(floor);
+    const ids = new Set<string>([primary]);
+    // Keep any already-stamped room sheet ids for this dungeon floor.
+    if (session) {
+      for (const room of session.dungeon.rooms) {
+        const sid = room.art?.sheetId;
+        if (sid) ids.add(sid);
+      }
+    }
+    await sheetAtlas.loadSheets(assets, [...ids]);
+    if (tileWorldRenderer) tileWorldRenderer.syncSheets(sheetAtlas, tilesetProject);
+  };
+
+  const ensureRoomBackground = async (roomId: number): Promise<void> => {
+    if (!bgRegistry || roomId < 0 || roomId >= roomMathBackgroundPresetId.length) return;
+    const presetId = roomMathBackgroundPresetId[roomId];
+    if (presetId) await bgRegistry.ensurePresetSprites(assets, presetId);
+  };
+
+  /** Phase A — start room only: enough to spawn and walk/attack in room 0. */
+  const loadFirstRoomSprites = async (): Promise<void> => {
+    bootStatus = "Loading first room…";
+    const [
+      idle,
+      crouch,
+      turn,
+      walk,
+      jump,
+      climb,
+      hurtAir,
+      attack,
+      airAttack,
+      crouchAttack,
+      sword,
+      crouchSword,
+      doorEnter,
+      doorExit,
+      healthSheet,
+      coin,
+      key,
+      weaponFrame,
+      dust,
+    ] = await Promise.all([
+      loadImageSafe(assets, "sprites/vernan idle.png"),
+      loadImageSafe(assets, "sprites/vernan crouch.png"),
+      loadImageSafe(assets, "sprites/vernan turn.png"),
+      loadStrip(assets, "sprites/vernan walk.png", VERNAN_WALK_FRAMES),
+      loadStrip(assets, "sprites/vernan jump.png", VERNAN_JUMP_FRAMES),
+      compositeClimb(),
+      compositeHurt(),
+      loadStrip(assets, "sprites/vernan attack.png", VERNAN_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/vernan air attack.png", VERNAN_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/vernan crouch attack.png", VERNAN_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/sword attack.png", SWORD_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/sword crouch attack.png", SWORD_ATTACK_FRAMES),
+      loadLayeredStrip(
+        ["base", "arm", "hair"],
+        (part) => `sprites/vernan/doorenter ${part}.png`,
+        1,
+      ),
+      loadLayeredStrip(
+        ["base", "arm", "hair", "face"],
+        (part) => `sprites/vernan/doorexit ${part}.png`,
+        1,
+      ),
+      loadImageSafe(assets, "sprites/UI health.png"),
+      loadImageSafe(assets, "sprites/UI coin.png"),
+      loadImageSafe(assets, "sprites/UI key.png"),
+      loadImageSafe(assets, "sprites/UI weapon.png"),
+      loadImageSafe(assets, "sprites/dust.png"),
+    ]);
+    playerSprites.idle = idle;
+    playerSprites.crouch = crouch;
+    playerSprites.turn = turn;
+    playerSprites.walk = walk;
+    playerSprites.jump = jump;
+    playerSprites.climb = climb;
+    playerSprites.hurtAir = hurtAir;
+    playerSprites.attack = attack;
+    playerSprites.airAttack = airAttack;
+    playerSprites.crouchAttack = crouchAttack;
+    playerSprites.sword = sword;
+    playerSprites.crouchSword = crouchSword;
+    playerSprites.doorEnter = doorEnter;
+    playerSprites.doorExit = doorExit;
+    dustSprite = dust;
+    if (healthSheet) hudSprites.heartFrames = await sliceHudStrip(healthSheet, 3);
+    hudSprites.coin = coin;
+    hudSprites.key = key;
+    hudSprites.weaponFrame = weaponFrame;
+    if (hudSprites.weaponFrame) {
+      hudSprites.weaponInner = innerBoxFrom0000feBorder(hudSprites.weaponFrame, 1);
+    }
+  };
+
+  /** Phase B — rest of floor 1 combat / room props / early enemies. */
+  const loadFirstFloorSprites = async (): Promise<void> => {
+    bootStatus = "Loading floor…";
+    const [
+      keyblock,
+      keyblockConn,
+      pedestal,
+      shopSheet,
+      killExplosion,
+      soulSheet,
+      blackSheet,
+      subweaponFrame,
+      statsSheet,
+      swordSheet,
+      electricShock,
+      attack0,
+      airAttack0,
+      pluck,
+      throwCarry,
+      throwCarryAir,
+      fruit,
+      headbandCrouch,
+      headbandUp,
+      headbandSide,
+      slide,
+      wallSlide,
+      airDodge,
+      heavyAttack,
+      heavyAttackAirLegs,
+      specialAttack,
+      airSpecialAttack,
+      shieldPlayer,
+      shieldAttack,
+      crouchShieldAttack,
+      flintSword,
+      crouchFlintSword,
+      getup,
+      grabbed,
+      itemLayers,
+      crawler,
+      mouse,
+      mouseHurt,
+      penisman,
+      goldenRoachWalk,
+      goldenRoachFly,
+    ] = await Promise.all([
+      loadStrip(assets, "sprites/keyblock.png", KEYBLOCK_STRIP_FRAME_COUNT),
+      loadStrip(assets, "sprites/keyblock connector.png", KEYBLOCK_STRIP_FRAME_COUNT),
+      loadImageSafe(assets, "sprites/items/item pedestal.png"),
+      loadImageSafe(assets, "sprites/cat shopkeep sheet.png"),
+      loadImageSafe(assets, "sprites/kill explosion.png"),
+      loadImageSafe(assets, "sprites/soul heart.png"),
+      loadImageSafe(assets, "sprites/black heart.png"),
+      loadImageSafe(assets, "sprites/UI subweapon.png"),
+      loadImageSafe(assets, "sprites/hud stats.png"),
+      loadImageSafe(assets, "sprites/items/sword.png"),
+      loadStrip(assets, "sprites/electric shock.png", ELECTRIC_SHOCK_SHEET_FRAMES),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/attack0 ${p}.png`, 4),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/attack0 air-${p}.png`, 4),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/pluck ${p}.png`, 4),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/throw ${p}.png`, 5),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/throw air-${p}.png`, 5),
+      loadImageSafe(assets, "sprites/fruits.png"),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/crouchattack1 ${p}.png`, 4),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/upattack0 ${p}.png`, 7),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/sideattack0 ${p}.png`, 6),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/slide ${p}.png`, 1),
+      loadLayeredStrip(
+        ["base", "hair", "arm", "l-arm"],
+        (p) => `sprites/vernan/wallslide ${p}.png`,
+        2,
+      ),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/airdodge ${p}.png`, 3),
+      loadLayeredStrip(["base", "hair", "legs"], (p) => `sprites/vernan/attack1 ${p}.png`, 8),
+      loadStrip(assets, "sprites/vernan/attack1 air-legs.png", 8),
+      loadStrip(assets, "sprites/vernan special attack.png", 5),
+      loadStrip(assets, "sprites/vernan air special attack.png", 5),
+      loadStrip(assets, "sprites/shield player.png", 4),
+      loadStrip(assets, "sprites/shield attack.png", SWORD_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/shield crouch attack.png", SWORD_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/flint attack.png", SWORD_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/flint crouch attack.png", SWORD_ATTACK_FRAMES),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/getup ${p}.png`, 1),
+      loadLayeredStrip(["base", "hair"], (p) => `sprites/vernan/grabbed ${p}.png`, 4),
+      Promise.all(
+        (["base", "hair"] as const).map((part) =>
+          loadStrip(assets, `sprites/vernan/item ${part}.png`, 1),
+        ),
+      ),
+      loadStrip(assets, "sprites/crawler.png", CRAWLER_FRAMES),
+      loadStrip(assets, "sprites/mouse.png", MOUSE_FRAMES),
+      loadStrip(assets, "sprites/mouse hurt.png", MOUSE_FRAMES),
+      loadStrip(assets, "sprites/penisman.png", PENISMAN_FRAMES),
+      loadStrip(assets, "sprites/golden roach2.png", GOLDEN_ROACH_WALK_FRAMES),
+      loadStrip(assets, "sprites/golden roach2 fly.png", GOLDEN_ROACH_FLY_FRAMES),
+    ]);
+
+    keyblockStrip = keyblock;
+    keyblockConnectorStrip = keyblockConn;
+    pedestalBmp = pedestal;
+    killExplosionBmp = killExplosion;
+    electricShockStrip = electricShock;
+    if (shopSheet) shopKeeperFrames = await loadShopKeeperFrames(shopSheet);
+    if (soulSheet) hudSprites.soulHeartFrames = await sliceHudStrip(soulSheet, 2);
+    if (blackSheet) hudSprites.blackHeartFrames = await sliceHudStrip(blackSheet, 2);
+    hudSprites.subweaponFrame = subweaponFrame;
+    if (hudSprites.subweaponFrame) {
+      hudSprites.subweaponInner = innerBoxFrom0000feBorder(hudSprites.subweaponFrame, 1);
+    }
+    if (statsSheet) hudSprites.statFrames = await sliceHudStrip(statsSheet, 3);
+    if (swordSheet) hudSprites.swordPickup = await slicePickupCell(swordSheet);
+
+    for (const kind of [
+      PickupKind.HEART,
+      PickupKind.KEY,
+      PickupKind.COIN_1,
+      PickupKind.COIN_5,
+      PickupKind.COIN_10,
+    ]) {
+      const file = pickupSpriteFile(kind);
+      const bmp = await loadImageSafe(assets, `sprites/${file}`);
+      if (bmp) pickupBitmaps.set(file, bmp);
+      const collectFile = pickupCollectSpriteFile(kind);
+      const collectBmp = await loadImageSafe(assets, `sprites/${collectFile}`);
+      if (collectBmp) pickupCollectStrips.set(kind, collectBmp);
+    }
+    await Promise.all(
+      HIT_VFX_PRELOAD_KINDS.map(async (kind) => {
+        const bmp = await loadImageSafe(assets, `sprites/${hitVfxSpriteFile(kind)}`);
+        if (bmp) hitVfxSprites.set(kind, bmp);
+      }),
+    );
+
+    playerSprites.attack0 = attack0;
+    playerSprites.airAttack0 = airAttack0;
+    playerSprites.pluck = pluck;
+    playerSprites.throwCarry = throwCarry;
+    playerSprites.throwCarryAir = throwCarryAir;
+    fruitCarrySprite = fruit;
+    playerSprites.headbandCrouchAttack = headbandCrouch;
+    playerSprites.headbandUpAttack = headbandUp;
+    playerSprites.headbandSideAttack = headbandSide;
+    playerSprites.slide = slide;
+    playerSprites.wallSlide = wallSlide;
+    playerSprites.airDodge = airDodge;
+    playerSprites.heavyAttack = heavyAttack;
+    playerSprites.heavyAttackAirLegs = heavyAttackAirLegs;
+    playerSprites.specialAttack = specialAttack;
+    playerSprites.airSpecialAttack = airSpecialAttack;
+    playerSprites.shieldPlayer = shieldPlayer;
+    playerSprites.shieldAttack = shieldAttack;
+    playerSprites.crouchShieldAttack = crouchShieldAttack;
+    playerSprites.flintSword = flintSword;
+    playerSprites.crouchFlintSword = crouchFlintSword;
+    playerSprites.getup = getup;
+    playerSprites.grabbed = grabbed;
+    const itemComposite = await compositeBodyStrip(itemLayers);
+    playerSprites.itemPose =
+      itemComposite?.image ?? (await loadImageSafe(assets, "sprites/vernan item.png"));
+
+    enemySprites.crawler = crawler;
+    enemySprites.mouse = mouse;
+    enemySprites.mouseHurt = mouseHurt;
+    enemySprites.penisman = penisman;
+    enemySprites.goldenRoachWalk = goldenRoachWalk;
+    enemySprites.goldenRoachFly = goldenRoachFly;
+  };
+
+  /** Phase C — remaining floors, costumes, bosses, extras (background while playing). */
+  const loadRemainingSprites = async (): Promise<void> => {
+    bootStatus = "Loading…";
+    if (sheetAtlas && tilesetProject) {
+      await sheetAtlas.loadSheets(assets, [...tilesetProject.sheetPaths.keys()]);
+      if (tileWorldRenderer) tileWorldRenderer.syncSheets(sheetAtlas, tilesetProject);
+    }
+    if (bgRegistry) await bgRegistry.ensureAllSprites(assets);
+
+    const [
+      gemSword,
+      crouchGemSword,
+      stickSword,
+      crouchStickSword,
+      lemonIdle,
+      lemonCrouch,
+      lemonTurn,
+      lemonWalk,
+      lemonJump,
+      lemonClimb,
+      frisbee,
+      fire,
+      lemonShot,
+      psychicFire,
+      levelTrans,
+      jackBlue,
+      jackBlueShield,
+      rollingHead,
+      multilimberBody,
+      multilimberHead,
+      multilimberEye,
+    ] = await Promise.all([
+      loadStrip(assets, "sprites/gem sword attack.png", SWORD_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/gem sword crouch attack.png", SWORD_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/stick attack.png", SWORD_ATTACK_FRAMES),
+      loadStrip(assets, "sprites/stick crouch attack.png", SWORD_ATTACK_FRAMES),
+      loadImageSafe(assets, "sprites/vernan idle lemon.png"),
+      loadImageSafe(assets, "sprites/vernan crouch lemon.png"),
+      loadImageSafe(assets, "sprites/vernan turn lemon.png"),
+      loadStrip(assets, "sprites/vernan walk lemon.png", VERNAN_WALK_FRAMES),
+      loadStrip(assets, "sprites/vernan jump lemon.png", VERNAN_JUMP_FRAMES),
+      loadStrip(assets, "sprites/vernan climb lemon.png", VERNAN_CLIMB_FRAMES),
+      loadStrip(assets, "sprites/DKC-style/frisbee3d.png", FrisbeeProjectile.ANIM_FRAME_COUNT),
+      loadStrip(assets, "sprites/fire.png", 4),
+      loadStrip(assets, "sprites/lemon shot.png", 1),
+      loadStrip(assets, "sprites/psychic fire.png", 4),
+      (async () => {
+        const levelTransLayers = await Promise.all(
+          LEVEL_TRANSITION_BODY_PARTS.map((part) =>
+            loadStrip(assets, `sprites/vernan/leveltransition ${part}.png`, LEVEL_TRANS_SHEET_FRAMES),
+          ),
+        );
+        return (
+          (await compositeBodyStrip(levelTransLayers)) ??
+          (await loadStrip(assets, "sprites/vernan/level transition.png", LEVEL_TRANS_SHEET_FRAMES))
+        );
+      })(),
+      loadStrip(assets, "sprites/jack blue.png", JACK_BLUE_FRAMES),
+      loadStrip(assets, "sprites/jack blue shield.png", JACK_BLUE_FRAMES),
+      loadStrip(assets, "sprites/rolling head cc.png", ROLLING_HEAD_FRAMES),
+      loadStrip(assets, "sprites/multilimber body.png", MULTILIMBER_FRAMES),
+      loadStrip(assets, "sprites/multilimber head.png", MULTILIMBER_FRAMES),
+      loadStrip(assets, "sprites/multilimber eye.png", MULTILIMBER_FRAMES),
+    ]);
+
+    playerSprites.gemSword = gemSword;
+    playerSprites.crouchGemSword = crouchGemSword;
+    playerSprites.stickSword = stickSword;
+    playerSprites.crouchStickSword = crouchStickSword;
+    playerSprites.lemonIdle = lemonIdle;
+    playerSprites.lemonCrouch = lemonCrouch;
+    playerSprites.lemonTurn = lemonTurn;
+    playerSprites.lemonWalk = lemonWalk;
+    playerSprites.lemonJump = lemonJump;
+    playerSprites.lemonClimb = lemonClimb;
+    frisbeeStrip = frisbee;
+    fireStrip = fire;
+    lemonShotStrip = lemonShot;
+    psychicFireStrip = psychicFire;
+    playerSprites.levelTransition = levelTrans;
+    enemySprites.jackBlue = jackBlue;
+    enemySprites.jackBlueShield = jackBlueShield;
+    enemySprites.rollingHead = rollingHead;
+    enemySprites.multilimberBody = multilimberBody;
+    enemySprites.multilimberHead = multilimberHead;
+    enemySprites.multilimberEye = multilimberEye;
+
+    try {
+      const manifest = await assets.loadJson<{ files?: { path: string }[] }>("runtime-manifest.json");
+      const manifestPaths = (manifest.files ?? []).map((f) => f.path);
+      if (manifestPaths.length === 0) {
+        throw new Error("runtime-manifest.json has no files[] — run npm run rebuild-manifest");
+      }
+      const layersFile = await loadCostumeLayers(assets.url("data/costume_layers.json"));
+      const drawConfig = await CostumeDrawConfig.load(() =>
+        assets.loadJson("data/costume_slots.json"),
+      );
+      const bodyLibrary = await VernanBodyLibrary.load(assets, manifestPaths);
+      const artCache = await CostumeArtCache.load(assets, layersFile, drawConfig, manifestPaths);
+      if (bodyLibrary.hasIdle) {
+        costumeBundle = { bodyLibrary, artCache, drawConfig, layersFile };
+      } else {
+        console.warn(
+          "[vernan] costume bundle skipped: Vernan body idle art missing from runtime-manifest",
+        );
+      }
+    } catch (err) {
+      console.warn(
+        "[vernan] costume bundle failed to load (layered costumes disabled). " +
+          "Ensure public/assets/runtime-manifest.json exists (npm run rebuild-manifest).",
+        err,
+      );
+      costumeBundle = null;
+    }
+
+    await loadPossessedRig(assets);
+    await loadNephilimRig(assets);
+    const possessedFrames = Math.max(1, Math.floor(64 / POSSESSED_PART_W));
+    const [
+      possessed,
+      shinyPossessed,
+      nephilim,
+      nephilimHealFx,
+      possessedBullet,
+      possessedBulletDie,
+      penisBullet,
+      penisBulletDie,
+      jackBlueBone,
+      lilPossessedBullet,
+      smoke,
+      lilPossessedFriend,
+      lilMinerFriend,
+      whipPart,
+      lilPossessedBulletDie,
+    ] = await Promise.all([
+      loadStrip(assets, "sprites/bosses/possessed.png", possessedFrames),
+      loadStrip(assets, "sprites/bosses/shiny possessed.png", possessedFrames),
+      loadStrip(assets, "sprites/bosses/nephilim.png", 7),
+      loadImageSafe(assets, "sprites/FX enemy heal.png"),
+      loadImageSafe(assets, "sprites/bosses/possessed bullet.png"),
+      loadImageSafe(assets, "sprites/bosses/possessed bullet die.png"),
+      loadImageSafe(assets, "sprites/penis bullet.png"),
+      loadImageSafe(assets, "sprites/penis bullet die.png"),
+      loadImageSafe(assets, "sprites/bone.png"),
+      loadImageSafe(assets, "sprites/lil possessed bullet.png"),
+      loadImageSafe(assets, "sprites/smoke.png"),
+      loadImageSafe(assets, "sprites/lil possessed friend.png"),
+      loadImageSafe(assets, "sprites/lil miner friend.png"),
+      loadImageSafe(assets, "sprites/whip part.png"),
+      loadImageSafe(assets, "sprites/lil possessed bullet die.png"),
+    ]);
+    enemySprites.possessed = possessed;
+    enemySprites.shinyPossessed = shinyPossessed;
+    enemySprites.nephilim = nephilim;
+    enemySprites.nephilimHealFx = nephilimHealFx;
+    possessedBulletBmp = possessedBullet;
+    possessedBulletDieBmp = possessedBulletDie;
+    penisBulletBmp = penisBullet;
+    penisBulletDieBmp = penisBulletDie;
+    jackBlueBoneBmp = jackBlueBone;
+    lilPossessedBulletBmp = lilPossessedBullet;
+    smokeBmp = smoke;
+    lilPossessedFriendBmp = lilPossessedFriend;
+    lilMinerFriendBmp = lilMinerFriend;
+    whipPartBmp = whipPart;
+    lilPossessedBulletDieBmp = lilPossessedBulletDie;
+  };
+
   void (async () => {
     try {
+      bootStatus = "Loading data…";
       const catalog = await ItemCatalog.load(assets);
       try {
         const cuesRaw = await assets.loadJson("data/vernan_anim_cues.json");
@@ -1464,11 +1971,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       gamePalette = await GameColorPalette.load(assets);
       gamePaletteRef = gamePalette;
       kCandyVision.bindPalette(gamePalette);
-      bgRegistry = await BackgroundPresetRegistry.load(assets);
-      roomMathBackgroundPresetId = assignRoomMathBackgroundPresets(
-        dungeon.layout,
-        bgRegistry,
-      );
+
+      // Preset metadata only — PNG decode deferred (start room has no math background).
+      bgRegistry = await BackgroundPresetRegistry.load(assets, { loadSprites: false });
+      roomMathBackgroundPresetId = assignRoomMathBackgroundPresets(dungeon.layout, bgRegistry);
+
       const runItemPoolLocal = new RunItemPool();
       const decks = new PedestalItemDecks(catalog, runItemPoolLocal, BigInt(seed));
       itemCatalog = catalog;
@@ -1478,10 +1985,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       try {
         tilesetProject = await TilesetProject.load(assets);
         sheetAtlas = new SheetAtlas(tilesetProject);
-        await sheetAtlas.loadSheets(assets, [...tilesetProject.sheetPaths.keys()]);
+        const floor1Sheet = tilesetProject.primarySheetIdForFloor(1);
+        await sheetAtlas.loadSheets(assets, [floor1Sheet]);
         tileWorldRenderer = new TileWorldRenderer(sheetAtlas, tilesetProject);
         bossDoorLayout = resolveBossDoorLayout(tilesetProject);
-        // Rebuild with tileset so ambient deco uses room RNG (Java RoomGenerator).
         dungeon = buildDungeon(BigInt(seed), 1, 0, tilesetProject);
         if (bgRegistry) {
           roomMathBackgroundPresetId = assignRoomMathBackgroundPresets(
@@ -1497,6 +2004,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         bossDoorLayout = null;
       }
 
+      await loadFirstRoomSprites();
+
       session = createSession(dungeon, catalog, decks);
       floorOrdinal = dungeon.floorOrdinal;
       miniMapState = createMiniMapState(dungeon.layout.roomCount());
@@ -1508,393 +2017,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       playerWasOnGround = player.onGround;
       snapCameraToPlayer(session);
 
-      keyblockStrip = await loadStrip(assets, "sprites/keyblock.png", KEYBLOCK_STRIP_FRAME_COUNT);
-      keyblockConnectorStrip = await loadStrip(
-        assets,
-        "sprites/keyblock connector.png",
-        KEYBLOCK_STRIP_FRAME_COUNT,
-      );
-
-      pedestalBmp = await loadImageSafe(assets, "sprites/items/item pedestal.png");
-      const shopSheet = await loadImageSafe(assets, "sprites/cat shopkeep sheet.png");
-      if (shopSheet) shopKeeperFrames = await loadShopKeeperFrames(shopSheet);
-      killExplosionBmp = await loadImageSafe(assets, "sprites/kill explosion.png");
-
-      const healthSheet = await loadImageSafe(assets, "sprites/UI health.png");
-      if (healthSheet) hudSprites.heartFrames = await sliceHudStrip(healthSheet, 3);
-      const soulSheet = await loadImageSafe(assets, "sprites/soul heart.png");
-      if (soulSheet) hudSprites.soulHeartFrames = await sliceHudStrip(soulSheet, 2);
-      const blackSheet = await loadImageSafe(assets, "sprites/black heart.png");
-      if (blackSheet) hudSprites.blackHeartFrames = await sliceHudStrip(blackSheet, 2);
-      hudSprites.coin = await loadImageSafe(assets, "sprites/UI coin.png");
-      hudSprites.key = await loadImageSafe(assets, "sprites/UI key.png");
-      hudSprites.weaponFrame = await loadImageSafe(assets, "sprites/UI weapon.png");
-      hudSprites.subweaponFrame = await loadImageSafe(assets, "sprites/UI subweapon.png");
-      if (hudSprites.weaponFrame) {
-        hudSprites.weaponInner = innerBoxFrom0000feBorder(hudSprites.weaponFrame, 1);
-      }
-      if (hudSprites.subweaponFrame) {
-        hudSprites.subweaponInner = innerBoxFrom0000feBorder(hudSprites.subweaponFrame, 1);
-      }
-      const statsSheet = await loadImageSafe(assets, "sprites/hud stats.png");
-      if (statsSheet) hudSprites.statFrames = await sliceHudStrip(statsSheet, 3);
-      const swordSheet = await loadImageSafe(assets, "sprites/items/sword.png");
-      if (swordSheet) hudSprites.swordPickup = await slicePickupCell(swordSheet);
-
-      for (const kind of [
-        PickupKind.HEART,
-        PickupKind.KEY,
-        PickupKind.COIN_1,
-        PickupKind.COIN_5,
-        PickupKind.COIN_10,
-      ]) {
-        const file = pickupSpriteFile(kind);
-        const bmp = await loadImageSafe(assets, `sprites/${file}`);
-        if (bmp) pickupBitmaps.set(file, bmp);
-        const collectFile = pickupCollectSpriteFile(kind);
-        const collectBmp = await loadImageSafe(assets, `sprites/${collectFile}`);
-        if (collectBmp) pickupCollectStrips.set(kind, collectBmp);
-      }
-      for (const kind of HIT_VFX_PRELOAD_KINDS) {
-        const bmp = await loadImageSafe(assets, `sprites/${hitVfxSpriteFile(kind)}`);
-        if (bmp) hitVfxSprites.set(kind, bmp);
-      }
-      electricShockStrip = await loadStrip(
-        assets,
-        "sprites/electric shock.png",
-        ELECTRIC_SHOCK_SHEET_FRAMES,
-      );
-      dustSprite = await loadImageSafe(assets, "sprites/dust.png");
-
-      playerSprites.idle = await loadImageSafe(assets, "sprites/vernan idle.png");
-      playerSprites.crouch = await loadImageSafe(assets, "sprites/vernan crouch.png");
-      playerSprites.turn = await loadImageSafe(assets, "sprites/vernan turn.png");
-      playerSprites.walk = await loadStrip(assets, "sprites/vernan walk.png", VERNAN_WALK_FRAMES);
-      playerSprites.jump = await loadStrip(assets, "sprites/vernan jump.png", VERNAN_JUMP_FRAMES);
-      // Layered climb (base + arm + hair); fall back to legacy flat strip if composite fails.
-      const climbLayers = await Promise.all(
-        CLIMB_BODY_PARTS.map((part) =>
-          loadStrip(assets, `sprites/vernan/climb ${part}.png`, VERNAN_CLIMB_FRAMES),
-        ),
-      );
-      playerSprites.climb =
-        (await compositeBodyStrip(climbLayers)) ??
-        (await loadStrip(assets, "sprites/vernan climb.png", VERNAN_CLIMB_FRAMES));
-      const hurtLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/hurt ${part}.png`, HURT_AIR_SHEET_FRAMES),
-        ),
-      );
-      playerSprites.hurtAir =
-        (await compositeBodyStrip(hurtLayers)) ??
-        (await loadStrip(assets, "sprites/vernan hurt air.png", HURT_AIR_SHEET_FRAMES));
-      playerSprites.attack = await loadStrip(assets, "sprites/vernan attack.png", VERNAN_ATTACK_FRAMES);
-      playerSprites.airAttack = await loadStrip(
-        assets,
-        "sprites/vernan air attack.png",
-        VERNAN_ATTACK_FRAMES,
-      );
-      playerSprites.crouchAttack = await loadStrip(
-        assets,
-        "sprites/vernan crouch attack.png",
-        VERNAN_ATTACK_FRAMES,
-      );
-      playerSprites.sword = await loadStrip(assets, "sprites/sword attack.png", SWORD_ATTACK_FRAMES);
-      playerSprites.crouchSword = await loadStrip(
-        assets,
-        "sprites/sword crouch attack.png",
-        SWORD_ATTACK_FRAMES,
-      );
-      playerSprites.flintSword = await loadStrip(
-        assets,
-        "sprites/flint attack.png",
-        SWORD_ATTACK_FRAMES,
-      );
-      playerSprites.crouchFlintSword = await loadStrip(
-        assets,
-        "sprites/flint crouch attack.png",
-        SWORD_ATTACK_FRAMES,
-      );
-      playerSprites.gemSword = await loadStrip(
-        assets,
-        "sprites/gem sword attack.png",
-        SWORD_ATTACK_FRAMES,
-      );
-      playerSprites.crouchGemSword = await loadStrip(
-        assets,
-        "sprites/gem sword crouch attack.png",
-        SWORD_ATTACK_FRAMES,
-      );
-      playerSprites.stickSword = await loadStrip(
-        assets,
-        "sprites/stick attack.png",
-        SWORD_ATTACK_FRAMES,
-      );
-      playerSprites.crouchStickSword = await loadStrip(
-        assets,
-        "sprites/stick crouch attack.png",
-        SWORD_ATTACK_FRAMES,
-      );
-      playerSprites.shieldPlayer = await loadStrip(assets, "sprites/shield player.png", 4);
-      playerSprites.shieldAttack = await loadStrip(assets, "sprites/shield attack.png", SWORD_ATTACK_FRAMES);
-      playerSprites.crouchShieldAttack = await loadStrip(
-        assets,
-        "sprites/shield crouch attack.png",
-        SWORD_ATTACK_FRAMES,
-      );
-      playerSprites.specialAttack = await loadStrip(
-        assets,
-        "sprites/vernan special attack.png",
-        5,
-      );
-      playerSprites.airSpecialAttack = await loadStrip(
-        assets,
-        "sprites/vernan air special attack.png",
-        5,
-      );
-      const attack0Layers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/attack0 ${part}.png`, 4),
-        ),
-      );
-      playerSprites.attack0 = (await compositeBodyStrip(attack0Layers)) ?? null;
-      const attack0AirLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/attack0 air-${part}.png`, 4),
-        ),
-      );
-      playerSprites.airAttack0 = (await compositeBodyStrip(attack0AirLayers)) ?? null;
-      const pluckLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/pluck ${part}.png`, 4),
-        ),
-      );
-      playerSprites.pluck = (await compositeBodyStrip(pluckLayers)) ?? null;
-      const throwLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/throw ${part}.png`, 5),
-        ),
-      );
-      playerSprites.throwCarry = (await compositeBodyStrip(throwLayers)) ?? null;
-      const throwAirLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/throw air-${part}.png`, 5),
-        ),
-      );
-      playerSprites.throwCarryAir = (await compositeBodyStrip(throwAirLayers)) ?? null;
-      fruitCarrySprite = await loadImageSafe(assets, "sprites/fruits.png");
-      const headbandCrouchLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/crouchattack1 ${part}.png`, 4),
-        ),
-      );
-      playerSprites.headbandCrouchAttack = await compositeBodyStrip(headbandCrouchLayers);
-      const headbandUpLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/upattack0 ${part}.png`, 7),
-        ),
-      );
-      playerSprites.headbandUpAttack = await compositeBodyStrip(headbandUpLayers);
-      const headbandSideLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/sideattack0 ${part}.png`, 6),
-        ),
-      );
-      playerSprites.headbandSideAttack = await compositeBodyStrip(headbandSideLayers);
-      const slideLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/slide ${part}.png`, 1),
-        ),
-      );
-      playerSprites.slide = (await compositeBodyStrip(slideLayers)) ?? null;
-      const wallSlideLayers = await Promise.all(
-        (["base", "hair", "arm", "l-arm"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/wallslide ${part}.png`, 2),
-        ),
-      );
-      playerSprites.wallSlide = (await compositeBodyStrip(wallSlideLayers)) ?? null;
-      const airDodgeLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/airdodge ${part}.png`, 3),
-        ),
-      );
-      playerSprites.airDodge = (await compositeBodyStrip(airDodgeLayers)) ?? null;
-      const heavyAttackLayers = await Promise.all(
-        (["base", "hair", "legs"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/attack1 ${part}.png`, 8),
-        ),
-      );
-      playerSprites.heavyAttack = (await compositeBodyStrip(heavyAttackLayers)) ?? null;
-      playerSprites.heavyAttackAirLegs = await loadStrip(
-        assets,
-        "sprites/vernan/attack1 air-legs.png",
-        8,
-      );
-      playerSprites.lemonIdle = await loadImageSafe(assets, "sprites/vernan idle lemon.png");
-      playerSprites.lemonCrouch = await loadImageSafe(assets, "sprites/vernan crouch lemon.png");
-      playerSprites.lemonTurn = await loadImageSafe(assets, "sprites/vernan turn lemon.png");
-      playerSprites.lemonWalk = await loadStrip(assets, "sprites/vernan walk lemon.png", VERNAN_WALK_FRAMES);
-      playerSprites.lemonJump = await loadStrip(assets, "sprites/vernan jump lemon.png", VERNAN_JUMP_FRAMES);
-      playerSprites.lemonClimb = await loadStrip(assets, "sprites/vernan climb lemon.png", VERNAN_CLIMB_FRAMES);
-      frisbeeStrip = await loadStrip(
-        assets,
-        "sprites/DKC-style/frisbee3d.png",
-        FrisbeeProjectile.ANIM_FRAME_COUNT,
-      );
-      fireStrip = await loadStrip(assets, "sprites/fire.png", 4);
-      lemonShotStrip = await loadStrip(assets, "sprites/lemon shot.png", 1);
-      psychicFireStrip = await loadStrip(assets, "sprites/psychic fire.png", 4);
-      const doorEnterLayers = await Promise.all(
-        (["base", "arm", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/doorenter ${part}.png`, 1),
-        ),
-      );
-      playerSprites.doorEnter = await compositeBodyStrip(doorEnterLayers);
-      const doorExitLayers = await Promise.all(
-        (["base", "arm", "hair", "face"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/doorexit ${part}.png`, 1),
-        ),
-      );
-      playerSprites.doorExit = await compositeBodyStrip(doorExitLayers);
-      const getupLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/getup ${part}.png`, 1),
-        ),
-      );
-      playerSprites.getup = await compositeBodyStrip(getupLayers);
-      const grabbedLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/grabbed ${part}.png`, 4),
-        ),
-      );
-      playerSprites.grabbed = await compositeBodyStrip(grabbedLayers);
-      // Layered item pose (base + hair); fall back to flat vernan item.png.
-      const itemLayers = await Promise.all(
-        (["base", "hair"] as const).map((part) =>
-          loadStrip(assets, `sprites/vernan/item ${part}.png`, 1),
-        ),
-      );
-      const itemComposite = await compositeBodyStrip(itemLayers);
-      playerSprites.itemPose =
-        itemComposite?.image ?? (await loadImageSafe(assets, "sprites/vernan item.png"));
-      const levelTransLayers = await Promise.all(
-        LEVEL_TRANSITION_BODY_PARTS.map((part) =>
-          loadStrip(assets, `sprites/vernan/leveltransition ${part}.png`, LEVEL_TRANS_SHEET_FRAMES),
-        ),
-      );
-      playerSprites.levelTransition =
-        (await compositeBodyStrip(levelTransLayers)) ??
-        (await loadStrip(
-          assets,
-          "sprites/vernan/level transition.png",
-          LEVEL_TRANS_SHEET_FRAMES,
-        ));
-
-      try {
-        const manifest = await assets.loadJson<{ files?: { path: string }[] }>("runtime-manifest.json");
-        const manifestPaths = (manifest.files ?? []).map((f) => f.path);
-        if (manifestPaths.length === 0) {
-          throw new Error("runtime-manifest.json has no files[] — run npm run rebuild-manifest");
-        }
-        const layersFile = await loadCostumeLayers(assets.url("data/costume_layers.json"));
-        const drawConfig = await CostumeDrawConfig.load(() =>
-          assets.loadJson("data/costume_slots.json"),
-        );
-        const bodyLibrary = await VernanBodyLibrary.load(assets, manifestPaths);
-        const artCache = await CostumeArtCache.load(
-          assets,
-          layersFile,
-          drawConfig,
-          manifestPaths,
-        );
-        if (bodyLibrary.hasIdle) {
-          costumeBundle = { bodyLibrary, artCache, drawConfig, layersFile };
-        } else {
-          console.warn(
-            "[vernan] costume bundle skipped: Vernan body idle art missing from runtime-manifest",
-          );
-        }
-      } catch (err) {
-        console.warn(
-          "[vernan] costume bundle failed to load (layered costumes disabled). " +
-            "Ensure public/assets/runtime-manifest.json exists (npm run rebuild-manifest).",
-          err,
-        );
-        costumeBundle = null;
-      }
-
-      enemySprites.crawler = await loadStrip(assets, "sprites/crawler.png", CRAWLER_FRAMES);
-      enemySprites.mouse = await loadStrip(assets, "sprites/mouse.png", MOUSE_FRAMES);
-      enemySprites.mouseHurt = await loadStrip(assets, "sprites/mouse hurt.png", MOUSE_FRAMES);
-      enemySprites.penisman = await loadStrip(assets, "sprites/penisman.png", PENISMAN_FRAMES);
-      enemySprites.jackBlue = await loadStrip(assets, "sprites/jack blue.png", JACK_BLUE_FRAMES);
-      enemySprites.jackBlueShield = await loadStrip(
-        assets,
-        "sprites/jack blue shield.png",
-        JACK_BLUE_FRAMES,
-      );
-      enemySprites.rollingHead = await loadStrip(
-        assets,
-        "sprites/rolling head cc.png",
-        ROLLING_HEAD_FRAMES,
-      );
-      enemySprites.multilimberBody = await loadStrip(
-        assets,
-        "sprites/multilimber body.png",
-        MULTILIMBER_FRAMES,
-      );
-      enemySprites.multilimberHead = await loadStrip(
-        assets,
-        "sprites/multilimber head.png",
-        MULTILIMBER_FRAMES,
-      );
-      enemySprites.multilimberEye = await loadStrip(
-        assets,
-        "sprites/multilimber eye.png",
-        MULTILIMBER_FRAMES,
-      );
-      enemySprites.goldenRoachWalk = await loadStrip(
-        assets,
-        "sprites/golden roach2.png",
-        GOLDEN_ROACH_WALK_FRAMES,
-      );
-      enemySprites.goldenRoachFly = await loadStrip(
-        assets,
-        "sprites/golden roach2 fly.png",
-        GOLDEN_ROACH_FLY_FRAMES,
-      );
-      await loadPossessedRig(assets);
-      await loadNephilimRig(assets);
-      const possessedFrames = Math.max(1, Math.floor(64 / POSSESSED_PART_W));
-      enemySprites.possessed = await loadStrip(
-        assets,
-        "sprites/bosses/possessed.png",
-        possessedFrames,
-      );
-      enemySprites.shinyPossessed = await loadStrip(
-        assets,
-        "sprites/bosses/shiny possessed.png",
-        possessedFrames,
-      );
-      enemySprites.nephilim = await loadStrip(assets, "sprites/bosses/nephilim.png", 7);
-      enemySprites.nephilimHealFx = await loadImageSafe(assets, "sprites/FX enemy heal.png");
-      possessedBulletBmp = await loadImageSafe(assets, "sprites/bosses/possessed bullet.png");
-      possessedBulletDieBmp = await loadImageSafe(
-        assets,
-        "sprites/bosses/possessed bullet die.png",
-      );
-      penisBulletBmp = await loadImageSafe(assets, "sprites/penis bullet.png");
-      penisBulletDieBmp = await loadImageSafe(assets, "sprites/penis bullet die.png");
-      jackBlueBoneBmp = await loadImageSafe(assets, "sprites/bone.png");
-      lilPossessedBulletBmp = await loadImageSafe(assets, "sprites/lil possessed bullet.png");
-      smokeBmp = await loadImageSafe(assets, "sprites/smoke.png");
-      lilPossessedFriendBmp = await loadImageSafe(assets, "sprites/lil possessed friend.png");
-      lilMinerFriendBmp = await loadImageSafe(assets, "sprites/lil miner friend.png");
-      whipPartBmp = await loadImageSafe(assets, "sprites/whip part.png");
-      lilPossessedBulletDieBmp = await loadImageSafe(
-        assets,
-        "sprites/lil possessed bullet die.png",
-      );
+      // Game is playable — finish floor 1, then stream the rest in the background.
+      await loadFirstFloorSprites();
+      void loadRemainingSprites().catch((err) => {
+        console.warn("[vernan] background sprite load failed", err);
+      });
     } catch (err) {
       bootError = err instanceof Error ? err.message : String(err);
       reportUnknownCrash(err, "boot");
@@ -2426,6 +2553,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       // Skip while dead or item-pickup overlay (Java !itemPickupOverlayActive).
       const wantPauseToggle =
         !submitDialogOpen &&
+        !loginDialogOpen &&
         !player.health.isDead &&
         !pickupOverlay.isActive() &&
         (input.pauseTogglePressed || pauseButtonTogglePending);
@@ -2439,6 +2567,29 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
       if (
         !submitDialogOpen &&
+        !loginDialogOpen &&
+        pauseLoginPending &&
+        paused
+      ) {
+        pauseLoginPending = false;
+        void beginLoginFromPause();
+        return;
+      }
+
+      if (
+        !submitDialogOpen &&
+        !loginDialogOpen &&
+        pauseViewBoardPending &&
+        paused
+      ) {
+        pauseViewBoardPending = false;
+        openLeaderboardView();
+        return;
+      }
+
+      if (
+        !submitDialogOpen &&
+        !loginDialogOpen &&
         (input.submitRunPressed || pauseSubmitPending) &&
         (paused || player.health.isDead)
       ) {
@@ -2467,7 +2618,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
       if (player.health.isDead) {
         runReachedDeath = true;
-        if (!submitDialogOpen && (input.jumpPressed || input.attackPressed)) {
+        if (!submitDialogOpen && !loginDialogOpen && (input.jumpPressed || input.attackPressed)) {
           player.health.max = player.stats.maxHealth;
           player.health.refill();
           leaderboardLocked = true;
@@ -2566,6 +2717,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       const refreshRoomArtAndCamera = () => {
         const s = session!;
         floorOrdinal = s.dungeon.floorOrdinal;
+        void ensureFloorSheets(floorOrdinal);
+        void ensureRoomBackground(s.roomId);
         if (tilesetProject) {
           enrichDungeonArt(s.dungeon, tilesetProject, contentSeedsOf(s.dungeon));
           resyncRoomEnemies(s, player);
@@ -2578,6 +2731,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
             s.dungeon.layout,
             bgRegistry,
           );
+          void ensureRoomBackground(s.roomId);
         }
         playerWasOnGround = player.onGround;
         snapCameraToPlayer(s);
@@ -3120,7 +3274,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         g.fillRect(0, 0, INTERNAL_WIDTH, WORLD_VIEWPORT_H);
         g.fillStyle = "#c8d2dc";
         g.font = "12px monospace";
-        g.fillText(bootError ? `boot error: ${bootError}` : "Loading sprites…", 16, 40);
+        g.fillText(bootError ? `boot error: ${bootError}` : bootStatus, 16, 40);
         g.fillStyle = "#12161c";
         g.fillRect(0, WORLD_VIEWPORT_H, INTERNAL_WIDTH, HUD_HEIGHT);
         fb.present();
@@ -3527,9 +3681,14 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           hudSprites.swordPickup,
           currentRunSummary(),
           leaderboardLocked,
+          isLoggedIn(),
         );
       } else {
-        pauseMenuHits = { submit: { x: 0, y: 0, w: 0, h: 0 } };
+        pauseMenuHits = {
+          login: { x: 0, y: 0, w: 0, h: 0 },
+          viewBoard: { x: 0, y: 0, w: 0, h: 0 },
+          submit: { x: 0, y: 0, w: 0, h: 0 },
+        };
       }
 
       for (const id of hudWeaponItemIdsToPreload(player, session.catalog)) {

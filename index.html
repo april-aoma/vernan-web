@@ -77,6 +77,9 @@
         gap: 0.5rem 0.75rem;
         margin-top: 8px;
       }
+      .page-footer .nav-btn {
+        margin: 0;
+      }
       .report-crash-btn {
         appearance: none;
         margin: 0;
@@ -209,9 +212,7 @@
   </head>
   <body>
     <h1 class="page-chrome">Vernan</h1>
-    <nav class="nav-row page-chrome" aria-label="Site">
-      <a class="nav-btn" href="./leaderboard.html">Leaderboard</a>
-      <a class="nav-btn" href="./crashes.html">Crashes</a>
+    <nav class="nav-row page-chrome" aria-label="Display">
       <button type="button" class="nav-btn" id="fullscreen-btn" aria-pressed="false">
         Fullscreen
       </button>
@@ -220,12 +221,13 @@
     <p class="hint page-chrome">
       Click the canvas for keyboard focus. Move with arrows/WASD, jump Z/Space,
       attack X, crouch Down, climb ladders with Up/Down. Stand in a door and press
-      Up/W to change rooms. Pause with Enter/Esc, then <code>Q</code> to submit &amp; quit
-      (also available on the death screen).
-      F3 toggles debug. Seed via <code>?seed=12345</code>.
+      Up/W to change rooms. Pause with Enter/Esc — Login, View Leaderboard, and
+      Submit Score are in the pause menu (<code>Q</code> submits &amp; quits; also on the
+      death screen). F3 toggles debug. Seed via <code>?seed=12345</code>.
       On phones: Fullscreen, or Add to Home Screen for a standalone app.
     </p>
     <div class="page-footer page-chrome">
+      <a class="nav-btn" href="./crashes.html">Crashes</a>
       <button type="button" class="report-crash-btn" id="report-crash-btn">
         Report crash
       </button>

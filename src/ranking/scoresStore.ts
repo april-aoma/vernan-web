@@ -1,4 +1,5 @@
 import type { RunSummary, ScoreEntry } from "./types";
+import { authHeaders, loadAuthSession } from "./authStore";
 import { webClientId } from "./clientVersion";
 
 const STORAGE_KEY = "vernan-web-scores";
@@ -91,17 +92,26 @@ export function sanitizeClientId(raw: unknown): string {
 
 function parseScoreList(data: unknown): ScoreEntry[] {
   if (!Array.isArray(data)) return [];
-  return data.filter(isScoreEntry).map((e) => ({
-    ...e,
-    enemiesKillDifficulty:
-      typeof (e as ScoreEntry).enemiesKillDifficulty === "number" &&
-      Number.isFinite((e as ScoreEntry).enemiesKillDifficulty)
-        ? Math.max(0, Math.floor((e as ScoreEntry).enemiesKillDifficulty))
-        : 0,
-    itemIds: normalizeItemIds((e as ScoreEntry).itemIds),
-    client: sanitizeClientId((e as ScoreEntry).client),
-    createdAt: formatUtcTimestamp(e.createdAt),
-  }));
+  return data.filter(isScoreEntry).map((e) => {
+    const raw = e as ScoreEntry & { userId?: unknown };
+    const userIdRaw = raw.userId;
+    const userId =
+      typeof userIdRaw === "string" && userIdRaw.trim().length > 0
+        ? userIdRaw.trim().slice(0, 64)
+        : "";
+    return {
+      ...e,
+      enemiesKillDifficulty:
+        typeof raw.enemiesKillDifficulty === "number" &&
+        Number.isFinite(raw.enemiesKillDifficulty)
+          ? Math.max(0, Math.floor(raw.enemiesKillDifficulty))
+          : 0,
+      itemIds: normalizeItemIds(raw.itemIds),
+      client: sanitizeClientId(raw.client),
+      userId,
+      createdAt: formatUtcTimestamp(e.createdAt),
+    };
+  });
 }
 
 /** Rank: floor → coins → kills → kill difficulty (desc), then earliest submit wins ties. */
@@ -242,13 +252,20 @@ export function downloadScoresMirror(entries: ScoreEntry[]): void {
 /**
  * Persist a run. Optional remote API when configured; always mirrors to localStorage.
  * Without an API, also downloads an updated `scores.json` to commit into the repo.
+ * Pass `asGuest: true` to submit without a Bearer token (white guest name on the board).
  */
 export async function submitScore(
   summary: RunSummary,
   playerName: string,
+  opts?: { asGuest?: boolean },
 ): Promise<ScoreEntry> {
   validateSummary(summary);
-  const name = sanitizePlayerName(playerName);
+  const asGuest = opts?.asGuest === true;
+  const session = asGuest ? null : loadAuthSession();
+  const api = scoresApiBase();
+  const name = sanitizePlayerName(
+    api && session ? session.displayName : playerName,
+  );
   savePlayerName(name);
 
   const entry: ScoreEntry = {
@@ -262,14 +279,17 @@ export async function submitScore(
     durationSec: summary.durationSec,
     itemIds: normalizeItemIds(summary.itemIds),
     client: webClientId(),
+    userId: session?.userId ?? "",
     createdAt: utcTimestampNow(),
   };
 
-  const api = scoresApiBase();
   if (api) {
+    const headers = session?.token
+      ? authHeaders()
+      : { "Content-Type": "application/json" };
     const res = await fetch(`${api}/api/scores`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         playerName: entry.playerName,
         seed: entry.seed,
@@ -283,7 +303,14 @@ export async function submitScore(
       }),
     });
     if (!res.ok) {
-      throw new Error(`Submit failed (${res.status})`);
+      let msg = `Submit failed (${res.status})`;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (typeof body.error === "string" && body.error) msg = body.error;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(msg);
     }
     const remote = (await res.json()) as Partial<ScoreEntry>;
     if (typeof remote.id === "string") entry.id = remote.id;
@@ -292,6 +319,13 @@ export async function submitScore(
     }
     if (typeof remote.client === "string") {
       entry.client = sanitizeClientId(remote.client) || entry.client;
+    }
+    if (typeof remote.playerName === "string") {
+      entry.playerName = sanitizePlayerName(remote.playerName);
+      savePlayerName(entry.playerName);
+    }
+    if (typeof remote.userId === "string") {
+      entry.userId = remote.userId.slice(0, 64);
     }
   }
 

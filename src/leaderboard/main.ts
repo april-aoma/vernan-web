@@ -17,6 +17,7 @@ import {
   listScores,
 } from "../ranking/scoresStore";
 import type { ScoreEntry } from "../ranking/types";
+import { isAuthenticatedScore } from "../ranking/types";
 
 function escapeHtml(s: string): string {
   return s
@@ -89,7 +90,12 @@ function cell(
   className: string,
   displayHtml: string,
   fullText: string,
-  opts?: { tipFormula?: string; selectable?: boolean },
+  opts?: {
+    tipFormula?: string;
+    selectable?: boolean;
+    style?: string;
+    verified?: boolean;
+  },
 ): string {
   const selectable = opts?.selectable !== false;
   const title = opts?.tipFormula
@@ -99,7 +105,15 @@ function cell(
     ? ` data-tip="${escapeHtml(opts.tipFormula)}" tabindex="0"`
     : "";
   const selectClass = selectable ? " cell-copyable" : "";
-  return `<span class="${className}${selectClass}" title="${title}"${tipAttr} data-full="${escapeHtml(fullText)}">${displayHtml}</span>`;
+  const verified = opts?.verified === true;
+  const verifiedAttr = verified ? ` data-verified="1"` : "";
+  // Inline color so verified names stay green even if stylesheet lags a deploy.
+  const styleAttr = verified
+    ? ` style="color:#5dcf6e"`
+    : opts?.style
+      ? ` style="${escapeHtml(opts.style)}"`
+      : "";
+  return `<span class="${className}${selectClass}" title="${title}"${tipAttr}${verifiedAttr}${styleAttr} data-full="${escapeHtml(fullText)}">${displayHtml}</span>`;
 }
 
 function renderHeader(active: SortKey, dir: SortDir): string {
@@ -130,12 +144,18 @@ function renderRow(r: ScoreEntry, rank: number, delay: number): string {
   const seed = String(r.seed);
   const items = itemCount(r);
   const icon = rank <= 10 ? 48 : 32;
+  const verified = isAuthenticatedScore(r);
   return `
     <div class="ladder-bay ${placeClass(rank)}" role="listitem" data-score-id="${escapeHtml(r.id)}">
       <span class="rail" aria-hidden="true"></span>
       <div class="score score-cols" style="animation-delay: ${delay}s">
         ${cell("col-rank rank", `#${rank}`, `#${rank}`)}
-        ${cell("col-name player", escapeHtml(r.playerName), r.playerName)}
+        ${cell(
+          `col-name player${verified ? " verified" : ""}`,
+          escapeHtml(r.playerName),
+          r.playerName,
+          { verified },
+        )}
         ${cell("col-total total-score", `<strong>${tot}</strong>`, String(tot), { tipFormula: TOTAL_SCORE_FORMULA })}
         ${cell("col-floor stat", `<strong>${r.floorReached}</strong>`, String(r.floorReached))}
         ${cell("col-coins stat", `<strong>${r.coins}</strong>`, String(r.coins))}
