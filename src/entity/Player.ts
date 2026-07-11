@@ -216,7 +216,8 @@ export class Player {
   readonly whipSim = new WhipSim();
   private readonly whipAimInput = new WhipAimInput();
   private whipWiggleActive = false;
-  private whipWiggleHitCooldown = 0;
+  /** Per-enemy wiggle hit cooldown (Java IdentityHashMap). */
+  private readonly whipWiggleHitCooldown = new Map<CombatEnemy, number>();
   private kuriboStompAllowed = true;
   private kuriboHopClearedSinceStomp = false;
   private kuriboStompAwaitingApexAfterBounce = false;
@@ -259,6 +260,8 @@ export class Player {
   private getupMouthRungTy = -1;
   private getupLatchDown = false;
   private getupLatchUp = false;
+  /** One follow-through frame after finish keeping latch direction (Java getupPostLatchFrames). */
+  private getupPostLatchFrames = 0;
   /** Draw getup one more frame after LADDER_TOP finishes (Java getupRenderHold). */
   private getupRenderHold = false;
   /** Frames left to accept second Down for mouth mount. */
@@ -685,7 +688,7 @@ export class Player {
     this.tickBlackHeartBeat(enemies);
 
     // Buffer jump / attack even during hitlag so presses aren't eaten.
-    if (input.jumpPressed) this.jumpBufferTimer = JUMP_BUFFER;
+    if (input.jumpPressed && this.getupLockFrames === 0) this.jumpBufferTimer = JUMP_BUFFER;
     if (input.attackPressed) this.attackBufferTimer = ATTACK_BUFFER;
 
     // Offensive hitlag (sword land): freeze player; still allow contact to queue defensive stun.
@@ -732,18 +735,7 @@ export class Player {
       this.hitlagShakeY = 0;
     }
 
-    // Getup pose: freeze movement; count down then finish mount/dismount.
-    if (this.getupLockFrames > 0) {
-      this.vx = 0;
-      this.vy = 0;
-      this.climbing = false;
-      this.getupLockFrames--;
-      if (this.getupLockFrames === 0) {
-        this.finishGetup(map);
-      }
-      this.tickAnim(dt);
-      return;
-    }
+    // Clear one-frame render hold at tick start (Java); pose draw used the prior frame.
     if (this.getupRenderHold) {
       this.getupRenderHold = false;
     }
@@ -759,8 +751,22 @@ export class Player {
       return;
     }
 
+    const getupMoveLock = this.getupLockFrames > 0;
+    const getupActionLock = getupMoveLock;
     const landingLocked = this.landingLockFrames > 0;
-    const downRaw = input.down && !input.up;
+    let downRaw = input.down && !input.up;
+    let upHeld = input.up;
+    // Latch direction held through pose + one follow-through frame (Java).
+    if (this.getupLockFrames > 0 || this.getupPostLatchFrames > 0) {
+      if (this.getupLatchDown) {
+        downRaw = true;
+        upHeld = false;
+      }
+      if (this.getupLatchUp) {
+        upHeld = true;
+        downRaw = false;
+      }
+    }
     if (landingLocked && this.onGround && downRaw) this.crouchQueuedFromLanding = true;
     if (!landingLocked && !downRaw) this.crouchQueuedFromLanding = false;
     // Suppress Down during landing lock; apply queued crouch once lock ends.
@@ -769,7 +775,12 @@ export class Player {
       (!landingLocked && this.crouchQueuedFromLanding && this.onGround);
 
     // Mouth double-tap Down → mount getup (before crouch height).
-    this.tickMouthDoubleTapMount(input, map, landingLocked);
+    const mouthMountedThisTick = this.tickMouthDoubleTapMount(
+      input,
+      map,
+      landingLocked,
+      getupActionLock,
+    );
 
     // Single Down on a mouth deck crouches; getup owns the drop (don't fall through).
     // One-ways stay solid while crouching — only mouth+walk-off uses dropsThroughOneWayPlatformTile (Java).
@@ -788,18 +799,22 @@ export class Player {
 
     const left = input.left;
     const right = input.right;
-    if (input.jumpPressed) {
+    if (input.jumpPressed && !getupActionLock) {
       this.disc.tryWallJumpOnPress(dt, left, right, this.discHost());
     }
-    this.disc.trySlideFromChord(input, map, left, right, landingLocked, this.discHost());
-    this.disc.tryAirDodgeFromBuffer(dt, input, map, left, right, this.discHost());
+    if (!getupActionLock) {
+      this.disc.trySlideFromChord(input, map, left, right, landingLocked, this.discHost());
+      this.disc.tryAirDodgeFromBuffer(dt, input, map, left, right, this.discHost());
+    }
 
     this.updateLemonShot(dt, input, subweaponHost);
     this.updateSubweaponAnim(dt, input, subweaponHost);
     this.carry.update(dt, input, this, gardeningHost, subweaponHost);
 
     // Ladder jump-off before movement (Java): immediate exit, no jumpsquat.
-    this.tryLadderJumpOff(input);
+    if (!getupActionLock) {
+      this.tryLadderJumpOff(input);
+    }
 
     // SHY_MASK charge (Java shyMaskCharge.tick before jump).
     const shyMaskCanCharge =
@@ -807,7 +822,7 @@ export class Player {
       this.attackPhase === 0 &&
       !this.isSubweaponAnimating() &&
       !this.climbing &&
-      this.getupLockFrames === 0 &&
+      !getupActionLock &&
       !this.shyMaskChargeSuppressed();
     this.shyMaskCharge.tick(
       this.stats.shyMaskStacks > 0,
@@ -822,11 +837,14 @@ export class Player {
       }
     }
 
-    if (this.climbing) {
+    if (getupMoveLock) {
+      this.vx = 0;
+      this.vy = 0;
+    } else if (this.climbing) {
       this.cancelAttack();
       this.disc.cancelHeavyAttack();
       this.cancelSubweaponAnim();
-      this.updateClimbMove(dt, input, map);
+      this.updateClimbMove(dt, input, map, upHeld, downRaw);
     } else {
       const steerDir = (left ? -1 : 0) + (right ? 1 : 0);
       this.disc.applyMovementOverrides(this.discHost(), steerDir);
@@ -842,7 +860,11 @@ export class Player {
 
     const xBeforeMove = this.x;
     const wasOnGroundPreMove = this.wasOnGround;
-    if (!this.disc.runAirDodgeMoveStep(dt, map, this.discHost())) {
+    if (getupMoveLock || this.getupLockFrames > 0) {
+      // Pose lock: no integrate (Java getupMoveLock + live lock after mid-tick beginGetup).
+      this.vx = 0;
+      this.vy = 0;
+    } else if (!this.disc.runAirDodgeMoveStep(dt, map, this.discHost())) {
       this.moveAndCollide(dt, map);
     }
     this.heelys.syncPumpOnMomentumStop(this.stats.heelysStacks, this.vx, this.stats);
@@ -861,7 +883,7 @@ export class Player {
       this.discHost(),
     );
     // Latch/clear uses post-collide pose (Java).
-    this.updateClimbLatch(input, map);
+    this.updateClimbLatch(input, map, upHeld, downRaw);
     this.afterGroundTimers(dt);
 
     if (
@@ -912,13 +934,15 @@ export class Player {
       );
     }
     if (!this.climbing) {
-      // Input-driven crouch before height resolve (Java: crouching = onGround && down).
-      if (this.normalJumpAirborne && !this.crouchJumpMode) {
+      // Java: mouth mount clears crouch for the begin frame even while Down is held for latch.
+      if (mouthMountedThisTick) {
+        this.crouching = false;
+      } else if (this.normalJumpAirborne && !this.crouchJumpMode) {
         this.crouching = false;
       } else {
         this.crouching = this.onGround && crouchHeld;
       }
-      this.applyCrouchHeight(crouchHeld, map);
+      this.applyCrouchHeight(map);
       if (this.crouchJumpMode && !this.onGround) {
         this.crouching = true;
       }
@@ -939,6 +963,25 @@ export class Player {
     if (this.pendingKuriboBounce && this.hitlagFrames <= 0) {
       this.finishPendingKuriboBounce(input);
     }
+
+    // Getup countdown at end of tick (Java): freeze climb, then finish mount/dismount.
+    if (this.getupLockFrames > 0) {
+      this.vx = 0;
+      this.vy = 0;
+      this.climbing = false;
+      this.getupLockFrames--;
+      if (this.getupLockFrames === 0) {
+        this.finishGetup(map);
+      }
+    }
+    if (this.getupPostLatchFrames > 0) {
+      this.getupPostLatchFrames--;
+      if (this.getupPostLatchFrames === 0) {
+        this.getupLatchDown = false;
+        this.getupLatchUp = false;
+      }
+    }
+
     this.tickAnim(dt);
     this.tickHurtAirAnim(dt);
   }
@@ -992,8 +1035,6 @@ export class Player {
       crackAim[0], crackAim[1], wiggleAxes[0], wiggleAxes[1],
       atOrPastCrack, combatActive, this.whipSim.isDeployed(),
     );
-    this.whipWiggleActive = this.whipSim.isDeployed() && !combatActive && input.attack;
-    if (this.whipWiggleHitCooldown > 0) this.whipWiggleHitCooldown -= dt;
   }
 
   private whipCombatActive(): boolean {
@@ -1008,10 +1049,8 @@ export class Player {
   }
 
   private whipFrameIndex(): number {
-    if (this.attackPhase === 1) return 0;
-    if (this.attackPhase === 2) return 1;
-    if (this.attackPhase === 3) return 2;
-    return 0;
+    if (this.disc.isHeavyActive()) return this.heavyAttackFrameIndex();
+    return this.attackAnimFrameIndex();
   }
 
   private whipFrameW(): number {
@@ -1022,18 +1061,28 @@ export class Player {
     return this.disc.isHeavyActive() ? 48 : 32;
   }
 
+  /**
+   * Hold-X recover wiggle hits only (Java applyWhipWiggleHits).
+   * Crack damage goes through {@link applyAttackHits} via whip {@link attackHitboxPose}.
+   */
   applyWhipHits(enemies: CombatEnemy[]): number {
-    if (!this.usesWhip() || !this.whipSim.isDeployed()) return 0;
+    if (!this.usesWhip() || !this.whipWiggleActive || !this.whipSim.isActive()) return 0;
+    const pose = this.whipSim.hitboxPose();
+    if (!pose) return 0;
     let maxFreeze = 0;
-    const baseDmg = this.stats.outgoingDamage() * this.swordDamageMult;
-    const wiggle = this.whipWiggleActive;
-    if (wiggle && this.whipWiggleHitCooldown > 0) return 0;
+    const baseDmg =
+      this.effectiveOutgoingDamage(this.stats.outgoingDamage()) *
+      (this.groundCrouchAttack ? CROUCH_ATTACK_DAMAGE_MULT : 1) *
+      WhipSim.WIGGLE_DAMAGE_MULT;
+    const knockKind = swordKnockbackKind(this.swordVisual, this.groundCrouchAttack);
     for (const e of enemies) {
       if (e.isDead()) continue;
+      const cd = this.whipWiggleHitCooldown.get(e);
+      if (cd != null && cd > 0) continue;
+      if (!enemyIntersectsMelee(e, pose)) continue;
       const region = this.whipSim.hitRegionAgainst(e);
       if (region === "NONE") continue;
-      let dmg = region === "TIP" ? baseDmg * WhipSim.TIP_DAMAGE_MULT : baseDmg;
-      if (wiggle) dmg *= WhipSim.WIGGLE_DAMAGE_MULT;
+      const dmg = region === "TIP" ? baseDmg * WhipSim.TIP_DAMAGE_MULT : baseDmg;
       let ff = this.scaleOutgoingHitstun(freezeFrames(dmg));
       if (region === "TIP") ff += WhipSim.TIP_HITLAG_BONUS_FRAMES;
       const strike: WeaponStrike = {
@@ -1042,19 +1091,23 @@ export class Player {
         attackerX: this.x,
         attackerW: this.w,
         facing: this.facing,
-        knockKind: swordKnockbackKind(this.swordVisual, this.groundCrouchAttack),
+        knockKind,
       };
       if (e.applyWeaponStrike(strike)) {
         maxFreeze = Math.max(maxFreeze, ff);
         AutismCombat.notifyPlayerDamageDealt(e, dmg);
         KaleidoscopeEyeCombat.notifyEnemyHpLoss(e, dmg);
         this.applySwordHitItemProcs(e);
+        this.whipWiggleHitCooldown.set(e, WhipTuningValues.WIGGLE_HIT_COOLDOWN_SEC);
       }
     }
-    if (wiggle && maxFreeze > 0) {
-      this.whipWiggleHitCooldown = WhipTuningValues.WIGGLE_HIT_COOLDOWN_SEC;
-    }
     if (maxFreeze > 0) this.hitlagFrames = Math.max(this.hitlagFrames, maxFreeze);
+    const step = 1 / FIXED_STEP_HZ;
+    for (const [e, cd] of this.whipWiggleHitCooldown) {
+      const next = cd - step;
+      if (next <= 0) this.whipWiggleHitCooldown.delete(e);
+      else this.whipWiggleHitCooldown.set(e, next);
+    }
     return maxFreeze;
   }
 
@@ -1241,16 +1294,22 @@ export class Player {
     return this.landingLockFrames > 0;
   }
 
-  /** True while mount/dismount getup pose is active (or one-frame render hold). */
+  /** True while mount/dismount getup movement lock is active (Java isGetupLocked). */
   isGetupLocked(): boolean {
+    return this.getupLockFrames > 0;
+  }
+
+  /** True while the getup strip should draw (includes one post-finish hold frame). */
+  isGetupPoseActive(): boolean {
     return this.getupLockFrames > 0 || this.getupRenderHold;
   }
 
   /** Getup sheet frame 0..n-1 from remaining lock (Java draw path). */
   getupAnimFrameIndex(frameCount: number): number {
     if (frameCount <= 1) return 0;
-    if (this.getupRenderHold) return frameCount - 1;
-    const elapsed = GETUP_LOCK_FRAMES - this.getupLockFrames;
+    const remaining =
+      this.getupLockFrames > 0 ? this.getupLockFrames : this.getupRenderHold ? 1 : 0;
+    const elapsed = GETUP_LOCK_FRAMES - remaining;
     return Math.max(0, Math.min(frameCount - 1, elapsed));
   }
 
@@ -1510,6 +1569,9 @@ export class Player {
       fuzzyHatStacks: p.inventory.stacksOf("FUZZY_HAT"),
       headbandStacks: p.inventory.stacksOf("HEADBAND"),
       gemSwordStacks: p.gemSwordStacks,
+      usesWhip: () => p.usesWhip(),
+      whipHitboxPose: () => (p.whipSim.isDeployed() ? p.whipSim.hitboxPose() : null),
+      whipHitRegionAgainst: (e) => p.whipSim.hitRegionAgainst(e),
       applySwordHitItemProcs: (e) => p.applySwordHitItemProcs(e),
       beginOffensiveHitlag: (frames) => {
         p.hitlagFrames = Math.max(p.hitlagFrames, frames);
@@ -1662,6 +1724,9 @@ export class Player {
     const hb = this.headband.attackHitboxPose(this.headbandHost());
     if (hb) return hb;
     if (this.attackPhase !== 2 || this.usesLemonBuster()) return null;
+    if (this.usesWhip()) {
+      return this.whipSim.isDeployed() ? this.whipSim.hitboxPose() : null;
+    }
     return swordMeleeHitboxPose({
       visual: this.swordVisual,
       x: this.x,
@@ -2078,6 +2143,31 @@ export class Player {
         continue;
       }
       if (!enemyIntersectsMelee(e, swordPose)) continue;
+      if (this.usesWhip()) {
+        const region = this.whipSim.hitRegionAgainst(e);
+        if (region === "NONE") continue;
+        const hitDmg = region === "TIP" ? dmg * WhipSim.TIP_DAMAGE_MULT : dmg;
+        let ff = this.scaleOutgoingHitstun(freezeFrames(hitDmg));
+        if (region === "TIP") ff += WhipSim.TIP_HITLAG_BONUS_FRAMES;
+        const strike: WeaponStrike = {
+          damage: hitDmg,
+          freezeFrames: ff,
+          attackerX: this.x,
+          attackerW: this.w,
+          facing: this.facing,
+          knockKind,
+        };
+        const hit = e.applyWeaponStrike(strike);
+        if (hit) {
+          any = true;
+          maxFreeze = Math.max(maxFreeze, ff);
+          AutismCombat.notifyPlayerDamageDealt(e, hitDmg);
+          KaleidoscopeEyeCombat.notifyEnemyHpLoss(e, hitDmg);
+          this.applySwordHitItemProcs(e);
+          onHit?.(e, strike, sword, "slash");
+        }
+        continue;
+      }
       const ff = this.scaleOutgoingHitstun(freezeFrames(dmg));
       const strike: WeaponStrike = {
         damage: dmg,
@@ -2370,6 +2460,10 @@ export class Player {
     this.attackStartedOnGround = false;
     this.groundCrouchAttack = false;
     this.attackLateRecoverCueFired = false;
+    this.whipWiggleActive = false;
+    this.whipWiggleHitCooldown.clear();
+    this.whipSim.reset();
+    this.whipAimInput.reset();
   }
 
   private swordAttackCueKey(): string {
@@ -2623,6 +2717,8 @@ export class Player {
     this.attackBufferTimer = 0;
     this.attackPhase = 1;
     this.attackHitLanded = false;
+    this.whipWiggleHitCooldown.clear();
+    this.whipWiggleActive = false;
     this.attackStartedOnGround = this.onGround;
     this.groundCrouchAttack =
       (this.onGround && this.crouching) ||
@@ -2681,6 +2777,20 @@ export class Player {
       return;
     }
     this.attackTimer -= dt;
+    // Hold X during whip recover: loop early-recover and keep tip wiggle active (Java).
+    if (this.attackPhase === 3 && this.usesWhip() && input.attack) {
+      const earlySec =
+        (this.attackRecoverEarlyFramesThisSwing() / 60) * WhipTuningValues.WIGGLE_RECOVER_EARLY_MULT;
+      const totalSec = this.attackRecoverFramesThisSwing() / 60;
+      const earlyThreshold = totalSec - earlySec;
+      if (this.attackTimer <= earlyThreshold) {
+        this.attackTimer = totalSec;
+      }
+      this.whipWiggleActive = this.attackTimer > earlyThreshold;
+      this.tickAttackAnimCues();
+      return;
+    }
+    this.whipWiggleActive = false;
     if (this.attackTimer > 0) {
       this.tickAttackAnimCues();
       return;
@@ -3021,15 +3131,18 @@ export class Player {
     this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - dt);
   }
 
-  private applyCrouchHeight(crouchHeld: boolean, map: TileMap): void {
+  private applyCrouchHeight(map: TileMap): void {
     if (this.climbing) return;
     let targetH = PLAYER_STAND_H;
     if (this.jumpSquatRemaining > 0) {
       targetH = this.crouchJumpMode ? PLAYER_CROUCH_H : PLAYER_STAND_H;
     } else if (this.crouchJumpMode && !this.onGround) {
       targetH = PLAYER_CROUCH_H;
-    } else if (crouchHeld && this.onGround) {
-      targetH = PLAYER_CROUCH_H;
+    } else if (!this.onGround) {
+      targetH = PLAYER_STAND_H;
+    } else {
+      // Java: targetH = crouching ? CROUCH_H : STAND_H (not raw Down — mount begin clears crouch while latch holds Down).
+      targetH = this.crouching ? PLAYER_CROUCH_H : PLAYER_STAND_H;
     }
     this.applyHitboxHeight(targetH, map);
     // Jumpsquat at STAND_H no-ops applyHitboxHeight; force crouch under a 1-tile ceiling (Java).
@@ -3452,19 +3565,18 @@ export class Player {
     );
   }
 
-  /**
-   * Sticky climb latch after collide (Java Player post-step block).
-   * Stays climbing without requiring rung overlap every frame; Up/Down mount rules;
-   * mouth decks use double-tap getup (not direct Down latch).
-   */
-  private updateClimbLatch(input: Input, map: TileMap): void {
+  private updateClimbLatch(
+    input: Input,
+    map: TileMap,
+    upHeldIn: boolean = input.up,
+    downIn: boolean = input.down && !input.up,
+  ): void {
     if (this.getupLockFrames > 0) return;
     if (this.carry.blocksClimb()) return;
+    if (this.blocksLadderLatch()) return;
 
-    let upHeld = input.up;
-    let down = input.down && !input.up;
-    // Post-getup latch: keep direction for one follow-through frame (Java getupPostLatchFrames).
-    // (Handled inside finishGetup via immediate climb vy; latch flags cleared there.)
+    let upHeld = upHeldIn;
+    let down = downIn;
 
     const onLadderNow = this.overlapsLadderOrPlatformShaftBelow(map);
 
@@ -3502,6 +3614,7 @@ export class Player {
       if (latchUp || latchDown) {
         if (!this.climbing) {
           this.captureActiveClimbShaft(map);
+          this.noteLadderGrabbed();
           this.vx = 0;
           this.vy = 0;
           this.onGround = false;
@@ -3522,20 +3635,28 @@ export class Player {
     }
   }
 
-  private updateClimbMove(dt: number, input: Input, map: TileMap): void {
-    const upHeld = input.up;
-    const down = input.down && !input.up;
+  private updateClimbMove(
+    dt: number,
+    input: Input,
+    map: TileMap,
+    upHeldIn: boolean = input.up,
+    downIn: boolean = input.down && !input.up,
+  ): void {
+    const upHeld = upHeldIn;
+    const down = downIn;
     // Shaft centering runs after collide (Java moveAndCollide) — not here.
     this.vx = approach(this.vx, 0, this.stats.airBrake * dt);
 
     if (down) {
       this.vy = this.stats.climbSpeed;
     } else if (upHeld) {
-      if (this.canStepOffLadderTop(map)) {
+      if (this.getupLockFrames === 0 && this.canStepOffLadderTop(map)) {
         this.beginGetup("ladder_top", map, false, true);
         this.vy = 0;
-      } else {
+      } else if (this.getupLockFrames === 0) {
         this.vy = -this.stats.climbSpeed;
+      } else {
+        this.vy = 0;
       }
     } else {
       this.vy = 0;
@@ -3549,11 +3670,17 @@ export class Player {
 
   /**
    * Grounded mouth: first Down starts tap window (crouch); second Down within window → mount getup.
+   * @returns true when mount getup began this tick (Java mouthMountReady).
    */
-  private tickMouthDoubleTapMount(input: Input, map: TileMap, landingLocked: boolean): void {
-    if (landingLocked || this.getupLockFrames > 0) {
+  private tickMouthDoubleTapMount(
+    input: Input,
+    map: TileMap,
+    landingLocked: boolean,
+    getupActionLock: boolean,
+  ): boolean {
+    if (landingLocked || getupActionLock) {
       this.ladderMouthDownTapFrames = 0;
-      return;
+      return false;
     }
     if (!this.standingOnMouthDeckForMount(map)) {
       this.ladderMouthDownTapFrames = 0;
@@ -3561,7 +3688,7 @@ export class Player {
       this.ladderMouthDownTapFrames--;
     }
 
-    if (!input.downPressed) return;
+    if (!input.downPressed || getupActionLock) return false;
 
     let doubleTap = false;
     if (this.ladderMouthDownTapFrames > 0 && this.standingOnMouthDeckForMount(map)) {
@@ -3571,17 +3698,29 @@ export class Player {
       this.ladderMouthDownTapFrames = LADDER_MOUTH_DOUBLE_TAP_FRAMES;
     }
 
-    if (
+    const droppableLadderMouth = this.ladderShaftBelowFeetPlatform(map);
+    const groundedForLadderThrough =
+      this.onGround ||
+      (droppableLadderMouth &&
+        this.vy >= 0 &&
+        this.standPoseFeetOnSupportIgnoringClimb(map));
+    const mouthMountReady =
       doubleTap &&
-      this.onGround &&
+      groundedForLadderThrough &&
+      !this.blocksLadderLatch() &&
+      !this.carry.blocksOneWayDrop() &&
       this.standingOnMouthDeckForMount(map) &&
       !this.climbing &&
-      this.attackPhase === 0
-    ) {
+      !this.carry.blocksClimb() &&
+      this.getupLockFrames === 0;
+
+    if (mouthMountReady) {
       this.crouching = false;
       this.walkOffLedgeActive = false;
       this.beginGetup("ladder_mount", map, true, false);
+      return true;
     }
+    return false;
   }
 
   private beginGetup(
@@ -3594,6 +3733,7 @@ export class Player {
     this.getupLockFrames = GETUP_LOCK_FRAMES;
     this.getupLatchDown = latchDown;
     this.getupLatchUp = latchUp;
+    this.getupPostLatchFrames = 0;
     this.getupRenderHold = false;
     this.climbing = false;
     this.vx = 0;
@@ -3627,6 +3767,7 @@ export class Player {
     this.getupMouthRungTy = -1;
     this.getupLatchDown = false;
     this.getupLatchUp = false;
+    this.getupPostLatchFrames = 0;
     this.getupRenderHold = false;
   }
 
@@ -3636,12 +3777,15 @@ export class Player {
       if (this.getupMouthCol >= 0 && this.getupMouthRungTy >= 0) {
         this.climbShaftTx = this.getupMouthCol;
         this.climbing = true;
+        this.noteLadderGrabbed();
         this.onGround = false;
         this.vx = 0;
         this.vy = this.getupLatchDown ? this.stats.climbSpeed : 0;
+        // Height first, then land snap — Java finishGetup. Setting y while still crouched
+        // then growing shifts feet by STAND_H - CROUCH_H (~6px) above the rung.
+        this.applyHitboxHeight(PLAYER_STAND_H, map);
         this.x = this.getupLandX;
         this.y = this.getupLandY;
-        this.applyHitboxHeight(PLAYER_STAND_H, map);
         this.crouching = false;
         this.normalJumpAirborne = false;
         this.crouchJumpMode = false;
@@ -3655,14 +3799,16 @@ export class Player {
       this.vy = 0;
       this.applyHitboxHeight(PLAYER_STAND_H, map);
       this.onGround = this.isGrounded(map);
-      this.walkOffLedgeActive = false;
-      // Latch-up was held through the pose; no post-frame climb (we're on the deck).
-      void this.getupLatchUp;
+      if (this.onGround) {
+        this.walkOffLedgeActive = false;
+      }
     }
+    if (this.getupLatchDown || this.getupLatchUp) {
+      this.getupPostLatchFrames = 1;
+    }
+    // Mount enters climb on the shaft — hold would draw getup one more frame there (visible flicker).
     this.getupRenderHold = finished === "ladder_top";
     this.getupKind = "none";
-    this.getupLatchDown = false;
-    this.getupLatchUp = false;
   }
 
   private computeGetupMountLadderPosition(): void {
@@ -3690,6 +3836,7 @@ export class Player {
     this.getupMouthDeckTy = -1;
     this.getupMouthRungTy = -1;
     let col = this.climbShaftColumn(map);
+    if (col < 0) col = this.primaryLadderColumn(map);
     if (col < 0) return;
     let rungTy = this.topIntersectedLadderRowInColumn(map, col);
     let deckTy = -1;
@@ -3713,7 +3860,8 @@ export class Player {
       this.getupLandY = this.getupMouthDeckTy * TILE_SIZE - PLAYER_STAND_H;
       return;
     }
-    const col = this.climbShaftColumn(map);
+    let col = this.climbShaftColumn(map);
+    if (col < 0) col = this.primaryLadderColumn(map);
     if (col < 0) {
       this.getupLandX = this.x;
       this.getupLandY = this.y;
@@ -3732,6 +3880,24 @@ export class Player {
     }
     this.getupLandX = col * TILE_SIZE + (TILE_SIZE - this.w) * 0.5;
     this.getupLandY = deckTy * TILE_SIZE - PLAYER_STAND_H;
+  }
+
+  private primaryLadderColumn(map: TileMap): number {
+    return this.nearestIntersectingLadderColumn(map);
+  }
+
+  private noteLadderGrabbed(): void {
+    this.disc.refreshAirDodgeFromLadder();
+  }
+
+  /** Sword/heavy/headband/subweapon/slide/throw must finish before ladder latch or mount. */
+  private blocksLadderLatch(): boolean {
+    return (
+      this.isAttacking() ||
+      this.isSubweaponAnimating() ||
+      this.carry.isThrowing() ||
+      this.disc.slideActive
+    );
   }
 
   private captureActiveClimbShaft(map: TileMap): void {
@@ -3882,8 +4048,10 @@ export class Player {
     // Block direct Down latch on resting mouth decks — double-tap mount getup owns those.
     if (this.getupLockFrames > 0 || !this.onMouthPlatformForMountGetup(map)) return false;
     if (this.climbing) return false;
-    // Descending past the mouth (not resting): allow re-grab.
-    if (!this.onGround && this.vy > 0) return false;
+    // Crouch hull can flicker airborne while stand-feet still rest on the mouth — gate on stand support (Java).
+    const restingOnMouthDeck =
+      this.onGround || this.standPoseFeetOnSupportIgnoringClimb(map);
+    if (!restingOnMouthDeck && this.vy > 0) return false;
     return true;
   }
 
@@ -3906,9 +4074,10 @@ export class Player {
   }
 
   private mouthShaftColumnFromStrictFeet(map: TileMap): number {
-    const centerX = this.x + this.w * 0.5;
-    const leftTile = Math.floor((this.left() + 0.001) / TILE_SIZE);
-    const rightTile = Math.floor((this.right() - 0.001) / TILE_SIZE);
+    const r = this.standCollisionPoseAt(this.x, this.y).bounds();
+    const centerX = r.x + r.w * 0.5;
+    const leftTile = Math.floor((r.x + 0.001) / TILE_SIZE);
+    const rightTile = Math.floor((r.x + r.w - 0.001) / TILE_SIZE);
     const scanLo = Math.max(0, leftTile - 1);
     const scanHi = Math.min(map.width - 1, rightTile + 1);
     let bestTx = -1;
@@ -3926,22 +4095,74 @@ export class Player {
   }
 
   private mouthDeckRowUnderFeet(map: TileMap, columnTx: number): number {
-    const tyCenter = Math.floor((this.bottom() - 1e-3) / TILE_SIZE);
+    const r = this.standCollisionPoseAt(this.x, this.y).bounds();
+    const footBottom = r.y + r.h;
+    const tyCenter = Math.floor((footBottom - 1e-3) / TILE_SIZE);
     for (let dty = -1; dty <= 1; dty++) {
       const ty = tyCenter + dty;
       if (ty < 0 || ty >= map.height) continue;
       if (!map.isPlatformTile(columnTx, ty)) continue;
       if (mouthRungRowBelowDeck(map, columnTx, ty) < 0) continue;
       const deckTop = ty * TILE_SIZE;
-      if (this.bottom() < deckTop - 1e-3) continue;
-      if (this.bottom() > deckTop + PLATFORM_DECK_SLACK_PX) continue;
+      if (footBottom < deckTop - 1e-3) continue;
+      if (footBottom > deckTop + PLATFORM_DECK_SLACK_PX) continue;
       const tileLeft = columnTx * TILE_SIZE;
       const tileRight = (columnTx + 1) * TILE_SIZE;
-      const overlap = Math.min(this.right(), tileRight) - Math.max(this.left(), tileLeft);
+      const overlap = Math.min(r.x + r.w, tileRight) - Math.max(r.x, tileLeft);
       if (overlap + 1e-6 < LADDER_MOUTH_LATCH_MIN_OVERLAP_PX) continue;
       return ty;
     }
     return -1;
+  }
+
+  /**
+   * Standing hull on support even when crouch clears onGround (Java standPoseFeetOnSupportIgnoringClimb).
+   * Used for mouth mount readiness and drop-through latch gating.
+   */
+  private standPoseFeetOnSupportIgnoringClimb(map: TileMap): boolean {
+    if (this.vy < 0) return false;
+    const pose = this.standCollisionPoseAt(this.x, this.y);
+    const r = pose.bounds();
+    const leftTile = Math.floor((r.x + 0.001) / TILE_SIZE);
+    const rightTile = Math.floor((r.x + r.w - 0.001) / TILE_SIZE);
+    const footBottom = r.y + r.h;
+    const tyCenter = Math.floor((footBottom - 1e-3) / TILE_SIZE);
+    const scanLo = Math.max(0, leftTile - 1);
+    const scanHi = Math.min(map.width - 1, rightTile + 1);
+    for (let dty = -1; dty <= 1; dty++) {
+      const ty = tyCenter + dty;
+      if (ty < 0 || ty >= map.height) continue;
+      for (let tx = leftTile; tx <= rightTile; tx++) {
+        if (!pose.intersectsRect({ x: tx * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE })) {
+          continue;
+        }
+        if (map.isSolidTile(tx, ty)) return true;
+      }
+      for (let tx = scanLo; tx <= scanHi; tx++) {
+        if (!map.isPlatformTile(tx, ty)) continue;
+        const tileLeft = tx * TILE_SIZE;
+        const tileRight = (tx + 1) * TILE_SIZE;
+        if (r.x + r.w <= tileLeft + 1e-6 || r.x >= tileRight - 1e-6) continue;
+        const deckTop = ty * TILE_SIZE;
+        if (footBottom >= deckTop - 1e-3 && footBottom <= deckTop + PLATFORM_DECK_SLACK_PX) {
+          return true;
+        }
+      }
+    }
+    this.rebuildStandSegments();
+    if (
+      StandSurfaceQuery.isGroundedUnderFeet(
+        r.x,
+        r.x + r.w,
+        footBottom,
+        this.vy,
+        this.tickStandSegments,
+        this.tickPedestalPlatforms,
+      )
+    ) {
+      return true;
+    }
+    return false;
   }
 
   private preserveClimbAscentToDeck(map: TileMap, upHeld: boolean): boolean {
@@ -4280,25 +4501,36 @@ export class Player {
           )
         : Number.NaN;
 
+      // While X-overlapping a pedestal, prefer its deck over the solid floor under it —
+      // but only while feet can still catch the deck. Past the slack window, solid floors
+      // must catch again or a missed pedestal land tunnels into the void (jump-into-item /
+      // pickup-overlay resume). Java suppresses unconditionally; this is the safety net.
+      const footSupportY = JumpFoot.footProbeSupportY(nextFeet);
+      const suppressSolidsUnderPedestal =
+        onPedestalHull &&
+        !Number.isNaN(pedestalSupportY) &&
+        footSupportY <= pedestalSupportY + PLATFORM_DECK_SLACK_PX + 1e-3;
+
       for (let ty = tyLo; ty <= tyHi; ty++) {
         const floorY = ty * TILE_SIZE;
         if (JumpFoot.footProbeAllPrevBelowFloor(prevFeet, floorY)) continue;
         if (JumpFoot.footProbeAllNextAboveFloor(nextFeet, floorY)) continue;
-        if (onPedestalHull && !Number.isNaN(pedestalSupportY) && floorY >= pedestalSupportY - 1e-3) {
+        if (suppressSolidsUnderPedestal && floorY >= pedestalSupportY - 1e-3) {
           continue;
         }
 
         for (let tx = leftTile; tx <= rightTile; tx++) {
           const tile = { x: tx * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
           if (!pose.intersectsRect(tile) || !map.isSolidTile(tx, ty)) continue;
-          const leadHit = JumpFoot.footLandsOrRestsOnDeck(
+          // Solids: crossed-from-above only (Java footDescendsOntoFloor) — not deck rest.
+          const leadHit = JumpFoot.footDescendsOntoFloor(
             prevFeet.leadY,
             nextFeet.leadY,
             ty,
             floorY,
             0,
           );
-          const trailHit = JumpFoot.footLandsOrRestsOnDeck(
+          const trailHit = JumpFoot.footDescendsOntoFloor(
             prevFeet.trailY,
             nextFeet.trailY,
             ty,
@@ -4308,7 +4540,10 @@ export class Player {
           JumpFoot.noteLandingFloor(floorY, leadHit, trailHit, landing);
         }
 
-        if (!this.climbing && !onPedestalHull) {
+        // Java resolveVertical: platform scan is not gated on onPedestalHull (only
+        // isGrounded skips one-ways while on the hull). The ty continue above already
+        // skips decks at/below pedestal support while still catchable.
+        if (!this.climbing) {
           const leadFootX = JumpFoot.jumpFootLocalWorldX(pose, PLAYER_JUMP_LEAD_FOOT_LOCAL_X);
           const trailFootX = JumpFoot.jumpFootLocalWorldX(pose, PLAYER_JUMP_TRAIL_FOOT_LOCAL_X);
           for (let tx = platScanLo; tx <= platScanHi; tx++) {
@@ -4403,20 +4638,37 @@ export class Player {
           this.onGround = true;
         }
       }
-    } else {
+    } else if (this.vy < 0) {
+      // Rising — tile ceilings (Java resolveVertical) then ice bottoms (resolveVerticalIceSolids).
+      const nextTop = b.y;
       const leftTile = Math.floor((b.x + 0.001) / TILE_SIZE);
       const rightTile = Math.floor((b.x + b.w - 0.001) / TILE_SIZE);
-      const topTile = Math.floor((b.y + 1e-4) / TILE_SIZE);
+      const topTile = Math.floor((nextTop + 1e-4) / TILE_SIZE);
       const ceilingBottomY = (topTile + 1) * TILE_SIZE;
       for (let tx = leftTile; tx <= rightTile; tx++) {
         if (!map.isSolidTile(tx, topTile)) continue;
         const tile = { x: tx * TILE_SIZE, y: topTile * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
         if (!pose.intersectsRect(tile)) continue;
-        if (prevTop >= ceilingBottomY - 1e-3 && b.y <= ceilingBottomY + 1e-3) {
+        const crossedIntoCeiling = prevTop >= ceilingBottomY - 1e-3;
+        if (crossedIntoCeiling && nextTop <= ceilingBottomY + 1e-3) {
           this.y = ceilingBottomY;
           this.vy = 0;
         }
         break;
+      }
+      if (this.tickIceBlocks.length > 0 && this.vy < 0) {
+        for (const block of this.tickIceBlocks) {
+          const ice = block.rect();
+          if (b.x >= ice.x + ice.w || b.x + b.w <= ice.x) continue;
+          if (!pose.intersectsRect(ice)) continue;
+          const iceCeilingBottomY = ice.y + ice.h;
+          const crossedIntoCeiling = prevTop >= iceCeilingBottomY - 1e-3;
+          if (crossedIntoCeiling && nextTop <= iceCeilingBottomY + 1e-3) {
+            this.y = iceCeilingBottomY;
+            this.vy = 0;
+            break;
+          }
+        }
       }
     }
   }
@@ -4490,7 +4742,19 @@ export class Player {
         const tile = { x: tx * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
         if (!pose.intersectsRect(tile)) continue;
         if (map.isSolidTile(tx, ty)) {
-          return true;
+          // Only floor-like solids (feet near/inside tile top). Flush ceiling contact after a
+          // bonk must not count — inclusive SAT treats head-on-tile-bottom as overlap, unlike
+          // Java Area, and that falsely grounded Vernan / triggered walk-off.
+          const deckTop = ty * TILE_SIZE;
+          const supportY = JumpFoot.footProbeSupportY(footProbe);
+          const nearDeck =
+            StandSurfaceQuery.footNearDeck(footProbe.leadY, deckTop) ||
+            StandSurfaceQuery.footNearDeck(footProbe.trailY, deckTop);
+          const embeddedInFloorSlab =
+            supportY > deckTop + 1e-3 && supportY < deckTop + TILE_SIZE - 1e-3;
+          if (nearDeck || embeddedInFloorSlab) {
+            return true;
+          }
         }
       }
       if (!this.climbing && !onPedestalHull) {

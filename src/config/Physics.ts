@@ -114,6 +114,89 @@ export const SEAM_ANIM_STAGGER_FRAMES = 4;
 export const SEAM_ANIM_VERTICAL_STAGGER_FRAMES = 8;
 export const SEAM_ANIM_CAMERA_PAN_STEPS = 15;
 
+/** Pickup angular motion (Java Physics.PICKUP_*). */
+export const PICKUP_ANGULAR_DAMP_PER_SEC = 6.8;
+export const PICKUP_OMEGA_MAX_RAD_PER_SEC = 14.0;
+export const PICKUP_SPIN_BREAKABLE_RAD_PER_SEC = 5.0;
+export const PICKUP_SPIN_ROOM_CLEAR_RAD_PER_SEC = 11.0;
+export const PICKUP_COLLISION_SPIN_GATE_REF_PX_PER_SEC = 52.0;
+export const PICKUP_REST_MAX_TRANSLATION_FOR_SPIN_SLEEP = 28.0;
+export const PICKUP_REST_ANGULAR_SLEEP_PER_SEC = 38.0;
+export const PICKUP_OMEGA_SNAP_REST_RAD_PER_SEC = 0.62;
+
+/** Pickup spawn squash (Java Physics.PICKUP_SPAWN_*). */
+export const PICKUP_SPAWN_SQUASH_DURATION_SEC = 1.45;
+export const PICKUP_SPAWN_OVERSHOOT_PEAK = 0.11;
+export const PICKUP_SPAWN_SQUASH_DEPTH = 0.07;
+
+export type PickupSquishProfile = "HEART" | "KEY_OR_COIN";
+
+export function pickupSquishAmplitude(profile: PickupSquishProfile): number {
+  return profile === "HEART" ? 1.45 : 1.0;
+}
+
+/** Initial spin ±mag (Java Physics.randomPickupSpinRadPerSec). */
+export function randomPickupSpinRadPerSec(
+  style: "BREAKABLE" | "ROOM_CLEAR",
+  rnd: () => number,
+): number {
+  const mag =
+    style === "ROOM_CLEAR"
+      ? PICKUP_SPIN_ROOM_CLEAR_RAD_PER_SEC
+      : PICKUP_SPIN_BREAKABLE_RAD_PER_SEC;
+  return (rnd() - 0.5) * 2 * mag;
+}
+
+/** Angular damp + clamp (Java Physics.integrateAngular). */
+export function integratePickupAngular(omega: number, dt: number): number {
+  const w = omega * Math.exp(-PICKUP_ANGULAR_DAMP_PER_SEC * dt);
+  const lim = PICKUP_OMEGA_MAX_RAD_PER_SEC;
+  if (w > lim) return lim;
+  if (w < -lim) return -lim;
+  return w;
+}
+
+/**
+ * Spawn squash width/height multipliers around 1.0 (Java Physics.spawnSquashMul).
+ * Past duration returns (1, 1).
+ */
+export function spawnSquashMul(
+  spawnAge: number,
+  profile: PickupSquishProfile,
+): { w: number; h: number } {
+  const dur = PICKUP_SPAWN_SQUASH_DURATION_SEC;
+  if (spawnAge <= 0 || dur <= 0) return { w: 1, h: 1 };
+  const t = Math.min(1, spawnAge / dur);
+  const amp = pickupSquishAmplitude(profile);
+  const ease = 1 - (1 - t) * (1 - t);
+  const bounce = Math.sin(t * Math.PI) * (1 - t);
+  const w =
+    1 -
+    PICKUP_SPAWN_SQUASH_DEPTH * amp * (1 - ease) +
+    PICKUP_SPAWN_OVERSHOOT_PEAK * amp * bounce;
+  const h =
+    1 +
+    PICKUP_SPAWN_SQUASH_DEPTH * 0.65 * amp * (1 - ease) -
+    PICKUP_SPAWN_OVERSHOOT_PEAK * 0.45 * amp * bounce;
+  return { w: Math.max(0.65, w), h: Math.max(0.65, h) };
+}
+
+/** True if standable floor under foot (Java Physics.pickupOnStandableFloor). */
+export function pickupOnStandableFloor(
+  map: { isStandableFloorTile(tx: number, ty: number): boolean },
+  footX: number,
+  footMaxWorldY: number,
+  vy: number,
+  tileSize: number,
+): boolean {
+  if (vy > 0.75) return false;
+  const tyFoot = Math.floor(footMaxWorldY / tileSize);
+  const txFoot = Math.floor(footX / tileSize);
+  if (!map.isStandableFloorTile(txFoot, tyFoot)) return false;
+  const surfaceY = tyFoot * tileSize;
+  return footMaxWorldY >= surfaceY - 1e-2 && footMaxWorldY <= surfaceY + tileSize;
+}
+
 /** Breakable debris spawn spin (Java BRICKCHUNK_SPAWN_OMEGA_RAD_PER_SEC). */
 export const BRICKCHUNK_SPAWN_OMEGA_RAD_PER_SEC = 7;
 export const BRICKCHUNK_RESTITUTION_FLOOR = 0.22;

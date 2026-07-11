@@ -1,4 +1,5 @@
 import type { Aabb } from "../CombatMath";
+import { HitboxPose } from "../../collision/HitboxPose";
 import { GRAVITY } from "../../config/Physics";
 import type { CombatEnemy } from "../../entity/CombatEnemy";
 import type { TileMap } from "../../world/TileMap";
@@ -562,6 +563,31 @@ export class WhipSim {
       return "HANDLE";
     }
     return "NONE";
+  }
+
+  /**
+   * Union AABB of handle / chain / tip strike radii as a HitboxPose (Java WhipSim.hitboxPose).
+   * Used for breakable tiles, ice, and coarse enemy overlap before {@link hitRegionAgainst}.
+   */
+  hitboxPose(): HitboxPose | null {
+    if (!this.active || !this.deployed) return null;
+    const r = WhipSim.PART_HIT_RADIUS;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < WhipSim.POINT_COUNT; i++) {
+      minX = Math.min(minX, this.px[i]! - r);
+      minY = Math.min(minY, this.py[i]! - r);
+      maxX = Math.max(maxX, this.px[i]! + r);
+      maxY = Math.max(maxY, this.py[i]! + r);
+    }
+    return HitboxPose.fromWorldPolygon([
+      minX, minY,
+      maxX, minY,
+      maxX, maxY,
+      minX, maxY,
+    ]);
   }
 }
 

@@ -235,11 +235,11 @@ export function tryBuyShopPickups(
   const specs = session.shopWorldPickups[session.roomId];
   if (!specs) return null;
 
-  const hurtPose = player.hurtboxPose();
+  const bodyHit = player.hitboxPose();
   for (let i = 0; i < worldPickups.length; i++) {
     const p = worldPickups[i]!;
     if (p.priceCoins <= 0) continue;
-    if (!p.intersectsPlayerHurt(hurtPose)) continue;
+    if (!p.intersectsPlayerHit(bodyHit)) continue;
 
     if (p.kind === PickupKind.HEART && player.health.isAtFullHealth) return "blocked";
     if (player.stats.money < p.priceCoins) return "blocked";

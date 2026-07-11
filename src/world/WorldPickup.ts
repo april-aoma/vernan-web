@@ -1,16 +1,30 @@
-import { GRAVITY } from "../config/Physics";
+import {
+  GRAVITY,
+  integratePickupAngular,
+  pickupOnStandableFloor,
+  randomPickupSpinRadPerSec,
+  spawnSquashMul,
+  PICKUP_COLLISION_SPIN_GATE_REF_PX_PER_SEC,
+  PICKUP_OMEGA_MAX_RAD_PER_SEC,
+  PICKUP_OMEGA_SNAP_REST_RAD_PER_SEC,
+  PICKUP_REST_ANGULAR_SLEEP_PER_SEC,
+  PICKUP_REST_MAX_TRANSLATION_FOR_SPIN_SLEEP,
+  type PickupSquishProfile,
+} from "../config/Physics";
 import { TILE_SIZE } from "../specs";
 import type { Aabb } from "../combat/CombatMath";
 import { HitboxPose } from "../collision/HitboxPose";
-import { polygonIntersectsPolygon } from "../collision/polygonIntersect";
 import {
   pickup,
   pickupPhysics,
   pickupPhysicsPivotX,
   pickupPivotX,
 } from "../config/HitboxValues";
+import { SquashStretch } from "../render/SquashStretch";
 import {
+  axisSnapContactNormalIfDiagonal,
   backstepPositionUntilClear,
+  contactNormalSolidTowardPose,
   overlapsAnySolidTile,
   PICKUP_BACKSTEP_MAX_ITER,
 } from "../physics/SolidOverlap";
@@ -24,9 +38,17 @@ const MAX_DOWN = 320;
 const FLOOR_FRICTION_PER_SEC = 54;
 const BOUNCE_RESTITUTION = 0.25;
 const CONTACT_PROBE_PX = 2;
+/** Couples tangential impact into spin (Java WorldPickup.BOUNCE_OMEGA_COUPLE). */
+const BOUNCE_OMEGA_COUPLE = 0.02;
+const LAND_SQUASH_MIN_VY = 70;
+const LAND_SQUASH_X = 1.2;
+const LAND_SQUASH_RECOVER_FRAMES = 20;
+
+/** Java WorldPickup.SpawnStyle. */
+export type PickupSpawnStyle = "BREAKABLE" | "ROOM_CLEAR";
 
 /**
- * Thin world collectible (Java WorldPickup subset).
+ * World collectible: hearts, keys, coins — gravity, tile collision, spin, squash.
  * Anchors are HitboxPose feet-space (Java WorldPickup.x/y); sprites draw from physics bounds center.
  */
 export class WorldPickup {
@@ -41,9 +63,18 @@ export class WorldPickup {
   omega = 0;
   /** Animation timer (Java animTime) — heart strip at 12 FPS. */
   animTime = 0;
-  ageSec = 0;
+  /** Seconds since spawn (Java spawnAge) — drives spawn squash. */
+  spawnAge = 0;
   /** Shop inventory price; >0 skips auto-collect (Java WorldPickup.priceCoins). */
   priceCoins = 0;
+  /** Shop hearts/keys: drawn/collectible but do not simulate physics. */
+  private staticNoPhysics = false;
+  /**
+   * Foot Y at end of previous update — floor snap only when foot crosses surface
+   * (prevents yanking onto wall tops).
+   */
+  private prevFootY = Number.POSITIVE_INFINITY;
+  private readonly renderSquashStretch = new SquashStretch();
 
   constructor(kind: PickupKind, anchorX: number, anchorY: number, vx: number, vy: number) {
     this.kind = kind;
@@ -61,12 +92,12 @@ export class WorldPickup {
     rnd: () => number,
   ): WorldPickup {
     const b0 = physicsBoundsAtOrigin(kind);
-    return new WorldPickup(
+    return finishCreate(
       kind,
       centerX - b0.w * 0.5 - b0.x,
       centerY - b0.h * 0.5 - b0.y,
-      (rnd() - 0.5) * 100,
-      -38 - rnd() * 28,
+      "BREAKABLE",
+      rnd,
     );
   }
 
@@ -91,6 +122,11 @@ export class WorldPickup {
   ): WorldPickup {
     const p = WorldPickup.createFromDeferred(kind, feetCenterX, feetY);
     p.priceCoins = Math.max(0, priceCoins);
+    p.staticNoPhysics = true;
+    p.vx = 0;
+    p.vy = 0;
+    p.omega = 0;
+    p.angle = 0;
     return p;
   }
 
@@ -102,12 +138,12 @@ export class WorldPickup {
     rnd: () => number,
   ): WorldPickup {
     const b0 = physicsBoundsAtOrigin(kind);
-    return new WorldPickup(
+    return finishCreate(
       kind,
       feetCenterX - b0.w * 0.5 - b0.x,
       feetY - b0.h - b0.y,
-      (rnd() - 0.5) * 140,
-      -100 - rnd() * 55,
+      "ROOM_CLEAR",
+      rnd,
     );
   }
 
@@ -134,16 +170,40 @@ export class WorldPickup {
     return pickupPhysicsRenderCenter(this.kind, this.x, this.y).y;
   }
 
+  renderSquashScaleX(): number {
+    return this.renderSquashStretch.scaleX();
+  }
+
+  renderSquashScaleY(): number {
+    return this.renderSquashStretch.scaleY();
+  }
+
+  /** Spawn × landing draw deform (Java drawOneWorldPickup). */
+  drawDeform(): { w: number; h: number } {
+    const spawn = spawnSquashMul(this.spawnAge, squishProfileFor(this.kind));
+    return {
+      w: spawn.w * this.renderSquashScaleX(),
+      h: spawn.h * this.renderSquashScaleY(),
+    };
+  }
+
   /** Collection AABB (Java pickup hit slot). */
   hitbox(): Aabb {
     return this.hitboxPose().bounds();
   }
 
   update(dt: number, map: TileMap): void {
-    this.ageSec += dt;
+    this.spawnAge += dt;
     this.animTime += dt;
-    // Priced shop inventory sits still (Java staticNoPhysics).
-    if (this.priceCoins > 0) return;
+
+    if (this.staticNoPhysics) {
+      // Still tick animTime/spawnAge (spawn squash on shop hearts) but do not move.
+      return;
+    }
+
+    this.renderSquashStretch.tick(dt);
+
+    this.omega = integratePickupAngular(this.omega, dt);
     this.angle += this.omega * dt;
     this.vy = Math.min(MAX_DOWN, this.vy + GRAVITY * dt);
 
@@ -172,14 +232,42 @@ export class WorldPickup {
       if (moveLen > 1e-6) {
         const dirx = ddx / moveLen;
         const diry = ddy / moveLen;
-        const probe = poseAt(this.x + dirx * CONTACT_PROBE_PX, this.y + diry * CONTACT_PROBE_PX);
-        const n = contactNormalSolidTowardPose(map, probe);
+        let n = contactNormalSolidTowardPose(
+          map,
+          poseAt(this.x + dirx * CONTACT_PROBE_PX, this.y + diry * CONTACT_PROBE_PX),
+        );
+        if (!n) {
+          n = contactNormalSolidTowardPose(
+            map,
+            poseAt(this.x + dirx * CONTACT_PROBE_PX * 3, this.y + diry * CONTACT_PROBE_PX * 3),
+          );
+        }
+        n = axisSnapContactNormalIfDiagonal(n);
         if (n) {
-          const vDotN = this.vx * n.x + this.vy * n.y;
+          const vx0 = this.vx;
+          const vy0 = this.vy;
+          const vDotN = vx0 * n.x + vy0 * n.y;
           if (vDotN < 0) {
             const impulse = (1 + BOUNCE_RESTITUTION) * vDotN;
             this.vx -= impulse * n.x;
             this.vy -= impulse * n.y;
+          }
+          const tx = -n.y;
+          const ty = n.x;
+          const tangential = vx0 * tx + vy0 * ty;
+          const preSpeed = Math.hypot(vx0, vy0);
+          let spinInject = BOUNCE_OMEGA_COUPLE * tangential;
+          const ref = PICKUP_COLLISION_SPIN_GATE_REF_PX_PER_SEC;
+          if (preSpeed < ref) {
+            const g = preSpeed / ref;
+            spinInject *= g * g;
+          }
+          this.omega = Math.max(
+            -PICKUP_OMEGA_MAX_RAD_PER_SEC,
+            Math.min(PICKUP_OMEGA_MAX_RAD_PER_SEC, this.omega + spinInject),
+          );
+          if (vy0 > LAND_SQUASH_MIN_VY && n.y < -0.45) {
+            this.applyLandingSquash();
           }
         }
       }
@@ -188,22 +276,24 @@ export class WorldPickup {
       this.y = tryY;
     }
 
-    this.resolveFloor(map, dt);
+    this.resolveVerticalAndFloor(map);
+
+    const onFloor = this.isOnStandableFloor(map);
+    if (onFloor) {
+      this.vx *= Math.exp(-FLOOR_FRICTION_PER_SEC * dt);
+      if (Math.abs(this.vx) < 2.5) this.vx = 0;
+    }
+
+    if (onFloor && Math.hypot(this.vx, this.vy) < PICKUP_REST_MAX_TRANSLATION_FOR_SPIN_SLEEP) {
+      this.omega *= Math.exp(-PICKUP_REST_ANGULAR_SLEEP_PER_SEC * dt);
+      if (Math.abs(this.omega) < PICKUP_OMEGA_SNAP_REST_RAD_PER_SEC) this.omega = 0;
+    }
+
+    this.prevFootY = this.currentFootY();
   }
 
-  private resolveFloor(map: TileMap, dt: number): void {
-    const footY = this.currentFootY();
-    const feetTx = Math.floor((this.renderCenterX()) / TILE_SIZE);
-    const feetTy = Math.floor(footY / TILE_SIZE);
-    if (map.isSolidTile(feetTx, feetTy) || map.isPlatformTile(feetTx, feetTy)) {
-      const floorY = feetTy * TILE_SIZE;
-      if (footY > floorY && this.vy >= 0) {
-        this.y += floorY - footY;
-        this.vy = -this.vy * BOUNCE_RESTITUTION;
-        if (Math.abs(this.vy) < 20) this.vy = 0;
-        this.vx *= Math.exp(-FLOOR_FRICTION_PER_SEC * dt);
-      }
-    }
+  private applyLandingSquash(): void {
+    this.renderSquashStretch.applyStretchX(LAND_SQUASH_X, LAND_SQUASH_RECOVER_FRAMES);
   }
 
   private currentFootY(): number {
@@ -216,54 +306,64 @@ export class WorldPickup {
     return maxY;
   }
 
-  /** True when collection polygon overlaps player hurt polygon. */
-  intersectsPlayerHurt(hurtPose: HitboxPose): boolean {
-    return polygonIntersectsPolygon(
-      this.hitboxPose().worldVertices(),
-      hurtPose.worldVertices(),
-    );
+  private isOnStandableFloor(map: TileMap): boolean {
+    if (this.vy > 0.75) return false;
+    const foot = this.currentFootY();
+    return pickupOnStandableFloor(map, this.renderCenterX(), foot, this.vy, TILE_SIZE);
   }
+
+  private resolveVerticalAndFloor(map: TileMap): void {
+    const foot = this.currentFootY();
+    const footX = this.renderCenterX();
+    const tyFoot = Math.floor(foot / TILE_SIZE);
+    const txFoot = Math.floor(footX / TILE_SIZE);
+
+    if (this.vy >= 0 && map.isStandableFloorTile(txFoot, tyFoot)) {
+      const surfaceY = tyFoot * TILE_SIZE;
+      // Only snap when the foot crossed the surface this frame.
+      if (this.prevFootY <= surfaceY + 1e-3 && foot >= surfaceY - 1e-2) {
+        if (this.vy > LAND_SQUASH_MIN_VY) {
+          this.applyLandingSquash();
+        }
+        this.y += surfaceY - 1e-3 - foot;
+        this.vy = 0;
+      }
+    }
+  }
+
+  /** True when collection polygon overlaps player body hitbox (Java hitboxPose ∩ player.hitboxPose). */
+  intersectsPlayerHit(playerHit: HitboxPose): boolean {
+    return this.hitboxPose().intersects(playerHit);
+  }
+}
+
+function finishCreate(
+  kind: PickupKind,
+  anchorX: number,
+  anchorY: number,
+  style: PickupSpawnStyle,
+  rnd: () => number,
+): WorldPickup {
+  const p = new WorldPickup(kind, anchorX, anchorY, 0, 0);
+  p.spawnAge = 0;
+  p.angle = 0;
+  p.omega = randomPickupSpinRadPerSec(style, rnd);
+  if (style === "ROOM_CLEAR") {
+    p.vy = -100 - rnd() * 55;
+    p.vx = (rnd() - 0.5) * 140;
+  } else {
+    p.vy = -38 - rnd() * 28;
+    p.vx = (rnd() - 0.5) * 100;
+  }
+  return p;
 }
 
 function physicsBoundsAtOrigin(kind: PickupKind): Aabb {
   return new HitboxPose(pickupPhysics(kind), 0, 0, 1, pickupPhysicsPivotX(kind)).bounds();
 }
 
-function contactNormalSolidTowardPose(
-  map: TileMap,
-  pose: HitboxPose,
-): { x: number; y: number } | null {
-  const b = pose.bounds();
-  const cx = b.x + b.w * 0.5;
-  const cy = b.y + b.h * 0.5;
-  const x0 = Math.floor(b.x / TILE_SIZE);
-  const y0 = Math.floor(b.y / TILE_SIZE);
-  const x1 = Math.floor((b.x + b.w - 1e-6) / TILE_SIZE);
-  const y1 = Math.floor((b.y + b.h - 1e-6) / TILE_SIZE);
-  let sx = 0;
-  let sy = 0;
-  let count = 0;
-  for (let ty = y0; ty <= y1; ty++) {
-    for (let tx = x0; tx <= x1; tx++) {
-      if (!map.isSolidTile(tx, ty)) continue;
-      const tile = { x: tx * TILE_SIZE, y: ty * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE };
-      if (!pose.intersectsRect(tile)) continue;
-      const tcx = tile.x + TILE_SIZE * 0.5;
-      const tcy = tile.y + TILE_SIZE * 0.5;
-      const dx = cx - tcx;
-      const dy = cy - tcy;
-      const len = Math.hypot(dx, dy);
-      if (len > 1e-8) {
-        sx += dx / len;
-        sy += dy / len;
-        count++;
-      }
-    }
-  }
-  if (count === 0) return null;
-  const len = Math.hypot(sx, sy);
-  if (len < 1e-8) return { x: 0, y: -1 };
-  return { x: sx / len, y: sy / len };
+function squishProfileFor(kind: PickupKind): PickupSquishProfile {
+  return kind === PickupKind.HEART ? "HEART" : "KEY_OR_COIN";
 }
 
 /** Native world-px sprite size (Java sheet cells) — draw sizing only. */

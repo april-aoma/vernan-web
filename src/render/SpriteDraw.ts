@@ -106,9 +106,20 @@ export function drawFeetPinnedStrip(
   facing: number,
   camera: WorldCamera,
   juice?: JuiceDrawOpts,
+  feetAnchorHeightWorldPx: number = strip.frameH,
 ): void {
   const left = centerX - strip.frameW * 0.5;
-  drawStripFrameFeetPinned(g, strip, frameIndex, left, feetWorldY, facing, camera, juice);
+  drawStripFrameFeetPinned(
+    g,
+    strip,
+    frameIndex,
+    left,
+    feetWorldY,
+    facing,
+    camera,
+    juice,
+    feetAnchorHeightWorldPx,
+  );
 }
 
 /**

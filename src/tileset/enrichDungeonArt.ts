@@ -8,6 +8,7 @@ import {
   regroundPackagedDeco,
   scatterEligibleGroundDeco,
 } from "./placeAmbientDeco";
+import { classifiersFromProject, compactDecoList, ensureCandlesDrawOnTop } from "./DecoCellOccupancy";
 import { resolveBiome } from "./NormalRoomBiomes";
 import {
   applyContextThemeFlankBake,
@@ -28,7 +29,8 @@ import { regroundItemPedestal } from "../world/RoomGenerator";
  * Order mirrors Java: ambient clusters → placed props → DecoPlacementRules.apply
  * (spawn surface / spawnWeight / preferAdjacent / preferAbove) → ground scatter →
  * drop incomplete packaged footprints → refresh ground-hugging → flank bake →
- * evict deco under props → {@link applyPostGenerationEnemies}.
+ * evict deco under props → DecoCellOccupancy.compactDecoList →
+ * {@link applyPostGenerationEnemies}.
  * Idempotent: skips re-stamp when art.decoStamps already present (regrounds only);
  * still re-places props when pools are empty / missing so art stays consistent.
  * Enemy spawns are always re-rolled after deco so golden-roach clusters match Java.
@@ -181,6 +183,10 @@ export function enrichRoomArt(
   if (placedRoomObjects.length) {
     evictDecoOverlappingPlacedProps(decoStamps, placedRoomObjects);
   }
+  // Java DecoPlacementRules.apply: compactDecoList + ensureCandlesDrawOnTop after scatter.
+  const overlapClf = classifiersFromProject(project);
+  compactDecoList(decoStamps, contentSeed, overlapClf);
+  ensureCandlesDrawOnTop(decoStamps, overlapClf);
   regroundItemPedestal(room);
 
   const art: RoomArtData = {

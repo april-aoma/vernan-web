@@ -270,6 +270,7 @@ import {
   VERNAN_ATTACK_FRAMES,
   VERNAN_CLIMB_FRAMES,
   VERNAN_JUMP_FRAMES,
+  VERNAN_SPRITE_H,
   VERNAN_WALK_FRAMES,
   SWORD_ATTACK_FRAMES,
   WALK_SPEED_THRESHOLD,
@@ -4450,17 +4451,18 @@ function drawPlayer(
     }
   }
 
-  if (player.isGetupLocked() && sprites.getup) {
-    // Getup sheet is 48px tall; pin one tile lower so the pose sits on the deck (Java feetAnchorBodyH feel).
+  if (player.isGetupPoseActive() && sprites.getup) {
+    // Getup sheet is 48px tall; pin stand row (32) so art extends below feet (Java VERNAN_BODY_SPRITE_H).
     drawFeetPinnedStrip(
       g,
       sprites.getup,
       player.getupAnimFrameIndex(sprites.getup.frameCount),
       cx,
-      feet + TILE_SIZE,
+      feet,
       player.facing,
       camera,
       juice,
+      VERNAN_SPRITE_H,
     );
     return;
   }
@@ -5327,10 +5329,11 @@ function drawWorldPickup(
   const file = pickupSpriteFile(pickup.kind);
   const bmp = bitmaps.get(file);
   const { w: sw, h: sh } = pickupSpriteSize(pickup.kind);
+  const deform = pickup.drawDeform();
   const rcx = pickup.renderCenterX();
   const rcy = pickup.renderCenterY();
-  const dw = Math.max(1, Math.floor(CAMERA_ZOOM * sw));
-  const dh = Math.max(1, Math.floor(CAMERA_ZOOM * sh));
+  const dw = Math.max(1, Math.floor(CAMERA_ZOOM * sw * deform.w));
+  const dh = Math.max(1, Math.floor(CAMERA_ZOOM * sh * deform.h));
   const cx = camera.worldToDeviceX(rcx);
   const cy = camera.worldToDeviceY(rcy);
 
@@ -5366,11 +5369,11 @@ function collectWorldPickups(
   economy: HudEconomyDisplay,
   collectFx: PickupCollectFx[],
 ): void {
-  const hurtPose = player.hurtboxPose();
+  const bodyHit = player.hitboxPose();
   for (let i = pickups.length - 1; i >= 0; i--) {
     const p = pickups[i]!;
     if (p.priceCoins > 0) continue; // shop inventory: press-to-buy
-    if (!p.intersectsPlayerHurt(hurtPose)) continue;
+    if (!p.intersectsPlayerHit(bodyHit)) continue;
     if (p.kind === PickupKind.HEART) {
       if (player.health.isAtFullHealth) continue;
       player.health.heal(2);

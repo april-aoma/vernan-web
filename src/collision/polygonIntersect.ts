@@ -43,6 +43,8 @@ export function polygonBounds(worldXy: ReadonlyArray<number>): Aabb {
 
 /**
  * Convex polygon ∩ axis-aligned rect via SAT (Java Area.intersect emptiness for convex hulls).
+ * Inclusive edges: flush contact still counts (enemies need this for wall/floor flush; player
+ * ceiling false-ground is handled in {@link Player.isGrounded}, not here).
  */
 export function polygonIntersectsAabb(worldXy: ReadonlyArray<number>, box: Aabb): boolean {
   const n = worldXy.length / 2;

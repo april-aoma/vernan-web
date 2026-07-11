@@ -183,13 +183,17 @@ export function landingPedestalFloorY(
         continue;
       }
     }
+    // High-speed descent may end past DECK_SLACK in one step (pickup overlay resume,
+    // jump-into-item). Require a real cross from above, but do not require nextFootY to
+    // land inside the slack window — snapFootToFloorY pulls back to the deck (same as
+    // solid footDescendsOntoFloor, which has no upper bound on nextFootY).
     const segLo = Math.min(prevFootY, nextFootY);
     const segHi = Math.max(prevFootY, nextFootY);
     const crossed =
       segLo <= support + 1e-3 &&
       segHi >= support - DECK_SLACK_PX &&
       nextFootY >= support - 1e-3 &&
-      nextFootY <= support + DECK_SLACK_PX;
+      prevFootY <= support + DECK_SLACK_PX + 1e-3;
     if (vy >= 0 && crossed) best = Math.min(best, support);
   }
   return best < Number.POSITIVE_INFINITY ? best : Number.NaN;

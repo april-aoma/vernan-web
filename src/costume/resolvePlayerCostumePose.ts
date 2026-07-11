@@ -56,7 +56,7 @@ export function resolvePlayerCostumePose(
 
   const hurtAirPose = player.isHurtLocked() && !player.onGround;
 
-  if (player.isGetupLocked() && !hurtAirPose && layeredBodyAnimReady(bodyLibrary, "getup")) {
+  if (player.isGetupPoseActive() && !hurtAirPose && layeredBodyAnimReady(bodyLibrary, "getup")) {
     const frameCount = bodyLibrary.frameCount("getup");
     const frame = player.getupAnimFrameIndex(frameCount);
     return pose("GETUP", frame, "getup", bodyCtx, player.facing, VERNAN_BODY_SPRITE_H, 0);

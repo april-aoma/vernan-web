@@ -155,7 +155,8 @@ export function resolveEmbeddedPolygonFootprint(
   return { x: cx, y: cy };
 }
 
-function contactNormalSolidTowardPose(
+/** Unit normal from overlapping solid tiles toward pose (Java Physics.contactNormalSolidTowardPolygon). */
+export function contactNormalSolidTowardPose(
   map: TileMap,
   pose: HitboxPose,
 ): { x: number; y: number } | null {

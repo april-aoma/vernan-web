@@ -15,6 +15,12 @@ import type { BiomeResolution } from "./NormalRoomBiomes";
 import type { AutotileObject, DecoClusterFallback, DecoPlacementRule, TilesetProject } from "./TilesetProject";
 import type { TerrainTileBridge } from "./TerrainTileBridge";
 import { groundYFromMap } from "../world/SecretRoomMapBuild";
+import {
+  DecoCellOccupancy,
+  classifiersFromProject,
+  compactDecoList,
+  ensureCandlesDrawOnTop,
+} from "./DecoCellOccupancy";
 
 /** Java ProceduralRoomGen ambient / room overlay ARGB tags. */
 export const AMBIENT_DECO_ARGB_RED = 0x66ff4a4a;
@@ -78,7 +84,7 @@ export function placeAmbientDecoClusters(
   );
 
   const stamps: DecoStamp[] = [];
-  const occupied = new Set<string>();
+  const decoOverlap = new DecoCellOccupancy(contentSeed, classifiersFromProject(project));
 
   for (let i = 0; i < clusters; i++) {
     const red = rng.nextBoolean();
@@ -103,7 +109,7 @@ export function placeAmbientDecoClusters(
           project,
           map,
           stamps,
-          occupied,
+          decoOverlap,
           tx,
           ty,
           channel,
@@ -117,6 +123,9 @@ export function placeAmbientDecoClusters(
     }
   }
 
+  // Java RoomGenerator: compactDecoList + ensureCandlesDrawOnTop after ambient blobs.
+  compactDecoList(stamps, contentSeed);
+  ensureCandlesDrawOnTop(stamps, null);
   return stamps;
 }
 
@@ -128,7 +137,7 @@ function addAmbientDecoBlobFromTilePool(
   project: TilesetProject,
   map: TileMap,
   stamps: DecoStamp[],
-  occupied: Set<string>,
+  decoOverlap: DecoCellOccupancy,
   tx: number,
   ty: number,
   channel: 0 | 1,
@@ -140,55 +149,62 @@ function addAmbientDecoBlobFromTilePool(
 ): void {
   if (pool.length) {
     const tileId = pool[rng.nextInt(pool.length)]!;
-    const owner = project.objectByTileId.get(tileId);
     // Java DecoCellOccupancy.isOrphanFullObjectMemberTile — skip non-anchor full-object members.
-    if (owner?.isFullObject) {
-      const anchor = owner.anchorTileId || owner.tileIds[0];
-      if (anchor && tileId !== anchor) return;
-    }
+    if (decoOverlap.isOrphanFullObjectMemberTile(tileId)) return;
+    const owner = project.objectByTileId.get(tileId);
     if (owner?.isFullObject && owner.memberGraphLayout) {
-      const placed = stampFullObject(
+      stampFullObject(
         project,
         map,
+        stamps,
+        decoOverlap,
         owner,
         tx,
         ty,
         channel,
         argb,
-        occupied,
         ladderColumnTx,
         rng,
       );
-      stamps.push(...placed);
       return;
     }
     if (project.cell(tileId)) {
-      occupied.add(`${tx},${ty}`);
-      stamps.push({
+      decoOverlap.tryPlaceSingle(
+        stamps,
         tx,
         ty,
-        tileId,
-        channel,
-        argb,
-        breakableDeco: rollBreakableDeco(project, tileId, rng),
-        groundHugging: false,
-      });
+        {
+          tx,
+          ty,
+          tileId,
+          channel,
+          argb,
+          breakableDeco: rollBreakableDeco(project, tileId, rng),
+          groundHugging: false,
+        },
+        false,
+      );
       return;
     }
     return;
   }
   const fb = argb === AMBIENT_DECO_ARGB_BLUE ? fallback.blue : fallback.red;
   if (!fb || !project.cell(fb)) return;
-  occupied.add(`${tx},${ty}`);
-  stamps.push({
+  decoOverlap.tryPlaceSingle(
+    stamps,
     tx,
     ty,
-    tileId: fb,
-    channel,
-    argb,
-    breakableDeco: rollBreakableDeco(project, fb, rng),
-    groundHugging: false,
-  });
+    {
+      tx,
+      ty,
+      tileId: fb,
+      channel,
+      argb,
+      breakableDeco: rollBreakableDeco(project, fb, rng),
+      groundHugging: false,
+    },
+    false,
+  );
 }
 
 /**
@@ -802,17 +818,18 @@ function rollBreakableDeco(
 function stampFullObject(
   project: TilesetProject,
   map: TileMap,
+  stamps: DecoStamp[],
+  decoOverlap: DecoCellOccupancy,
   obj: AutotileObject,
   anchorTx: number,
   anchorTy: number,
   channel: 0 | 1,
   argb: number,
-  occupied: Set<string>,
   ladderColumnTx: number,
   rng: JavaRandom,
-): DecoStamp[] {
+): boolean {
   const cells = footprintCellsForObject(obj);
-  if (!cells.length) return [];
+  if (!cells.length) return false;
 
   const groundingReq = fullObjectGroundingRequired(obj);
   let resolvedTy = anchorTy;
@@ -824,36 +841,34 @@ function stampFullObject(
       cells,
       ladderColumnTx,
     );
-    if (snapped < 0) return [];
+    if (snapped < 0) return false;
     resolvedTy = snapped;
   } else if (
     !decoFootprintFitsBounds(map, anchorTx, resolvedTy, cells, ladderColumnTx) ||
     !fullObjectStampCellsAllOpenAirOnMap(map, anchorTx, resolvedTy, cells)
   ) {
-    return [];
+    return false;
   }
 
   for (const c of cells) {
     const tx = anchorTx + c.dTx;
     const ty = resolvedTy + c.dTy;
-    if (!decoFootprintFitsBounds(map, anchorTx, resolvedTy, cells, ladderColumnTx)) return [];
-    if (ladderColumnTx >= 0 && tx === ladderColumnTx) return [];
-    if (!mapCellIsOpenAirForDeco(map, tx, ty)) return [];
-    if (occupied.has(`${tx},${ty}`)) return [];
-    if (!project.cell(c.tileId)) return [];
+    if (!decoFootprintFitsBounds(map, anchorTx, resolvedTy, cells, ladderColumnTx)) return false;
+    if (ladderColumnTx >= 0 && tx === ladderColumnTx) return false;
+    if (!mapCellIsOpenAirForDeco(map, tx, ty)) return false;
+    if (!project.cell(c.tileId)) return false;
   }
   if (groundingReq && !fullObjectStampRestsOnMapFloor(map, anchorTx, resolvedTy, cells)) {
-    return [];
+    return false;
   }
 
   const layoutAnchor = obj.anchorTileId || obj.tileIds[0] || cells[0]!.tileId;
   const groundHug = proceduralDecoEligibleGroundCell(map, anchorTx, resolvedTy);
-  const out: DecoStamp[] = [];
+  const batch: DecoStamp[] = [];
   for (const c of cells) {
     const tx = anchorTx + c.dTx;
     const ty = resolvedTy + c.dTy;
-    occupied.add(`${tx},${ty}`);
-    out.push({
+    batch.push({
       tx,
       ty,
       tileId: c.tileId,
@@ -863,11 +878,14 @@ function stampFullObject(
       groundHugging: groundHug,
     });
   }
+  if (!decoOverlap.tryPlaceFootprint(stamps, anchorTx, resolvedTy, layoutAnchor, cells, batch)) {
+    return false;
+  }
   tryStampStatuePedestalCompanion(
     project,
     map,
-    out,
-    occupied,
+    stamps,
+    decoOverlap,
     anchorTx,
     resolvedTy,
     channel,
@@ -876,7 +894,7 @@ function stampFullObject(
     cells,
     rng,
   );
-  return out;
+  return true;
 }
 
 /** Java DecoPlacementRules.regroundPackagedDeco — snap grounded full objects to play floor. */
@@ -984,8 +1002,10 @@ export function placeRoomKindDecoOverlays(
   if (kind !== RoomKind.ITEM && kind !== RoomKind.SHOP) return stamps;
 
   const groundY = groundYFromMap(map);
-  const occupied = new Set(stamps.map((s) => `${s.tx},${s.ty}`));
   const out = stamps.slice();
+  const decoOverlap = new DecoCellOccupancy(contentSeed, classifiersFromProject(project));
+  decoOverlap.seedFromExistingStamps(out);
+
   const rng = new JavaRandom(contentSeed ^ 0x17e6c4a57n);
   const poolMembers = project.decoPoolMemberTileIds(biome.decoPool);
   const poolTiles = expandDecoPoolTileIds(
@@ -1003,7 +1023,7 @@ export function placeRoomKindDecoOverlays(
       project,
       map,
       out,
-      occupied,
+      decoOverlap,
       cx - 1,
       gyc,
       0,
@@ -1017,7 +1037,7 @@ export function placeRoomKindDecoOverlays(
           project,
           map,
           out,
-          occupied,
+          decoOverlap,
           cx + dx,
           gyc - dy,
           ITEM_DECO_OVERLAY_ARGB,
@@ -1035,7 +1055,7 @@ export function placeRoomKindDecoOverlays(
       project,
       map,
       out,
-      occupied,
+      decoOverlap,
       baseGx + 2,
       gyc,
       0,
@@ -1049,7 +1069,7 @@ export function placeRoomKindDecoOverlays(
           project,
           map,
           out,
-          occupied,
+          decoOverlap,
           baseGx + dx,
           gyc - 1 - dy,
           SHOP_DECO_OVERLAY_ARGB,
@@ -1069,7 +1089,7 @@ function stampItemShopBackdropWall(
   project: TilesetProject,
   map: TileMap,
   out: DecoStamp[],
-  occupied: Set<string>,
+  decoOverlap: DecoCellOccupancy,
   backdropLeftTx: number,
   groundRowTy: number,
   channel: 0 | 1,
@@ -1087,26 +1107,26 @@ function stampItemShopBackdropWall(
   for (const c of stamp) maxDy = Math.max(maxDy, c.dTy);
   const anchorTx = backdropLeftTx;
   const anchorTy = groundRowTy - 1 - maxDy;
-  const placed = stampFullObject(
+  stampFullObject(
     project,
     map,
+    out,
+    decoOverlap,
     obj,
     anchorTx,
     anchorTy,
     channel,
     argb,
-    occupied,
     ladderColumnTx,
     rng,
   );
-  out.push(...placed);
 }
 
 function stampOverlayBlobCell(
   project: TilesetProject,
   map: TileMap,
   out: DecoStamp[],
-  occupied: Set<string>,
+  decoOverlap: DecoCellOccupancy,
   tx: number,
   ty: number,
   argb: number,
@@ -1118,8 +1138,7 @@ function stampOverlayBlobCell(
 ): void {
   if (tx <= 1 || tx >= map.getWidth() - 1 || ty <= 1 || ty >= map.getHeight() - 1) return;
   if (ladderColumnTx >= 0 && tx === ladderColumnTx) return;
-  const key = `${tx},${ty}`;
-  if (occupied.has(key)) return;
+  if (decoOverlap.isOccupied(tx, ty)) return;
   if (map.tileAt(tx, ty) !== TILE_EMPTY) return;
 
   let tileId: string | null = null;
@@ -1127,22 +1146,24 @@ function stampOverlayBlobCell(
     for (let tries = 0; tries < 8 && !tileId; tries++) {
       const pick = poolTiles[rng.nextInt(poolTiles.length)]!;
       if (skipBackdropPick && pick === SHOP_ITEM_BACKDROP_ANCHOR_TILE_ID) continue;
+      if (decoOverlap.isOrphanFullObjectMemberTile(pick)) continue;
       const owner = project.objectByTileId.get(pick);
-      if (owner?.isFullObject) {
-        const foot = stampFullObject(
-          project,
-          map,
-          owner,
-          tx,
-          ty,
-          argb === AMBIENT_DECO_ARGB_BLUE ? 1 : 0,
-          argb,
-          occupied,
-          ladderColumnTx,
-          rng,
-        );
-        if (foot.length) {
-          out.push(...foot);
+      if (owner?.isFullObject && owner.memberGraphLayout) {
+        if (
+          stampFullObject(
+            project,
+            map,
+            out,
+            decoOverlap,
+            owner,
+            tx,
+            ty,
+            argb === AMBIENT_DECO_ARGB_BLUE ? 1 : 0,
+            argb,
+            ladderColumnTx,
+            rng,
+          )
+        ) {
           return;
         }
         continue;
@@ -1152,15 +1173,21 @@ function stampOverlayBlobCell(
   }
   if (!tileId) tileId = pickFallbackTileForArgb(fallback, argb);
   if (!tileId || !project.cell(tileId)) return;
-  occupied.add(key);
-  out.push({
+  // ITEM/SHOP overlayEmptyOnly — only empty cells (Java tryPlaceSingle(..., true)).
+  decoOverlap.tryPlaceSingle(
+    out,
     tx,
     ty,
-    tileId,
-    channel: argb === AMBIENT_DECO_ARGB_BLUE ? 1 : 0,
-    argb,
-    groundHugging: proceduralDecoEligibleGroundCell(map, tx, ty),
-  });
+    {
+      tx,
+      ty,
+      tileId,
+      channel: argb === AMBIENT_DECO_ARGB_BLUE ? 1 : 0,
+      argb,
+      groundHugging: proceduralDecoEligibleGroundCell(map, tx, ty),
+    },
+    true,
+  );
 }
 
 function pickFallbackTileForArgb(fallback: DecoClusterFallback, argb: number): string | null {
@@ -1220,7 +1247,7 @@ function tryStampStatuePedestalCompanion(
   project: TilesetProject,
   map: TileMap,
   out: DecoStamp[],
-  occupied: Set<string>,
+  decoOverlap: DecoCellOccupancy,
   anchorTx: number,
   anchorTy: number,
   channel: 0 | 1,
@@ -1246,20 +1273,27 @@ function tryStampStatuePedestalCompanion(
     if (out.some((d) => d.tx === baseTx && d.ty === baseTy && d.tileId === STATUE_PEDESTAL_TILE_ID)) {
       return;
     }
-    if (occupied.has(`${baseTx},${baseTy}`)) continue;
     if (map.tileAt(baseTx, baseTy) !== TILE_EMPTY) continue;
     if (!map.isStandableFloorTile(baseTx, baseTy + 1)) continue;
-    occupied.add(`${baseTx},${baseTy}`);
-    out.push({
-      tx: baseTx,
-      ty: baseTy,
-      tileId: STATUE_PEDESTAL_TILE_ID,
-      channel,
-      argb,
-      breakableDeco: rollBreakableDeco(project, STATUE_PEDESTAL_TILE_ID, rng),
-      groundHugging: true,
-    });
-    return;
+    if (
+      decoOverlap.tryPlaceSingle(
+        out,
+        baseTx,
+        baseTy,
+        {
+          tx: baseTx,
+          ty: baseTy,
+          tileId: STATUE_PEDESTAL_TILE_ID,
+          channel,
+          argb,
+          breakableDeco: rollBreakableDeco(project, STATUE_PEDESTAL_TILE_ID, rng),
+          groundHugging: true,
+        },
+        false,
+      )
+    ) {
+      return;
+    }
   }
 }
 

@@ -14,6 +14,7 @@ import {
 import { PLAYER_CROUCH_H, PLAYER_STAND_H, PLATFORM_DECK_SLACK_PX } from "../config/Physics";
 import { SLIDE_KICK_ACTIVE_LOCAL, SLIDE_KICK_ACTIVE_PIVOT_X } from "../config/HitboxValues";
 import { enemyIntersectsMelee } from "../combat/MeleeIntersection";
+import { WhipSim } from "../combat/whip/WhipSim";
 import type { Input } from "../input/Input";
 import { AutismCombat } from "../item/effect/AutismCombat";
 import { contactBetweenHurtAndEnemy } from "../item/effect/FuzzyHatContactEffect";
@@ -189,6 +190,9 @@ export interface DiscMechanicsHost {
   fuzzyHatStacks: number;
   headbandStacks: number;
   gemSwordStacks: number;
+  usesWhip(): boolean;
+  whipHitboxPose(): HitboxPose | null;
+  whipHitRegionAgainst(enemy: CombatEnemy): "TIP" | "CHAIN" | "HANDLE" | "NONE";
   onHeelysAirDodgeLanding(combinedVx: number): void;
   onHeelysSlideSpeedBase(): number;
   applySwordHitItemProcs(enemy: CombatEnemy): void;
@@ -657,6 +661,9 @@ export class DiscMechanics {
     if (!this.heavyAttackActive || this.heavyFrameIdx !== HEAVY_ATTACK1_HIT_FRAME) {
       return null;
     }
+    if (host.usesWhip()) {
+      return host.whipHitboxPose();
+    }
     const aabb = heavyAttackHitbox({
       visual: host.swordVisual as import("../combat/SwordVisual").SwordVisual,
       x: host.x,
@@ -785,6 +792,31 @@ export class DiscMechanics {
         continue;
       }
       if (!enemyIntersectsMelee(e, swordPose)) continue;
+      if (host.usesWhip()) {
+        const region = host.whipHitRegionAgainst(e);
+        if (region === "NONE") continue;
+        const hitDmg = region === "TIP" ? dmg * WhipSim.TIP_DAMAGE_MULT : dmg;
+        let ff = host.scaleOutgoingHitstun(freezeFrames(hitDmg));
+        if (region === "TIP") ff += WhipSim.TIP_HITLAG_BONUS_FRAMES;
+        const strike: WeaponStrike = {
+          damage: hitDmg,
+          freezeFrames: ff,
+          attackerX: host.x,
+          attackerW: host.w,
+          facing: host.facing,
+          knockKind,
+        };
+        if (e.applyWeaponStrike(strike)) {
+          any = true;
+          maxFreeze = Math.max(maxFreeze, ff);
+          this.heavyAttackDamageConfirmed = true;
+          AutismCombat.notifyPlayerDamageDealt(e, hitDmg);
+          KaleidoscopeEyeCombat.notifyEnemyHpLoss(e, hitDmg);
+          host.applySwordHitItemProcs(e);
+          onHit?.(e, strike, sword, "slash");
+        }
+        continue;
+      }
       const ff = host.scaleOutgoingHitstun(freezeFrames(dmg, host.gemSwordStacks > 0 ? 2 : 1));
       const strike: WeaponStrike = {
         damage: dmg,
