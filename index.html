@@ -52,6 +52,46 @@
         color: #7d8a98;
         text-align: center;
       }
+      .page-footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem 0.75rem;
+        margin-top: 8px;
+      }
+      .report-crash-btn {
+        appearance: none;
+        margin: 0;
+        padding: 0.2rem 0.35rem;
+        border: 0;
+        background: transparent;
+        color: #5a6570;
+        font-family: inherit;
+        font-size: 0.7rem;
+        letter-spacing: 0.04em;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        cursor: pointer;
+      }
+      .report-crash-btn:hover {
+        color: #9aa7b5;
+      }
+      .report-crash-btn:focus-visible {
+        outline: 1px solid #6ec8ff;
+        outline-offset: 2px;
+      }
+      .report-crash-btn:disabled {
+        cursor: default;
+        color: #5a6570;
+        text-decoration: none;
+      }
+      .report-crash-status {
+        margin: 0;
+        font-size: 0.7rem;
+        color: #5a6570;
+        min-height: 1em;
+      }
       .nav-row {
         display: flex;
         flex-wrap: wrap;
@@ -101,6 +141,12 @@
       (also available on the death screen).
       F3 toggles debug. Seed via <code>?seed=12345</code>.
     </p>
+    <div class="page-footer">
+      <button type="button" class="report-crash-btn" id="report-crash-btn">
+        Report crash
+      </button>
+      <p class="report-crash-status" id="report-crash-status" aria-live="polite"></p>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

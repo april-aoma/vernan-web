@@ -100,27 +100,38 @@ function buildPayload(input: CrashReportInput): CrashPayload {
  * No-ops when the live API is not configured.
  */
 export function reportCrash(input: CrashReportInput): void {
+  void submitCrashReport(input);
+}
+
+/**
+ * Send a crash report and resolve with whether the API accepted it.
+ * Manual reports skip the short dedupe window.
+ */
+export async function submitCrashReport(input: CrashReportInput): Promise<boolean> {
   const api = liveApiBase();
-  if (!api) return;
+  if (!api) return false;
 
   const payload = buildPayload(input);
+  const skipDedupe = payload.source === "manual";
   const fp = fingerprint(payload.message, payload.stack, payload.source);
   const now = Date.now();
-  if (fp === lastFingerprint && now - lastSentAt < DEDUPE_MS) return;
+  if (!skipDedupe && fp === lastFingerprint && now - lastSentAt < DEDUPE_MS) {
+    return false;
+  }
   lastFingerprint = fp;
   lastSentAt = now;
 
-  const body = JSON.stringify(payload);
-  const url = `${api}/api/crashes`;
-
-  void fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-    keepalive: true,
-  }).catch(() => {
-    /* ignore network failures */
-  });
+  try {
+    const res = await fetch(`${api}/api/crashes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export function reportUnknownCrash(err: unknown, source: CrashSource | string): void {
