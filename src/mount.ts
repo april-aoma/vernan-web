@@ -156,6 +156,7 @@ import {
 import { HudEconomyDisplay } from "./ui/HudEconomy";
 import { openSubmitDialog } from "./ranking/SubmitDialog";
 import { openLoginDialog } from "./ranking/LoginDialog";
+import { isLoggedIn, logoutAccount } from "./ranking/authStore";
 import { submitScore } from "./ranking/scoresStore";
 import type { RunSummary } from "./ranking/types";
 import { reportUnknownCrash, setCrashContext } from "./diagnostics/crashReporter";
@@ -1151,6 +1152,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   async function beginLoginFromPause(): Promise<void> {
     if (submitDialogOpen || loginDialogOpen) return;
+    if (isLoggedIn()) {
+      await logoutAccount();
+      return;
+    }
     loginDialogOpen = true;
     paused = true;
     softPointerControls.clear();
@@ -3569,6 +3574,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           hudSprites.swordPickup,
           currentRunSummary(),
           leaderboardLocked,
+          isLoggedIn(),
         );
       } else {
         pauseMenuHits = {

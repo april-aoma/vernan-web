@@ -41,6 +41,7 @@ export function drawPauseMenu(
   swordPickup: ImageBitmap | null,
   runSummary?: RunSummary,
   submitLocked = false,
+  loggedIn = false,
 ): PauseMenuHitRects {
   const boxH = PAUSE_MENU_PADDING * 2 + (runSummary ? 112 : 76);
   g.fillStyle = "rgba(10,12,16,0.863)";
@@ -76,8 +77,16 @@ export function drawPauseMenu(
     y += 10;
   }
 
-  // Order: Login → View Leaderboard → Submit Score (parity with Java pause menu).
-  const login = drawOverlayButton(g, btnX, y, btnW, btnH, "LOGIN", "rgb(93,207,110)");
+  // Order: Login/Logout → View Leaderboard → Submit Score (parity with Java pause menu).
+  const login = drawOverlayButton(
+    g,
+    btnX,
+    y,
+    btnW,
+    btnH,
+    loggedIn ? "LOGOUT" : "LOGIN",
+    loggedIn ? "rgb(200,120,120)" : "rgb(93,207,110)",
+  );
   y += btnH + 4;
   const viewBoard = drawOverlayButton(
     g,

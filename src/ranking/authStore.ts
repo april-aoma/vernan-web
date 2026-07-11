@@ -125,6 +125,11 @@ export async function registerAccount(
   if (!res.ok) throw new Error(await parseError(res));
   const session = parseSession((await res.json()) as Record<string, unknown>);
   saveAuthSession(session);
+  try {
+    localStorage.setItem("vernan-web-player-name", session.displayName);
+  } catch {
+    /* ignore */
+  }
   return session;
 }
 
@@ -139,6 +144,11 @@ export async function loginAccount(username: string, password: string): Promise<
   if (!res.ok) throw new Error(await parseError(res));
   const session = parseSession((await res.json()) as Record<string, unknown>);
   saveAuthSession(session);
+  try {
+    localStorage.setItem("vernan-web-player-name", session.displayName);
+  } catch {
+    /* ignore */
+  }
   return session;
 }
 

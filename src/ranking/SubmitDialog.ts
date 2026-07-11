@@ -235,6 +235,9 @@ function openRemoteSubmitDialog(summary: RunSummary): Promise<SubmitDialogResult
         sessionName.style.color = VERIFIED_GREEN;
         sessionUser.textContent = `@${session.username}`;
         tabLogin.textContent = "Log out";
+        // Keep guest name field aligned with the signed-in display name.
+        guestName.input.value = session.displayName;
+        authDisplay.input.value = session.displayName;
       } else {
         sessionEl.dataset.empty = "true";
         sessionLabel.textContent = "Not signed in";
@@ -273,7 +276,11 @@ function openRemoteSubmitDialog(summary: RunSummary): Promise<SubmitDialogResult
       }
       if (next === "guest") {
         form.dataset.mode = "guest";
-        formHint.textContent = "Enter a name and submit as guest.";
+        const session = loadAuthSession();
+        formHint.textContent =
+          session != null
+            ? `Signed in as ${session.displayName} (@${session.username}). Submit & quit uses your verified name.`
+            : "Enter a name and submit as guest.";
         syncFieldInteractivity();
         guestName.input.focus();
         guestName.input.select();

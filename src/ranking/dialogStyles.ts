@@ -125,7 +125,7 @@ export function ensureVernanDialogStyles(): void {
     }
     .vsd-session {
       flex: 0 0 auto;
-      min-height: 4rem;
+      min-height: 4.5rem;
       margin-bottom: 0.45rem;
       padding: 0.5rem 0.65rem;
       background: #151a22;

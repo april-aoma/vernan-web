@@ -157,6 +157,7 @@ export function openLoginDialog(): Promise<void> {
         sessionName.style.color = VERIFIED_GREEN;
         sessionUser.textContent = `@${session.username}`;
         tabLogin.textContent = "Log out";
+        authDisplay.input.value = session.displayName;
       } else {
         sessionEl.dataset.empty = "true";
         sessionLabel.textContent = "Not signed in";
