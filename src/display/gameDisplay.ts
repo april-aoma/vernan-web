@@ -54,7 +54,9 @@ export function installGameDisplay(opts: GameDisplayOptions): { destroy: () => v
   const setImmersive = (on: boolean): void => {
     html.classList.toggle("immersive", on);
     document.body.classList.toggle("immersive", on);
+    if (!on) html.classList.remove("force-landscape");
     syncChrome();
+    syncLandscapeRotate();
     fitCanvas();
   };
 
@@ -83,6 +85,10 @@ export function installGameDisplay(opts: GameDisplayOptions): { destroy: () => v
     const vh = Math.floor(vv?.height ?? window.innerHeight);
 
     if (isImmersive()) {
+      // CSS 90° fallback: treat the portrait viewport as landscape for layout.
+      if (needsLandscapeRotate()) {
+        return { w: Math.max(1, vh), h: Math.max(1, vw) };
+      }
       return { w: Math.max(1, vw), h: Math.max(1, vh) };
     }
 
@@ -171,24 +177,47 @@ export function installGameDisplay(opts: GameDisplayOptions): { destroy: () => v
     }
   };
 
+  const isPortrait = (): boolean =>
+    window.matchMedia("(orientation: portrait)").matches;
+
+  /** True when immersive but the device is still portrait (lock unsupported/denied). */
+  const needsLandscapeRotate = (): boolean => isImmersive() && isPortrait();
+
+  const syncLandscapeRotate = (): void => {
+    html.classList.toggle("force-landscape", needsLandscapeRotate());
+  };
+
   const tryLockLandscape = async (): Promise<void> => {
     try {
       const orientation = screen.orientation as ScreenOrientation & {
         lock?: (o: string) => Promise<void>;
       };
-      await orientation.lock?.("landscape");
+      if (typeof orientation.lock === "function") {
+        await orientation.lock("landscape");
+      }
     } catch {
-      // Requires fullscreen or installed PWA on most browsers.
+      // Requires fullscreen or installed PWA on most browsers; iOS has no lock API.
     }
+    syncLandscapeRotate();
+    fitCanvas();
+  };
+
+  const unlockOrientation = (): void => {
+    try {
+      screen.orientation?.unlock?.();
+    } catch {
+      // ignore
+    }
+    html.classList.remove("force-landscape");
   };
 
   const enterImmersive = async (): Promise<void> => {
     setImmersive(true);
     const ok = await requestFs(html);
-    if (ok || isStandalone()) {
+    // Lock when FS works; otherwise CSS rotate handles portrait (e.g. iOS).
+    if (ok || isStandalone() || isImmersive()) {
       await tryLockLandscape();
     }
-    fitCanvas();
     canvas()?.focus({ preventScroll: true });
   };
 
@@ -196,9 +225,11 @@ export function installGameDisplay(opts: GameDisplayOptions): { destroy: () => v
     if (isStandalone()) {
       // Standalone stays immersive; only unlock orientation if possible.
       syncChrome();
+      syncLandscapeRotate();
       fitCanvas();
       return;
     }
+    unlockOrientation();
     await exitFs();
     setImmersive(false);
   };
@@ -215,17 +246,26 @@ export function installGameDisplay(opts: GameDisplayOptions): { destroy: () => v
   const onFsChange = (): void => {
     if (isStandalone()) {
       setImmersive(true);
+      void tryLockLandscape();
       return;
     }
     if (isFullscreen()) {
       setImmersive(true);
+      void tryLockLandscape();
     } else if (isImmersive()) {
       // Esc / system exit — restore page chrome.
+      unlockOrientation();
       setImmersive(false);
     } else {
+      unlockOrientation();
       syncChrome();
       fitCanvas();
     }
+  };
+
+  const onViewportChange = (): void => {
+    syncLandscapeRotate();
+    fitCanvas();
   };
 
   const onToggleClick = (e: Event): void => {
@@ -242,9 +282,9 @@ export function installGameDisplay(opts: GameDisplayOptions): { destroy: () => v
   exitButton?.addEventListener("click", onExitClick);
   document.addEventListener("fullscreenchange", onFsChange);
   document.addEventListener("webkitfullscreenchange", onFsChange);
-  window.addEventListener("resize", fitCanvas);
-  window.visualViewport?.addEventListener("resize", fitCanvas);
-  window.addEventListener("orientationchange", fitCanvas);
+  window.addEventListener("resize", onViewportChange);
+  window.visualViewport?.addEventListener("resize", onViewportChange);
+  window.addEventListener("orientationchange", onViewportChange);
 
   // Home Screen / installed app: fill the display immediately.
   if (isStandalone()) {
@@ -258,6 +298,7 @@ export function installGameDisplay(opts: GameDisplayOptions): { destroy: () => v
   // Canvas is created synchronously inside mount(), but fit again next frame
   // in case layout/fonts settle.
   requestAnimationFrame(() => {
+    syncLandscapeRotate();
     fitCanvas();
     syncChrome();
   });
@@ -268,9 +309,9 @@ export function installGameDisplay(opts: GameDisplayOptions): { destroy: () => v
       exitButton?.removeEventListener("click", onExitClick);
       document.removeEventListener("fullscreenchange", onFsChange);
       document.removeEventListener("webkitfullscreenchange", onFsChange);
-      window.removeEventListener("resize", fitCanvas);
-      window.visualViewport?.removeEventListener("resize", fitCanvas);
-      window.removeEventListener("orientationchange", fitCanvas);
+      window.removeEventListener("resize", onViewportChange);
+      window.visualViewport?.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("orientationchange", onViewportChange);
     },
   };
 }

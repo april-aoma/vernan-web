@@ -1,13 +1,15 @@
-name = "vernan-scores"
+name = "vernan-auth"
 main = "src/index.ts"
 compatibility_date = "2025-07-01"
 account_id = "0eb5d31ce2d0428ce3aa240fb7655cff"
 
+# Account store (auth:user:*). Currently shares the scores KV namespace so
+# existing accounts keep working; can move to a dedicated namespace later.
 [[kv_namespaces]]
-binding = "SCORES"
+binding = "AUTH"
 id = "bfbc8a98020a423293e604b4758d25d2"
 preview_id = "801f439d397c4c568134ac6c612db700"
 
-# Must match vernan-auth AUTH_SECRET (JWT verify only; login is on vernan-auth).
+# Must match vernan-scores AUTH_SECRET so leaderboard can verify JWTs.
 # Set production secret: npx wrangler secret put AUTH_SECRET
 # Local: copy .dev.vars.example → .dev.vars

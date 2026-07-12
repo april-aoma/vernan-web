@@ -38,6 +38,7 @@ jobs:
       - name: Build
         env:
           VITE_SCORES_API: https://vernan-scores.henrysbasu.workers.dev
+          VITE_AUTH_API: https://vernan-auth.henrysbasu.workers.dev
         run: |
           COUNT=$(git rev-list --count HEAD)
           export VITE_VERNAN_VERSION="0.1.${COUNT}"

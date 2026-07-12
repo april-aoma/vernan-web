@@ -1,5 +1,6 @@
 /**
- * Session token for the Vernan scores auth API (localStorage).
+ * Session token for the Vernan auth API (localStorage).
+ * Login/register hit vernan-auth; scores still use vernan-scores.
  */
 
 export type AuthSession = {
@@ -11,14 +12,14 @@ export type AuthSession = {
 
 const SESSION_KEY = "vernan-web-auth";
 
-function scoresApiBase(): string | null {
+function authApiBase(): string | null {
   try {
-    const fromQuery = new URLSearchParams(window.location.search).get("scoresApi");
+    const fromQuery = new URLSearchParams(window.location.search).get("authApi");
     if (fromQuery) return fromQuery.replace(/\/$/, "");
   } catch {
     /* ignore */
   }
-  const fromEnv = import.meta.env.VITE_SCORES_API;
+  const fromEnv = import.meta.env.VITE_AUTH_API;
   if (typeof fromEnv === "string" && fromEnv.trim()) {
     return fromEnv.trim().replace(/\/$/, "");
   }
@@ -111,8 +112,8 @@ export async function registerAccount(
   password: string,
   displayName?: string,
 ): Promise<AuthSession> {
-  const api = scoresApiBase();
-  if (!api) throw new Error("Scores API not configured");
+  const api = authApiBase();
+  if (!api) throw new Error("Auth API not configured");
   const res = await fetch(`${api}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -134,8 +135,8 @@ export async function registerAccount(
 }
 
 export async function loginAccount(username: string, password: string): Promise<AuthSession> {
-  const api = scoresApiBase();
-  if (!api) throw new Error("Scores API not configured");
+  const api = authApiBase();
+  if (!api) throw new Error("Auth API not configured");
   const res = await fetch(`${api}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -153,7 +154,7 @@ export async function loginAccount(username: string, password: string): Promise<
 }
 
 export async function logoutAccount(): Promise<void> {
-  const api = scoresApiBase();
+  const api = authApiBase();
   const session = loadAuthSession();
   clearAuthSession();
   if (!api || !session) return;

@@ -30,8 +30,11 @@ function escapeHtml(s: string): string {
 function playUrl(): string {
   const url = new URL("index.html", window.location.href);
   try {
-    const api = new URLSearchParams(window.location.search).get("scoresApi");
+    const params = new URLSearchParams(window.location.search);
+    const api = params.get("scoresApi");
     if (api) url.searchParams.set("scoresApi", api);
+    const authApi = params.get("authApi");
+    if (authApi) url.searchParams.set("authApi", authApi);
   } catch {
     /* ignore */
   }
