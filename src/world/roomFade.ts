@@ -45,6 +45,11 @@ export type LevelAscendState = {
   climbFrame: number;
   animFrame: number;
   newFloorApplied: boolean;
+  /**
+   * Next-floor sprite preload finished (or not required).
+   * Fade-in waits on this after the min blackout / climb-descend timers.
+   */
+  floorSpritesReady: boolean;
   /** Device-space feet Y at fade-out / blackout start. */
   startFeetScreenY: number;
   startCenterScreenX: number;
@@ -77,6 +82,7 @@ export function createLevelAscendState(): LevelAscendState {
     climbFrame: 0,
     animFrame: 0,
     newFloorApplied: false,
+    floorSpritesReady: true,
     startFeetScreenY: 0,
     startCenterScreenX: 0,
     endFeetScreenY: Number.NaN,
@@ -160,6 +166,7 @@ export function startNextLevelAscend(
   la.climbFrame = 0;
   la.animFrame = 0;
   la.newFloorApplied = false;
+  la.floorSpritesReady = false;
   la.startFeetScreenY = feetScreenY;
   la.startCenterScreenX = centerScreenX;
   la.endFeetScreenY = Number.NaN;
@@ -272,9 +279,18 @@ function tickLevelLoadBlack(
     la.moveSec >= LEVEL_TRANS_MOVE_TOTAL_SEC - 1e-6;
 
   if (la.newFloorApplied && la.blackRemaining <= 0 && moveDone) {
+    if (!la.floorSpritesReady) {
+      // Hold black until next-floor sprites finish loading (may exceed min 5s).
+      return "busy";
+    }
     return "ascend_fade_in";
   }
   return result;
+}
+
+/** Mark next-floor sprite preload complete so blackout can fade in. */
+export function markLevelAscendFloorSpritesReady(t: RoomTransitionState): void {
+  t.levelAscend.floorSpritesReady = true;
 }
 
 function tickClimbAnim(

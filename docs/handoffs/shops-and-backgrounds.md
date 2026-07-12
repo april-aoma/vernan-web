@@ -70,7 +70,7 @@ Pick one primary slice first (shop **or** backgrounds); don’t boil the ocean.
 - [x] Deco full opacity; black room void; math boss/secret backgrounds
 - [x] Pause button (HUD II) + Enter/Esc + pause overlay/menu
 - [x] Palette exact-source preserve (Java rebuildExactSourceColors keys)
-- [ ] Mini-buy overlay / heart-key shop pickups (optional next)
+- [x] Mini-buy overlay / heart-key shop pickups (optional next)
 - [x] No edits to climb, door hold, or breakable clear logic
 - [x] `npx tsc --noEmit` clean
 - [x] `docs/parity.md` note added

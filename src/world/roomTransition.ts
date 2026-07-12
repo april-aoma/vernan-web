@@ -856,5 +856,6 @@ export {
   levelTransStripHandoffAdjustDevY,
   LEVEL_TRANS_FEET_ROW_WORLD_PX,
   LEVEL_TRANS_SHEET_FRAMES,
+  markLevelAscendFloorSpritesReady,
 } from "./roomFade";
 export type { RoomTransitionState };

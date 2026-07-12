@@ -194,10 +194,11 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 
 - SHOP rooms: lazy `rollShopLayout` (Java parity) — 1–6 slots, weighted KEY/HEART/PEDESTAL with caps {1,3,2}; luck scales pedestal/heart weights; double-xor `SHOP_LAYOUT_SALT`
 - Pedestals `$15` (`PedestalItemDecks.drawDistinct`); heart/key world pickups `$5` (Up/W buy; skip auto-collect)
+- Heart/key buy: mini-buy lift overlay (`MINI_BUY_OVERLAY_FRAMES` / coin-drain duration) — arms-raised pose + sprite above head, no card/darken
 - Cat shopkeep (`cat shopkeep sheet.png`): placed left of wares (clears pedestals + priced pickups); head bob + tail warp + pupils track Vernan; drawn before player
 - Price labels in device space; free ITEM/boss pedestals unchanged
 - Run starts with **0** coins (`RUN_START_MONEY`); combat economy from room-clear rewards + breakables + gem sword procs
-- Stubbed: mini-buy lift overlay, subweapon shop swap
+- Stubbed: subweapon shop swap
 - **Math backgrounds**: boss/secret presets via `BackgroundPresetRegistry` + `BackgroundRendererV3` (scroll/parallax/distortions/blends); occlusion skips solid tiles + deco cells
 
 ### Phase 5a notes

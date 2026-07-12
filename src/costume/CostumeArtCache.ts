@@ -20,6 +20,11 @@ export type CostumeFrameStrip = ImageBitmap[];
 type LegacyStrips = Map<CostumeState, CostumeFrameStrip>;
 type PartStrips = Map<CostumeState, Map<string, CostumeFrameStrip>>;
 
+export type CostumeArtLoadOptions = {
+  /** When set, only these folder names are loaded (others skipped). */
+  folders?: ReadonlySet<string> | readonly string[];
+};
+
 /**
  * Per-folder per-state sprite strip cache (Java CostumeArtCache).
  */
@@ -31,11 +36,16 @@ export class CostumeArtCache {
   private readonly partLemonStrips = new Map<string, PartStrips>();
   private readonly partHoldStrips = new Map<string, PartStrips>();
   private readonly routingByFolder = new Map<string, CostumeLayerRouting>();
+  private readonly loadedFolders = new Set<string>();
   private anyLoaded = false;
   private anyLemonLoaded = false;
 
   get empty(): boolean {
     return !this.anyLoaded;
+  }
+
+  hasFolder(folderName: string): boolean {
+    return this.loadedFolders.has(folderName);
   }
 
   routingFor(itemId: string, folderName: string): CostumeLayerRouting {
@@ -50,14 +60,43 @@ export class CostumeArtCache {
     layersFile: CostumeLayersFile,
     drawConfig: CostumeDrawConfig,
     manifestPaths: string[],
+    options?: CostumeArtLoadOptions,
   ): Promise<CostumeArtCache> {
     const cache = new CostumeArtCache();
+    await cache.ensureFolders(assets, layersFile, drawConfig, manifestPaths, options?.folders);
+    return cache;
+  }
+
+  /**
+   * Load additional costume folders into this cache (skips already-loaded folders).
+   * Candidates are intersected with the runtime manifest so missing paths never fetch.
+   */
+  async ensureFolders(
+    assets: AssetLoader,
+    layersFile: CostumeLayersFile,
+    drawConfig: CostumeDrawConfig,
+    manifestPaths: string[],
+    folders?: ReadonlySet<string> | readonly string[] | null,
+  ): Promise<void> {
     const costumePaths = manifestPaths.filter((p) => p.startsWith("sprites/costume/"));
+    const manifestSet = new Set(manifestPaths);
+    const folderFilter =
+      folders == null
+        ? null
+        : folders instanceof Set
+          ? folders
+          : new Set(folders);
 
     for (const layer of layersFile.layers) {
       const folder = layer.folderName;
+      if (folderFilter && !folderFilter.has(folder)) continue;
+      if (this.loadedFolders.has(folder)) continue;
+
       const folderPaths = costumePaths.filter((p) => p.startsWith(`sprites/costume/${folder}/`));
-      if (folderPaths.length === 0) continue;
+      if (folderPaths.length === 0) {
+        this.loadedFolders.add(folder);
+        continue;
+      }
 
       const partTokens = discoverPartTokensFromPaths(manifestPaths, folder);
       const routing = costumeLayerRoutingForFolder(
@@ -66,7 +105,7 @@ export class CostumeArtCache {
         partTokens,
         drawConfig,
       );
-      cache.routingByFolder.set(folder, routing);
+      this.routingByFolder.set(folder, routing);
 
       const perLegacy: LegacyStrips = new Map();
       const perLegacyLemon: LegacyStrips = new Map();
@@ -84,6 +123,7 @@ export class CostumeArtCache {
           frameCount,
           perLegacy,
           state,
+          manifestSet,
         );
         await tryLoadStrip(
           assets,
@@ -91,6 +131,7 @@ export class CostumeArtCache {
           frameCount,
           perLegacyLemon,
           state,
+          manifestSet,
         );
         await tryLoadStrip(
           assets,
@@ -98,6 +139,7 @@ export class CostumeArtCache {
           frameCount,
           perLegacyHold,
           state,
+          manifestSet,
         );
 
         for (const route of routing.parts) {
@@ -109,6 +151,7 @@ export class CostumeArtCache {
             perPart,
             state,
             token,
+            manifestSet,
           );
           await tryLoadPartStrip(
             assets,
@@ -117,6 +160,7 @@ export class CostumeArtCache {
             perPartHold,
             state,
             token,
+            manifestSet,
           );
           await tryLoadPartStrip(
             assets,
@@ -125,37 +169,37 @@ export class CostumeArtCache {
             perPartLemon,
             state,
             token,
+            manifestSet,
           );
         }
       }
 
       if (perLegacy.size > 0) {
-        cache.legacyStrips.set(folder, perLegacy);
-        cache.anyLoaded = true;
+        this.legacyStrips.set(folder, perLegacy);
+        this.anyLoaded = true;
       }
       if (perLegacyLemon.size > 0) {
-        cache.legacyLemonStrips.set(folder, perLegacyLemon);
-        cache.anyLemonLoaded = true;
+        this.legacyLemonStrips.set(folder, perLegacyLemon);
+        this.anyLemonLoaded = true;
       }
       if (perLegacyHold.size > 0) {
-        cache.legacyHoldStrips.set(folder, perLegacyHold);
-        cache.anyLoaded = true;
+        this.legacyHoldStrips.set(folder, perLegacyHold);
+        this.anyLoaded = true;
       }
       if (perPart.size > 0) {
-        cache.partStrips.set(folder, perPart);
-        cache.anyLoaded = true;
+        this.partStrips.set(folder, perPart);
+        this.anyLoaded = true;
       }
       if (perPartLemon.size > 0) {
-        cache.partLemonStrips.set(folder, perPartLemon);
-        cache.anyLemonLoaded = true;
+        this.partLemonStrips.set(folder, perPartLemon);
+        this.anyLemonLoaded = true;
       }
       if (perPartHold.size > 0) {
-        cache.partHoldStrips.set(folder, perPartHold);
-        cache.anyLoaded = true;
+        this.partHoldStrips.set(folder, perPartHold);
+        this.anyLoaded = true;
       }
+      this.loadedFolders.add(folder);
     }
-
-    return cache;
   }
 
   frame(
@@ -250,8 +294,10 @@ async function tryLoadStrip(
   frameCount: number,
   target: LegacyStrips,
   state: CostumeState,
+  manifestSet: ReadonlySet<string>,
 ): Promise<void> {
   for (const path of candidates) {
+    if (!manifestSet.has(path)) continue;
     const strip = await loadStripQuiet(assets, path, frameCount);
     if (strip) {
       target.set(state, strip);
@@ -267,8 +313,10 @@ async function tryLoadPartStrip(
   target: PartStrips,
   state: CostumeState,
   token: string,
+  manifestSet: ReadonlySet<string>,
 ): Promise<void> {
   for (const path of candidates) {
+    if (!manifestSet.has(path)) continue;
     const strip = await loadStripQuiet(assets, path, frameCount);
     if (strip) {
       let map = target.get(state);

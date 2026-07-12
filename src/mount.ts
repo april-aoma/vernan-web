@@ -27,8 +27,17 @@ import {
   type CostumeRenderBundle,
   type AttackOverlayDraw,
 } from "./costume/renderPlayerBody";
-import { loadCostumeLayers } from "./ranking/costumeResolve";
+import { folderForCostumeId, loadCostumeLayers } from "./ranking/costumeResolve";
 import { VernanBodyLibrary } from "./vernan/VernanBodyLibrary";
+import {
+  eagerlyResolveFloorItems,
+  uniqueEnemySpawnKinds,
+} from "./world/eagerFloorItems";
+import type { EnemySpawnKind } from "./world/EnemySpawnBudget";
+import {
+  markLevelAscendFloorSpritesReady,
+  type LevelAscendState,
+} from "./world/roomFade";
 import { VernanAnimCueRuntime } from "./vernan/VernanAnimCueRuntime";
 import { VernanAnimCueSheet } from "./vernan/VernanAnimCueSheet";
 import { mergeOwnedPalette } from "./vernan/OwnedPaletteRuntime";
@@ -153,7 +162,7 @@ import {
   type CirclePadDirs,
   type CirclePadDrawState,
 } from "./ui/CirclePad";
-import { HudEconomyDisplay } from "./ui/HudEconomy";
+import { HUD_MONEY_DRAIN_FRAMES_PER_COIN, HudEconomyDisplay } from "./ui/HudEconomy";
 import { openSubmitDialog } from "./ranking/SubmitDialog";
 import { openLoginDialog } from "./ranking/LoginDialog";
 import { isLoggedIn, logoutAccount } from "./ranking/authStore";
@@ -341,7 +350,6 @@ import {
   resyncRoomEnemies,
   type RoomSession,
 } from "./world/roomTransition";
-import type { LevelAscendState } from "./world/roomFade";
 import { TilesetProject } from "./tileset/TilesetProject";
 import { SheetAtlas } from "./tileset/SheetAtlas";
 import { drawShellTiles } from "./tileset/drawShellTiles";
@@ -596,6 +604,24 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   const hudEconomy = new HudEconomyDisplay();
   hudEconomy.sync(player.stats.money, player.stats.keys);
   let pickupOverlayBonusLine = "";
+  /** Heart/key shop buy: short lift pose, no card/darken (Java miniBuyOverlay*). */
+  const MINI_BUY_OVERLAY_FRAMES = 20;
+  let miniBuyOverlayActive = false;
+  let miniBuyKind: PickupKind = PickupKind.HEART;
+  let miniBuyFramesRemaining = 0;
+  const startMiniBuyOverlay = (kind: PickupKind, priceCoins: number): void => {
+    miniBuyOverlayActive = true;
+    miniBuyKind = kind;
+    miniBuyFramesRemaining = Math.max(
+      MINI_BUY_OVERLAY_FRAMES,
+      priceCoins * HUD_MONEY_DRAIN_FRAMES_PER_COIN,
+    );
+  };
+  const tickMiniBuyOverlay = (): void => {
+    if (!miniBuyOverlayActive) return;
+    miniBuyFramesRemaining--;
+    if (miniBuyFramesRemaining <= 0) miniBuyOverlayActive = false;
+  };
   const pickupCollectFx: PickupCollectFx[] = [];
   const itemPickupHost: ItemPickupHost = {
     player: () => player,
@@ -1208,6 +1234,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   function requestRestart(mode: "new" | "same"): void {
     if (dungeonRestartInProgress || !itemCatalog || !pedestalDecks || !runItemPool) return;
     dungeonRestartInProgress = true;
+    void (async () => {
     try {
       const newSeed =
         mode === "new" ? (Math.floor(Math.random() * 0x7fffffff) | 0) : seed;
@@ -1275,6 +1302,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       kCandyHudRedDisplayed = -1;
       pickupOverlay.dismiss();
       pickupOverlayBonusLine = "";
+      miniBuyOverlayActive = false;
+      miniBuyFramesRemaining = 0;
       hudEconomy.sync(player.stats.money, player.stats.keys);
       softPointerControls.clear();
       clearCirclePad();
@@ -1283,6 +1312,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       if (tilesetProject) {
         enrichDungeonArt(session.dungeon, tilesetProject, contentSeedsOf(session.dungeon));
       }
+      await loadSpritesForSessionDungeon(session);
       applyRoomAndSpawn(session, 0, SpawnKind.INITIAL, player);
       applySwordProfileIfPresent();
       mountDeferredRoomPickups(session.dungeon.rooms[session.roomId]!, worldPickups);
@@ -1301,6 +1331,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     } finally {
       dungeonRestartInProgress = false;
     }
+    })();
   }
   let pedestalBmp: ImageBitmap | null = null;
   let shopKeeperFrames: ShopKeeperFrames | null = null;
@@ -1622,7 +1653,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     }
   };
 
-  /** Phase B — rest of floor 1 combat / room props / early enemies. */
+  /** Phase B — Vernan combat extras, HUD, room props (no enemies — those are seed-driven). */
   const loadFirstFloorSprites = async (): Promise<void> => {
     bootStatus = "Loading floor…";
     const [
@@ -1661,12 +1692,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       getup,
       grabbed,
       itemLayers,
-      crawler,
-      mouse,
-      mouseHurt,
-      penisman,
-      goldenRoachWalk,
-      goldenRoachFly,
     ] = await Promise.all([
       loadStrip(assets, "sprites/keyblock.png", KEYBLOCK_STRIP_FRAME_COUNT),
       loadStrip(assets, "sprites/keyblock connector.png", KEYBLOCK_STRIP_FRAME_COUNT),
@@ -1711,12 +1736,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           loadStrip(assets, `sprites/vernan/item ${part}.png`, 1),
         ),
       ),
-      loadStrip(assets, "sprites/crawler.png", CRAWLER_FRAMES),
-      loadStrip(assets, "sprites/mouse.png", MOUSE_FRAMES),
-      loadStrip(assets, "sprites/mouse hurt.png", MOUSE_FRAMES),
-      loadStrip(assets, "sprites/penisman.png", PENISMAN_FRAMES),
-      loadStrip(assets, "sprites/golden roach2.png", GOLDEN_ROACH_WALK_FRAMES),
-      loadStrip(assets, "sprites/golden roach2 fly.png", GOLDEN_ROACH_FLY_FRAMES),
     ]);
 
     keyblockStrip = keyblock;
@@ -1781,116 +1800,321 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     const itemComposite = await compositeBodyStrip(itemLayers);
     playerSprites.itemPose =
       itemComposite?.image ?? (await loadImageSafe(assets, "sprites/vernan item.png"));
-
-    enemySprites.crawler = crawler;
-    enemySprites.mouse = mouse;
-    enemySprites.mouseHurt = mouseHurt;
-    enemySprites.penisman = penisman;
-    enemySprites.goldenRoachWalk = goldenRoachWalk;
-    enemySprites.goldenRoachFly = goldenRoachFly;
   };
 
-  /** Phase C — remaining floors, costumes, bosses, extras (background while playing). */
-  const loadRemainingSprites = async (): Promise<void> => {
-    bootStatus = "Loading…";
-    if (sheetAtlas && tilesetProject) {
-      await sheetAtlas.loadSheets(assets, [...tilesetProject.sheetPaths.keys()]);
-      if (tileWorldRenderer) tileWorldRenderer.syncSheets(sheetAtlas, tilesetProject);
+  /** Spawn kinds whose strips are already decoded (skip on later floors). */
+  const loadedEnemyKinds = new Set<EnemySpawnKind>();
+  const ensuredItemGameplayArt = new Set<string>();
+  let runtimeManifestPaths: string[] | null = null;
+  let costumeLayersFile: Awaited<ReturnType<typeof loadCostumeLayers>> | null = null;
+  let costumeDrawConfig: CostumeDrawConfig | null = null;
+  let coreCombatSpritesLoaded = false;
+  let levelTransitionLoaded = false;
+
+  const ensureRuntimeManifestPaths = async (): Promise<string[]> => {
+    if (runtimeManifestPaths && runtimeManifestPaths.length > 0) return runtimeManifestPaths;
+    const manifest = await assets.loadJson<{ files?: { path: string }[] }>("runtime-manifest.json");
+    runtimeManifestPaths = (manifest.files ?? []).map((f) => f.path);
+    if (runtimeManifestPaths.length === 0) {
+      throw new Error("runtime-manifest.json has no files[] — run npm run rebuild-manifest");
     }
-    if (bgRegistry) await bgRegistry.ensureAllSprites(assets);
+    return runtimeManifestPaths;
+  };
 
-    const [
-      gemSword,
-      crouchGemSword,
-      stickSword,
-      crouchStickSword,
-      lemonIdle,
-      lemonCrouch,
-      lemonTurn,
-      lemonWalk,
-      lemonJump,
-      lemonClimb,
-      frisbee,
-      fire,
-      lemonShot,
-      psychicFire,
-      levelTrans,
-      jackBlue,
-      jackBlueShield,
-      rollingHead,
-      multilimberBody,
-      multilimberHead,
-      multilimberEye,
-    ] = await Promise.all([
-      loadStrip(assets, "sprites/gem sword attack.png", SWORD_ATTACK_FRAMES),
-      loadStrip(assets, "sprites/gem sword crouch attack.png", SWORD_ATTACK_FRAMES),
-      loadStrip(assets, "sprites/stick attack.png", SWORD_ATTACK_FRAMES),
-      loadStrip(assets, "sprites/stick crouch attack.png", SWORD_ATTACK_FRAMES),
-      loadImageSafe(assets, "sprites/vernan idle lemon.png"),
-      loadImageSafe(assets, "sprites/vernan crouch lemon.png"),
-      loadImageSafe(assets, "sprites/vernan turn lemon.png"),
-      loadStrip(assets, "sprites/vernan walk lemon.png", VERNAN_WALK_FRAMES),
-      loadStrip(assets, "sprites/vernan jump lemon.png", VERNAN_JUMP_FRAMES),
-      loadStrip(assets, "sprites/vernan climb lemon.png", VERNAN_CLIMB_FRAMES),
-      loadStrip(assets, "sprites/DKC-style/frisbee3d.png", FrisbeeProjectile.ANIM_FRAME_COUNT),
-      loadStrip(assets, "sprites/fire.png", 4),
-      loadStrip(assets, "sprites/lemon shot.png", 1),
-      loadStrip(assets, "sprites/psychic fire.png", 4),
-      (async () => {
-        const levelTransLayers = await Promise.all(
-          LEVEL_TRANSITION_BODY_PARTS.map((part) =>
-            loadStrip(assets, `sprites/vernan/leveltransition ${part}.png`, LEVEL_TRANS_SHEET_FRAMES),
-          ),
-        );
-        return (
-          (await compositeBodyStrip(levelTransLayers)) ??
-          (await loadStrip(assets, "sprites/vernan/level transition.png", LEVEL_TRANS_SHEET_FRAMES))
-        );
-      })(),
-      loadStrip(assets, "sprites/jack blue.png", JACK_BLUE_FRAMES),
-      loadStrip(assets, "sprites/jack blue shield.png", JACK_BLUE_FRAMES),
-      loadStrip(assets, "sprites/rolling head cc.png", ROLLING_HEAD_FRAMES),
-      loadStrip(assets, "sprites/multilimber body.png", MULTILIMBER_FRAMES),
-      loadStrip(assets, "sprites/multilimber head.png", MULTILIMBER_FRAMES),
-      loadStrip(assets, "sprites/multilimber eye.png", MULTILIMBER_FRAMES),
-    ]);
+  const loadLevelTransitionStrip = async (): Promise<void> => {
+    if (levelTransitionLoaded && playerSprites.levelTransition) return;
+    const levelTransLayers = await Promise.all(
+      LEVEL_TRANSITION_BODY_PARTS.map((part) =>
+        loadStrip(assets, `sprites/vernan/leveltransition ${part}.png`, LEVEL_TRANS_SHEET_FRAMES),
+      ),
+    );
+    playerSprites.levelTransition =
+      (await compositeBodyStrip(levelTransLayers)) ??
+      (await loadStrip(assets, "sprites/vernan/level transition.png", LEVEL_TRANS_SHEET_FRAMES));
+    levelTransitionLoaded = true;
+  };
 
-    playerSprites.gemSword = gemSword;
-    playerSprites.crouchGemSword = crouchGemSword;
-    playerSprites.stickSword = stickSword;
-    playerSprites.crouchStickSword = crouchStickSword;
-    playerSprites.lemonIdle = lemonIdle;
-    playerSprites.lemonCrouch = lemonCrouch;
-    playerSprites.lemonTurn = lemonTurn;
-    playerSprites.lemonWalk = lemonWalk;
-    playerSprites.lemonJump = lemonJump;
-    playerSprites.lemonClimb = lemonClimb;
-    frisbeeStrip = frisbee;
-    fireStrip = fire;
-    lemonShotStrip = lemonShot;
-    psychicFireStrip = psychicFire;
-    playerSprites.levelTransition = levelTrans;
-    enemySprites.jackBlue = jackBlue;
-    enemySprites.jackBlueShield = jackBlueShield;
-    enemySprites.rollingHead = rollingHead;
-    enemySprites.multilimberBody = multilimberBody;
-    enemySprites.multilimberHead = multilimberHead;
-    enemySprites.multilimberEye = multilimberEye;
+  const loadEnemyKindSprites = async (kinds: ReadonlySet<EnemySpawnKind>): Promise<void> => {
+    const needed = [...kinds].filter((k) => !loadedEnemyKinds.has(k));
+    if (needed.length === 0) return;
 
-    try {
-      const manifest = await assets.loadJson<{ files?: { path: string }[] }>("runtime-manifest.json");
-      const manifestPaths = (manifest.files ?? []).map((f) => f.path);
-      if (manifestPaths.length === 0) {
-        throw new Error("runtime-manifest.json has no files[] — run npm run rebuild-manifest");
-      }
-      const layersFile = await loadCostumeLayers(assets.url("data/costume_layers.json"));
-      const drawConfig = await CostumeDrawConfig.load(() =>
-        assets.loadJson("data/costume_slots.json"),
+    const tasks: Promise<void>[] = [];
+
+    const need = (k: EnemySpawnKind) => needed.includes(k);
+
+    if (need("crawler")) {
+      tasks.push(
+        loadStrip(assets, "sprites/crawler.png", CRAWLER_FRAMES).then((s) => {
+          enemySprites.crawler = s;
+        }),
       );
+    }
+    if (need("mouse")) {
+      tasks.push(
+        (async () => {
+          const [mouse, mouseHurt] = await Promise.all([
+            loadStrip(assets, "sprites/mouse.png", MOUSE_FRAMES),
+            loadStrip(assets, "sprites/mouse hurt.png", MOUSE_FRAMES),
+          ]);
+          enemySprites.mouse = mouse;
+          enemySprites.mouseHurt = mouseHurt;
+        })(),
+      );
+    }
+    if (need("penisman")) {
+      tasks.push(
+        (async () => {
+          const [penisman, penisBullet, penisBulletDie] = await Promise.all([
+            loadStrip(assets, "sprites/penisman.png", PENISMAN_FRAMES),
+            loadImageSafe(assets, "sprites/penis bullet.png"),
+            loadImageSafe(assets, "sprites/penis bullet die.png"),
+          ]);
+          enemySprites.penisman = penisman;
+          penisBulletBmp = penisBullet;
+          penisBulletDieBmp = penisBulletDie;
+        })(),
+      );
+    }
+    if (need("golden_roach")) {
+      tasks.push(
+        (async () => {
+          const [walk, fly] = await Promise.all([
+            loadStrip(assets, "sprites/golden roach2.png", GOLDEN_ROACH_WALK_FRAMES),
+            loadStrip(assets, "sprites/golden roach2 fly.png", GOLDEN_ROACH_FLY_FRAMES),
+          ]);
+          enemySprites.goldenRoachWalk = walk;
+          enemySprites.goldenRoachFly = fly;
+        })(),
+      );
+    }
+    if (need("jack_blue")) {
+      tasks.push(
+        (async () => {
+          const [jackBlue, jackBlueShield, jackBlueBone] = await Promise.all([
+            loadStrip(assets, "sprites/jack blue.png", JACK_BLUE_FRAMES),
+            loadStrip(assets, "sprites/jack blue shield.png", JACK_BLUE_FRAMES),
+            loadImageSafe(assets, "sprites/bone.png"),
+          ]);
+          enemySprites.jackBlue = jackBlue;
+          enemySprites.jackBlueShield = jackBlueShield;
+          jackBlueBoneBmp = jackBlueBone;
+        })(),
+      );
+    }
+    if (need("rolling_head")) {
+      tasks.push(
+        loadStrip(assets, "sprites/rolling head cc.png", ROLLING_HEAD_FRAMES).then((s) => {
+          enemySprites.rollingHead = s;
+        }),
+      );
+    }
+    if (need("multilimber")) {
+      tasks.push(
+        (async () => {
+          const [body, head, eye] = await Promise.all([
+            loadStrip(assets, "sprites/multilimber body.png", MULTILIMBER_FRAMES),
+            loadStrip(assets, "sprites/multilimber head.png", MULTILIMBER_FRAMES),
+            loadStrip(assets, "sprites/multilimber eye.png", MULTILIMBER_FRAMES),
+          ]);
+          enemySprites.multilimberBody = body;
+          enemySprites.multilimberHead = head;
+          enemySprites.multilimberEye = eye;
+        })(),
+      );
+    }
+    if (need("possessed")) {
+      tasks.push(
+        (async () => {
+          await loadPossessedRig(assets);
+          const possessedFrames = Math.max(1, Math.floor(64 / POSSESSED_PART_W));
+          const [possessed, shinyPossessed, possessedBullet, possessedBulletDie] = await Promise.all([
+            loadStrip(assets, "sprites/bosses/possessed.png", possessedFrames),
+            loadStrip(assets, "sprites/bosses/shiny possessed.png", possessedFrames),
+            loadImageSafe(assets, "sprites/bosses/possessed bullet.png"),
+            loadImageSafe(assets, "sprites/bosses/possessed bullet die.png"),
+          ]);
+          enemySprites.possessed = possessed;
+          enemySprites.shinyPossessed = shinyPossessed;
+          possessedBulletBmp = possessedBullet;
+          possessedBulletDieBmp = possessedBulletDie;
+        })(),
+      );
+    }
+    if (need("nephilim")) {
+      tasks.push(
+        (async () => {
+          await loadNephilimRig(assets);
+          const [nephilim, nephilimHealFx] = await Promise.all([
+            loadStrip(assets, "sprites/bosses/nephilim.png", 7),
+            loadImageSafe(assets, "sprites/FX enemy heal.png"),
+          ]);
+          enemySprites.nephilim = nephilim;
+          enemySprites.nephilimHealFx = nephilimHealFx;
+        })(),
+      );
+    }
+
+    await Promise.all(tasks);
+    for (const k of needed) loadedEnemyKinds.add(k);
+  };
+
+  const loadItemLinkedExtras = async (itemIds: readonly string[]): Promise<void> => {
+    const ids = new Set(itemIds);
+    const tasks: Promise<void>[] = [];
+
+    if (ids.has("GEM_SWORD") && !playerSprites.gemSword) {
+      tasks.push(
+        (async () => {
+          const [gemSword, crouchGemSword] = await Promise.all([
+            loadStrip(assets, "sprites/gem sword attack.png", SWORD_ATTACK_FRAMES),
+            loadStrip(assets, "sprites/gem sword crouch attack.png", SWORD_ATTACK_FRAMES),
+          ]);
+          playerSprites.gemSword = gemSword;
+          playerSprites.crouchGemSword = crouchGemSword;
+        })(),
+      );
+    }
+    if (ids.has("STICK") && !playerSprites.stickSword) {
+      tasks.push(
+        (async () => {
+          const [stickSword, crouchStickSword] = await Promise.all([
+            loadStrip(assets, "sprites/stick attack.png", SWORD_ATTACK_FRAMES),
+            loadStrip(assets, "sprites/stick crouch attack.png", SWORD_ATTACK_FRAMES),
+          ]);
+          playerSprites.stickSword = stickSword;
+          playerSprites.crouchStickSword = crouchStickSword;
+        })(),
+      );
+    }
+    if (ids.has("LEMON") && !playerSprites.lemonIdle) {
+      tasks.push(
+        (async () => {
+          const [lemonIdle, lemonCrouch, lemonTurn, lemonWalk, lemonJump, lemonClimb, lemonShot] =
+            await Promise.all([
+              loadImageSafe(assets, "sprites/vernan idle lemon.png"),
+              loadImageSafe(assets, "sprites/vernan crouch lemon.png"),
+              loadImageSafe(assets, "sprites/vernan turn lemon.png"),
+              loadStrip(assets, "sprites/vernan walk lemon.png", VERNAN_WALK_FRAMES),
+              loadStrip(assets, "sprites/vernan jump lemon.png", VERNAN_JUMP_FRAMES),
+              loadStrip(assets, "sprites/vernan climb lemon.png", VERNAN_CLIMB_FRAMES),
+              loadStrip(assets, "sprites/lemon shot.png", 1),
+            ]);
+          playerSprites.lemonIdle = lemonIdle;
+          playerSprites.lemonCrouch = lemonCrouch;
+          playerSprites.lemonTurn = lemonTurn;
+          playerSprites.lemonWalk = lemonWalk;
+          playerSprites.lemonJump = lemonJump;
+          playerSprites.lemonClimb = lemonClimb;
+          lemonShotStrip = lemonShot;
+        })(),
+      );
+    }
+    if (ids.has("FRISBEE") && !frisbeeStrip) {
+      tasks.push(
+        loadStrip(assets, "sprites/DKC-style/frisbee3d.png", FrisbeeProjectile.ANIM_FRAME_COUNT).then(
+          (s) => {
+            frisbeeStrip = s;
+          },
+        ),
+      );
+    }
+    if (ids.has("FLINT") && !fireStrip) {
+      tasks.push(
+        loadStrip(assets, "sprites/fire.png", 4).then((s) => {
+          fireStrip = s;
+        }),
+      );
+    }
+    if ((ids.has("PSYCHIC_SPOON") || ids.has("PSYCHIC")) && !psychicFireStrip) {
+      tasks.push(
+        loadStrip(assets, "sprites/psychic fire.png", 4).then((s) => {
+          psychicFireStrip = s;
+        }),
+      );
+    }
+    if (ids.has("LIL_POSSESSED") && !lilPossessedFriendBmp) {
+      tasks.push(
+        (async () => {
+          const [friend, bullet, die, smoke] = await Promise.all([
+            loadImageSafe(assets, "sprites/lil possessed friend.png"),
+            loadImageSafe(assets, "sprites/lil possessed bullet.png"),
+            loadImageSafe(assets, "sprites/lil possessed bullet die.png"),
+            loadImageSafe(assets, "sprites/smoke.png"),
+          ]);
+          lilPossessedFriendBmp = friend;
+          lilPossessedBulletBmp = bullet;
+          lilPossessedBulletDieBmp = die;
+          if (!smokeBmp) smokeBmp = smoke;
+        })(),
+      );
+    }
+    if (ids.has("LIL_MINER") && !lilMinerFriendBmp) {
+      tasks.push(
+        loadImageSafe(assets, "sprites/lil miner friend.png").then((bmp) => {
+          lilMinerFriendBmp = bmp;
+        }),
+      );
+    }
+    if (ids.has("WHIP") && !whipPartBmp) {
+      tasks.push(
+        loadImageSafe(assets, "sprites/whip part.png").then((bmp) => {
+          whipPartBmp = bmp;
+        }),
+      );
+    }
+
+    await Promise.all(tasks);
+
+    // Pickup / HUD item art for every resolved floor item.
+    await Promise.all(
+      [...ids].map(async (id) => {
+        if (!itemCatalog) return;
+        try {
+          await ensureItemArt(itemCatalog.def(id).spriteFileName);
+        } catch {
+          /* unknown id */
+        }
+      }),
+    );
+  };
+
+  const ensureCostumeBundleForFolders = async (folders: ReadonlySet<string>): Promise<void> => {
+    if (folders.size === 0 && costumeBundle) return;
+    try {
+      const manifestPaths = await ensureRuntimeManifestPaths();
+      if (!costumeLayersFile) {
+        costumeLayersFile = await loadCostumeLayers(assets.url("data/costume_layers.json"));
+      }
+      if (!costumeDrawConfig) {
+        costumeDrawConfig = await CostumeDrawConfig.load(() =>
+          assets.loadJson("data/costume_slots.json"),
+        );
+      }
+      if (costumeBundle) {
+        await costumeBundle.artCache.ensureFolders(
+          assets,
+          costumeLayersFile,
+          costumeDrawConfig,
+          manifestPaths,
+          folders,
+        );
+        return;
+      }
       const bodyLibrary = await VernanBodyLibrary.load(assets, manifestPaths);
-      const artCache = await CostumeArtCache.load(assets, layersFile, drawConfig, manifestPaths);
+      const artCache = await CostumeArtCache.load(
+        assets,
+        costumeLayersFile,
+        costumeDrawConfig,
+        manifestPaths,
+        { folders },
+      );
       if (bodyLibrary.hasIdle) {
-        costumeBundle = { bodyLibrary, artCache, drawConfig, layersFile };
+        costumeBundle = {
+          bodyLibrary,
+          artCache,
+          drawConfig: costumeDrawConfig,
+          layersFile: costumeLayersFile,
+        };
       } else {
         console.warn(
           "[vernan] costume bundle skipped: Vernan body idle art missing from runtime-manifest",
@@ -1902,60 +2126,73 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           "Ensure public/assets/runtime-manifest.json exists (npm run rebuild-manifest).",
         err,
       );
-      costumeBundle = null;
+    }
+  };
+
+  const costumeFoldersForItemIds = (itemIds: readonly string[]): Set<string> => {
+    const folders = new Set<string>();
+    const layers = costumeLayersFile ?? costumeBundle?.layersFile;
+    if (!layers) return folders;
+    for (const id of itemIds) {
+      const folder = folderForCostumeId(layers, id);
+      if (folder) folders.add(folder);
+    }
+    return folders;
+  };
+
+  const ownedCostumeItemIds = (): string[] => {
+    if (!costumeLayersFile && !costumeBundle?.layersFile) return [];
+    const layers = costumeLayersFile ?? costumeBundle!.layersFile;
+    const out: string[] = [];
+    for (const layer of layers.layers) {
+      if (player.inventory.stacksOf(layer.itemId) > 0) out.push(layer.itemId);
+    }
+    return out;
+  };
+
+  /**
+   * Load sprites required by the current session dungeon (spawn kinds + resolved items).
+   * Incremental: skips kinds / folders already loaded.
+   */
+  const loadSpritesForSessionDungeon = async (s: RoomSession): Promise<void> => {
+    bootStatus = "Loading floor sprites…";
+    const kinds = uniqueEnemySpawnKinds(s.dungeon);
+    const floorItemIds = eagerlyResolveFloorItems(s, player.stats.luck);
+    const itemIds = [...new Set([...floorItemIds, ...ownedCostumeItemIds()])];
+
+    // Need costume_layers before folder resolution on first call.
+    if (!costumeLayersFile) {
+      try {
+        costumeLayersFile = await loadCostumeLayers(assets.url("data/costume_layers.json"));
+      } catch {
+        costumeLayersFile = null;
+      }
     }
 
-    await loadPossessedRig(assets);
-    await loadNephilimRig(assets);
-    const possessedFrames = Math.max(1, Math.floor(64 / POSSESSED_PART_W));
-    const [
-      possessed,
-      shinyPossessed,
-      nephilim,
-      nephilimHealFx,
-      possessedBullet,
-      possessedBulletDie,
-      penisBullet,
-      penisBulletDie,
-      jackBlueBone,
-      lilPossessedBullet,
-      smoke,
-      lilPossessedFriend,
-      lilMinerFriend,
-      whipPart,
-      lilPossessedBulletDie,
-    ] = await Promise.all([
-      loadStrip(assets, "sprites/bosses/possessed.png", possessedFrames),
-      loadStrip(assets, "sprites/bosses/shiny possessed.png", possessedFrames),
-      loadStrip(assets, "sprites/bosses/nephilim.png", 7),
-      loadImageSafe(assets, "sprites/FX enemy heal.png"),
-      loadImageSafe(assets, "sprites/bosses/possessed bullet.png"),
-      loadImageSafe(assets, "sprites/bosses/possessed bullet die.png"),
-      loadImageSafe(assets, "sprites/penis bullet.png"),
-      loadImageSafe(assets, "sprites/penis bullet die.png"),
-      loadImageSafe(assets, "sprites/bone.png"),
-      loadImageSafe(assets, "sprites/lil possessed bullet.png"),
-      loadImageSafe(assets, "sprites/smoke.png"),
-      loadImageSafe(assets, "sprites/lil possessed friend.png"),
-      loadImageSafe(assets, "sprites/lil miner friend.png"),
-      loadImageSafe(assets, "sprites/whip part.png"),
-      loadImageSafe(assets, "sprites/lil possessed bullet die.png"),
+    const folders = costumeFoldersForItemIds(itemIds);
+
+    await Promise.all([
+      loadEnemyKindSprites(kinds),
+      loadItemLinkedExtras(itemIds),
+      ensureCostumeBundleForFolders(folders),
+      ensureFloorSheets(s.dungeon.floorOrdinal),
+      (async () => {
+        if (!bgRegistry) return;
+        roomMathBackgroundPresetId = assignRoomMathBackgroundPresets(s.dungeon.layout, bgRegistry);
+        await Promise.all(
+          roomMathBackgroundPresetId.map((_, roomId) => ensureRoomBackground(roomId)),
+        );
+      })(),
     ]);
-    enemySprites.possessed = possessed;
-    enemySprites.shinyPossessed = shinyPossessed;
-    enemySprites.nephilim = nephilim;
-    enemySprites.nephilimHealFx = nephilimHealFx;
-    possessedBulletBmp = possessedBullet;
-    possessedBulletDieBmp = possessedBulletDie;
-    penisBulletBmp = penisBullet;
-    penisBulletDieBmp = penisBulletDie;
-    jackBlueBoneBmp = jackBlueBone;
-    lilPossessedBulletBmp = lilPossessedBullet;
-    smokeBmp = smoke;
-    lilPossessedFriendBmp = lilPossessedFriend;
-    lilMinerFriendBmp = lilMinerFriend;
-    whipPartBmp = whipPart;
-    lilPossessedBulletDieBmp = lilPossessedBulletDie;
+  };
+
+  /** Boot-only: Vernan combat + HUD + level-transition (always needed before play). */
+  const loadCoreCombatSprites = async (): Promise<void> => {
+    if (coreCombatSpritesLoaded) return;
+    await loadFirstRoomSprites();
+    await loadFirstFloorSprites();
+    await loadLevelTransitionStrip();
+    coreCombatSpritesLoaded = true;
   };
 
   void (async () => {
@@ -2004,11 +2241,13 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         bossDoorLayout = null;
       }
 
-      await loadFirstRoomSprites();
+      await loadCoreCombatSprites();
 
       session = createSession(dungeon, catalog, decks);
       floorOrdinal = dungeon.floorOrdinal;
       miniMapState = createMiniMapState(dungeon.layout.roomCount());
+
+      await loadSpritesForSessionDungeon(session);
 
       applyRoomAndSpawn(session, 0, SpawnKind.INITIAL, player);
       mountDeferredRoomPickups(session.dungeon.rooms[session.roomId]!, worldPickups);
@@ -2016,12 +2255,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       revealMiniMapForRoom(session.dungeon.layout, session.roomId, miniMapState);
       playerWasOnGround = player.onGround;
       snapCameraToPlayer(session);
-
-      // Game is playable — finish floor 1, then stream the rest in the background.
-      await loadFirstFloorSprites();
-      void loadRemainingSprites().catch((err) => {
-        console.warn("[vernan] background sprite load failed", err);
-      });
     } catch (err) {
       bootError = err instanceof Error ? err.message : String(err);
       reportUnknownCrash(err, "boot");
@@ -2038,6 +2271,28 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     } catch {
       return null;
     }
+  }
+
+  /** Pickup art + costume folder + weapon/familiar extras for an acquired / shown item. */
+  async function ensureItemGameplayArt(itemId: string): Promise<void> {
+    if (!itemId || ensuredItemGameplayArt.has(itemId)) return;
+    ensuredItemGameplayArt.add(itemId);
+    if (!itemCatalog) return;
+    try {
+      await ensureItemArt(itemCatalog.def(itemId).spriteFileName);
+    } catch {
+      /* unknown */
+    }
+    await loadItemLinkedExtras([itemId]);
+    if (!costumeLayersFile) {
+      try {
+        costumeLayersFile = await loadCostumeLayers(assets.url("data/costume_layers.json"));
+      } catch {
+        return;
+      }
+    }
+    const folder = folderForCostumeId(costumeLayersFile, itemId);
+    if (folder) await ensureCostumeBundleForFolders(new Set([folder]));
   }
 
   function cameraBoundsFor(s: RoomSession) {
@@ -2548,6 +2803,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       setCrashContext({ seed, floorReached: floorOrdinal });
       if (input.debugTogglePressed) debug = !debug;
       if (!session) return;
+      if (dungeonRestartInProgress) return;
 
       // Java: Enter toggles pause (Esc web UX); HUD II button same. Clear hardware so Z/X don't stick.
       // Skip while dead or item-pickup overlay (Java !itemPickupOverlayActive).
@@ -2815,6 +3071,16 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           refreshRoomArtAndCamera();
           snapFamiliarsThroughRoomTransition();
           revealMiniMapForRoom(session!.dungeon.layout, session!.roomId, miniMapState);
+
+          const ascendSession = session!;
+          void loadSpritesForSessionDungeon(ascendSession)
+            .then(() => {
+              markLevelAscendFloorSpritesReady(ascendSession.transition);
+            })
+            .catch((err) => {
+              console.warn("[vernan] next-floor sprite load failed", err);
+              markLevelAscendFloorSpritesReady(ascendSession.transition);
+            });
         },
         screenAnchor: (p: Player, cam: WorldCamera) => ({
           feetY: Math.round(CAMERA_ZOOM * p.spriteFeetWorldY() + cam.ty),
@@ -3080,6 +3346,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           if (pickupBuy.kind === PickupKind.KEY) {
             hudEconomy.startResourceGain(0, 1, player.stats.money, player.stats.keys);
           }
+          startMiniBuyOverlay(pickupBuy.kind, pickupBuy.price);
         } else {
           const bought = tryBuyShopPedestal(
             session,
@@ -3094,7 +3361,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
             pickupOverlay.begin(bought.itemId, pickupOverlayBonusLine);
             pickupOverlayBonusLine = "";
             applySwordProfileIfPresent();
-            void ensureItemArt(session.catalog.def(bought.itemId).spriteFileName);
+            void ensureItemGameplayArt(bought.itemId);
           }
         }
       } else {
@@ -3105,17 +3372,19 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           pickupOverlay.begin(collected, pickupOverlayBonusLine);
           pickupOverlayBonusLine = "";
           applySwordProfileIfPresent();
-          void ensureItemArt(session.catalog.def(collected).spriteFileName);
+          void ensureItemGameplayArt(collected);
         } else {
           const enemyLoot = tryCollectEnemyLootPedestal(session, player, itemPickupHost);
           if (enemyLoot) {
             pickupOverlay.begin(enemyLoot, pickupOverlayBonusLine);
             pickupOverlayBonusLine = "";
             applySwordProfileIfPresent();
-            void ensureItemArt(session.catalog.def(enemyLoot).spriteFileName);
+            void ensureItemGameplayArt(enemyLoot);
           }
         }
       }
+
+      tickMiniBuyOverlay();
 
       for (const id of player.inventory.ownedIds()) {
         void ensureItemArt(session.catalog.def(id).spriteFileName);
@@ -3131,19 +3400,16 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
       const ped = activePedestal(session);
       if (ped?.itemId && !ped.collected) {
-        const def = session.catalog.def(ped.itemId);
-        void ensureItemArt(def.spriteFileName);
+        void ensureItemGameplayArt(ped.itemId);
       }
       for (const sp of activeShopPedestals(session)) {
         if (sp.itemId && !sp.collected) {
-          const def = session.catalog.def(sp.itemId);
-          void ensureItemArt(def.spriteFileName);
+          void ensureItemGameplayArt(sp.itemId);
         }
       }
       for (const ep of activeEnemyLootPedestals(session)) {
         if (ep.itemId && !ep.collected) {
-          const def = session.catalog.def(ep.itemId);
-          void ensureItemArt(def.spriteFileName);
+          void ensureItemGameplayArt(ep.itemId);
         }
       }
 
@@ -3388,8 +3654,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         catalog: session.catalog,
       } satisfies AllSeeingDrawContext);
       const preloadPedestalItem = (ped: ItemPedestal | null) => {
-        if (ped?.itemId && !ped.collected && session) {
-          void ensureItemArt(session.catalog.def(ped.itemId).spriteFileName);
+        if (ped?.itemId && !ped.collected) {
+          void ensureItemGameplayArt(ped.itemId);
         }
       };
       preloadPedestalItem(activePedestal(session));
@@ -3543,7 +3809,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           renderFacing,
           turnAnimFramesLeft > 0,
           session.transition.pose,
-          pickupOverlay.isActive() || kCandyHealSequence.isActive(),
+          pickupOverlay.isActive() ||
+            miniBuyOverlayActive ||
+            kCandyHealSequence.isActive(),
           costumeBundle,
           ownedPalette,
           whipPartBmp,
@@ -3591,6 +3859,16 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
               playerSprites.itemPose?.height ?? 32,
             );
           }
+        }
+        if (miniBuyOverlayActive) {
+          drawMiniBuyPickupAbovePlayer(
+            g,
+            player,
+            camera,
+            miniBuyKind,
+            pickupBitmaps,
+            playerSprites.itemPose?.height ?? 32,
+          );
         }
       }
       drawBrickChunksInFront(
@@ -4388,6 +4666,45 @@ function drawPickupItemAbovePlayer(
     dw,
     dh,
   );
+}
+
+/** Heart/key floating above Vernan during shop mini-buy (Java drawMiniBuyPickupAbovePlayerDevice). */
+function drawMiniBuyPickupAbovePlayer(
+  g: CanvasRenderingContext2D,
+  player: Player,
+  camera: WorldCamera,
+  kind: PickupKind,
+  bitmaps: Map<string, ImageBitmap>,
+  poseH: number,
+): void {
+  const bmp = bitmaps.get(pickupSpriteFile(kind));
+  const { w: iw, h: ih } = pickupSpriteSize(kind);
+  const facing = player.facing >= 0 ? 1 : -1;
+  const feetWorld = player.spriteFeetWorldY();
+  const headTop = feetWorld - poseH;
+  const cxWorld = player.x + 8 * facing;
+  const cyWorld = headTop - 8 - ih * 0.5;
+  const dx1 = cxWorld - iw * 0.5;
+  const dy1 = cyWorld - ih * 0.5;
+  const dw = Math.floor(CAMERA_ZOOM * iw);
+  const dh = Math.floor(CAMERA_ZOOM * ih);
+  const sdx1 = camera.worldToDeviceX(dx1);
+  const sdy1 = camera.worldToDeviceY(dy1);
+  g.save();
+  g.imageSmoothingEnabled = false;
+  if (bmp) {
+    if (kind === PickupKind.HEART) {
+      const fw = Math.max(1, Math.floor(bmp.width / 8));
+      const fh = bmp.height;
+      g.drawImage(bmp, 0, 0, fw, fh, sdx1, sdy1, dw, dh);
+    } else {
+      g.drawImage(bmp, 0, 0, bmp.width, bmp.height, sdx1, sdy1, dw, dh);
+    }
+  } else {
+    g.fillStyle = kind === PickupKind.HEART ? "#ff6076" : "#c8b060";
+    g.fillRect(sdx1, sdy1, dw, dh);
+  }
+  g.restore();
 }
 
 function tileColor(id: number): string {
