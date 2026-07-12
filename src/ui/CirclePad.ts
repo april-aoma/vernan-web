@@ -1,6 +1,6 @@
 /**
  * Web-only virtual circle pad (analog stick chrome → 8-way digital).
- * Fixed bottom-left of the world viewport; styled to match HUD touch chrome.
+ * Placed by the display shell (stick region); styled to match HUD chrome.
  */
 
 import { WORLD_VIEWPORT_H } from "../specs";
@@ -35,7 +35,7 @@ export type CirclePadDrawState = {
   dirs: CirclePadDirs;
 };
 
-/** Fixed bottom-left placement above the HUD band. */
+/** Default bottom-left placement (legacy); shell uses `computeStickInRegion` instead. */
 export function computeCirclePadLayout(): CirclePadLayout {
   const outerR = CIRCLE_PAD_OUTER_R;
   const margin = 14;

@@ -12,7 +12,7 @@ if (!(root instanceof HTMLElement)) {
   throw new Error("#vernan-root missing");
 }
 
-mount(root, {
+const handle = mount(root, {
   // Resolve against the page URL so GitHub Pages / subpath hosts work with Vite `base: "./"`.
   assetBase: new URL("assets/", window.location.href).href,
 });
@@ -25,6 +25,7 @@ installGameDisplay({
     fullscreenBtn instanceof HTMLButtonElement ? fullscreenBtn : null,
   exitButton:
     exitImmersiveBtn instanceof HTMLButtonElement ? exitImmersiveBtn : null,
+  onShellLayout: (layout) => handle.setShellLayout(layout),
 });
 
 const reportBtn = document.querySelector("#report-crash-btn");

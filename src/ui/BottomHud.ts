@@ -11,7 +11,6 @@ import type { DungeonLayout } from "../world/DungeonLayout";
 import { RoomKind } from "../world/DungeonTypes";
 import {
   computeBottomHudGeometry,
-  computeTouchControlsGeometry,
   ECON_ICON,
   HEART_GAP,
   HEART_SLOT,
@@ -19,6 +18,7 @@ import {
   ITEM_ICON,
   itemStripCapacity,
   PAD_L,
+  PAD_R,
   STAT_CLUSTER_GAP,
   STAT_ICON,
   STAT_PAD_BEFORE_MINIMAP,
@@ -92,34 +92,11 @@ export type KCandyHudDrawState = {
 export type BottomHudDrawOpts = {
   paused?: boolean;
   kCandy?: KCandyHudDrawState;
-  /** Live hold state for on-screen control chrome (keyboard + soft). */
-  touchHeld?: TouchControlsHeld;
 };
-
-/** Pressed highlights for the HUD control cluster (Java PlayerControls.is*Held). */
-export type TouchControlsHeld = {
-  up: boolean;
-  left: boolean;
-  down: boolean;
-  right: boolean;
-  jump: boolean;
-  attack: boolean;
-  sub: boolean;
-  dodge: boolean;
-  pause: boolean;
-};
-
-const MINIMAP_ALPHA_VISITED = 230;
-const MINIMAP_ALPHA_UNVISITED = 130;
-const MINIMAP_ALPHA_CURRENT = 250;
-const MINIMAP_CELL_W = 7;
-const MINIMAP_CELL_H = 5;
-const MINIMAP_CELL_GAP = 2;
-const MINIMAP_HUD_GAP = 8;
 
 /**
  * Draw the full Java-style bottom HUD band.
- * Touch chrome: D-pad + JUMP/ATK/SPA + shoulders (II pause / R dodge).
+ * Web: minimap sits at the right end; virtual controls live in the display shell.
  */
 export function drawBottomHud(
   g: CanvasRenderingContext2D,
@@ -145,7 +122,6 @@ export function drawBottomHud(
   const passiveOp = forget ? forget.opacity(KCandyForgetTarget.PASSIVE_STRIP) : 1;
   const weaponOp = forget ? forget.opacity(KCandyForgetTarget.WEAPON_SLOTS) : 1;
   const mapOp = forget ? forget.opacity(KCandyForgetTarget.MAP) : 1;
-  const touchOp = forget ? forget.opacity(KCandyForgetTarget.TOUCH_CONTROLS) : 1;
   const redCur =
     kCandy && kCandy.hudRedDisplayed >= 0
       ? kCandy.hudRedDisplayed
@@ -165,9 +141,6 @@ export function drawBottomHud(
     drawWeaponSlots(g, player, catalog, itemBitmaps, sprites, hud, subCooldowns, kCandy),
   );
   withHudOpacity(g, mapOp, () => drawMiniMap(g, layout, roomId, miniMap, hud, miniMapRevealFlags(player.inventory)));
-  withHudOpacity(g, touchOp, () =>
-    drawTouchControls(g, hud, opts.touchHeld, opts.paused === true),
-  );
   if (forget?.isBlackout()) {
     g.fillStyle = "#000000";
     g.fillRect(0, hud.y0, INTERNAL_WIDTH, HUD_HEIGHT);
@@ -205,75 +178,20 @@ function drawHudUsesBadge(
   g.font = "10px monospace";
 }
 
-/** Full on-screen control cluster (Java GamePanel.drawBottomHud touch chrome). */
-export function drawTouchControls(
-  g: CanvasRenderingContext2D,
-  hud: BottomHudGeometry,
-  held: TouchControlsHeld | undefined,
-  paused: boolean,
-): void {
-  const tc = computeTouchControlsGeometry(INTERNAL_WIDTH, hud.y0, HUD_HEIGHT);
-  const h = held ?? {
-    up: false,
-    left: false,
-    down: false,
-    right: false,
-    jump: false,
-    attack: false,
-    sub: false,
-    dodge: false,
-    pause: false,
-  };
-  drawButtonBox(g, tc.up.x, tc.up.y, tc.up.w, tc.up.h, "UP", h.up);
-  drawButtonBox(g, tc.left.x, tc.left.y, tc.left.w, tc.left.h, "L", h.left);
-  drawButtonBox(g, tc.down.x, tc.down.y, tc.down.w, tc.down.h, "DN", h.down);
-  drawButtonBox(g, tc.right.x, tc.right.y, tc.right.w, tc.right.h, "R", h.right);
-  // Web: left shoulder is pause (II); Java draws dodge L here.
-  drawButtonBox(g, tc.pause.x, tc.pause.y, tc.pause.w, tc.pause.h, "II", h.pause || paused);
-  drawButtonBox(g, tc.jump.x, tc.jump.y, tc.jump.w, tc.jump.h, "JUMP", h.jump);
-  drawButtonBox(g, tc.dodge.x, tc.dodge.y, tc.dodge.w, tc.dodge.h, "R", h.dodge);
-  drawButtonBox(g, tc.attack.x, tc.attack.y, tc.attack.w, tc.attack.h, "ATK", h.attack);
-  drawButtonBox(g, tc.sub.x, tc.sub.y, tc.sub.w, tc.sub.h, "SPA", h.sub);
+const MINIMAP_ALPHA_VISITED = 230;
+const MINIMAP_ALPHA_UNVISITED = 130;
+const MINIMAP_ALPHA_CURRENT = 250;
+const MINIMAP_CELL_W = 7;
+const MINIMAP_CELL_H = 5;
+const MINIMAP_CELL_GAP = 2;
+
+/** Minimap right-edge anchor (web: freed by moving controls to the display shell). */
+function minimapRightEdgeX(): number {
+  return INTERNAL_WIDTH - PAD_R;
 }
 
-/** Pause control in the left-shoulder HUD slot (Java touch chrome L → web II). */
-export function drawPauseButton(
-  g: CanvasRenderingContext2D,
-  hud: BottomHudGeometry,
-  pressed: boolean,
-): void {
-  const tc = computeTouchControlsGeometry(INTERNAL_WIDTH, hud.y0, HUD_HEIGHT);
-  drawButtonBox(g, tc.pause.x, tc.pause.y, tc.pause.w, tc.pause.h, "II", pressed);
-}
-
-export function pauseButtonRect(hudY0: number): {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-} {
-  return computeTouchControlsGeometry(INTERNAL_WIDTH, hudY0, HUD_HEIGHT).pause;
-}
-
-function drawButtonBox(
-  g: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  label: string,
-  pressed: boolean,
-): void {
-  g.strokeStyle = pressed ? "#f0dc78" : "rgba(255,255,255,0.43)";
-  g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-  if (pressed) {
-    g.fillStyle = "rgba(240,220,120,0.275)";
-    g.fillRect(x + 1, y + 1, Math.max(0, w - 2), Math.max(0, h - 2));
-  }
-  g.fillStyle = "#ffffff";
-  g.font = "8px monospace";
-  const tw = g.measureText(label).width;
-  g.fillText(label, x + Math.max(1, Math.floor((w - tw) / 2)), y + Math.floor(h / 2) + 3);
+function minimapOriginX(totalW: number): number {
+  return Math.max(PAD_L, minimapRightEdgeX() - totalW);
 }
 
 function drawHeartsRow(
@@ -553,12 +471,10 @@ function drawSubweaponCooldownOverlay(
   }
 }
 
-function minimapLeftEdge(layout: DungeonLayout, hud: BottomHudGeometry): number {
+function minimapLeftEdge(layout: DungeonLayout, _hud: BottomHudGeometry): number {
   const metrics = miniMapGridMetrics(layout);
   if (!metrics) return 0;
-  let x0 = hud.jaX - MINIMAP_HUD_GAP - metrics.totalW;
-  x0 = Math.max(6, x0);
-  return x0 - 2;
+  return minimapOriginX(metrics.totalW) - 2;
 }
 
 function miniMapGridMetrics(layout: DungeonLayout): {
@@ -599,9 +515,8 @@ function drawMiniMap(
 ): void {
   const metrics = miniMapGridMetrics(layout);
   if (!metrics) return;
-  let x0 = hud.jaX - MINIMAP_HUD_GAP - metrics.totalW;
+  const x0 = minimapOriginX(metrics.totalW);
   const y0 = hud.y0 + Math.floor((HUD_HEIGHT - metrics.totalH) / 2);
-  x0 = Math.max(6, x0);
 
   g.fillStyle = "rgba(0,0,0,0.47)";
   g.fillRect(x0 - 2, y0 - 2, metrics.totalW + 4, metrics.totalH + 4);

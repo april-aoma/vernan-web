@@ -30,7 +30,7 @@ const ECON_Y_INSET = 22;
 const ITEMS_Y_INSET = 40;
 const ITEM_STRIP_PAD_BEFORE_CONTROLS = 8;
 
-/** Left edge of the JUMP/ATK column. */
+/** Left edge used as the HUD content right anchor (legacy: JUMP/ATK column). */
 export function controlsLeftX(internalWidth: number): number {
   const right = internalWidth - PAD_R;
   const rightX = right - CONTROL_BOX;

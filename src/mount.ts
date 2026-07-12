@@ -143,25 +143,30 @@ import {
   slicePickupCell,
   type BottomHudSprites,
   type MiniMapState,
-  type TouchControlsHeld,
 } from "./ui/BottomHud";
 import { drawPauseMenu, drawPauseOverlay, type PauseMenuHitRects } from "./ui/PauseOverlay";
 import { drawDeathOverlay, type DeathOverlayHitRects } from "./ui/DeathOverlay";
-import {
-  computeTouchControlsGeometry,
-  hitTestRect,
-  hitTestTouchControl,
-  type TouchControlId,
-} from "./ui/BottomHudLayout";
+import { hitTestRect } from "./ui/BottomHudLayout";
 import {
   circlePadDirsToKeyCodes,
-  computeCirclePadLayout,
-  drawCirclePad,
-  hitTestCirclePad,
-  sampleCirclePad,
   type CirclePadDirs,
   type CirclePadDrawState,
 } from "./ui/CirclePad";
+import {
+  computeDisplayShellLayout,
+  shellPointToInternal,
+  type DisplayShellLayout,
+} from "./display/DisplayShell";
+import {
+  computeVirtualControllerLayout,
+  drawVirtualController,
+  faceButtonKeyCode,
+  hitTestCirclePad,
+  hitTestFaceButton,
+  sampleCirclePad,
+  type FaceButtonId,
+  type VirtualControllerLayout,
+} from "./ui/VirtualController";
 import { HUD_MONEY_DRAIN_FRAMES_PER_COIN, HudEconomyDisplay } from "./ui/HudEconomy";
 import { openSubmitDialog } from "./ranking/SubmitDialog";
 import { openLoginDialog } from "./ranking/LoginDialog";
@@ -398,6 +403,8 @@ export type VernanHandle = {
   getRunSummary: () => RunSummary;
   destroy: () => void;
   focus: () => void;
+  /** Apply display-shell layout (play rect + control gutters). */
+  setShellLayout: (layout: DisplayShellLayout) => void;
 };
 
 type PlayerSprites = {
@@ -948,11 +955,26 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   let bootError: string | null = null;
   let runtimeCrash: string | null = null;
   let debug = false;
-  /** Java GamePanel.paused — freezes sim; Enter/Esc or HUD pause button toggles. */
+  /** Java GamePanel.paused — freezes sim; Enter/Esc or shell pause button toggles. */
   let paused = false;
   let pauseButtonTogglePending = false;
-  /** pointerId → soft control currently held (multitouch). */
-  const softPointerControls = new Map<number, TouchControlId>();
+  /** Display shell: play blit rect + control gutters (updated by gameDisplay). */
+  let shellLayout: DisplayShellLayout = computeDisplayShellLayout(
+    DISPLAY_WIDTH,
+    DISPLAY_HEIGHT,
+  );
+  let virtualLayout: VirtualControllerLayout = computeVirtualControllerLayout(
+    shellLayout.stickRegion,
+    shellLayout.faceRegion,
+  );
+  const applyShellLayout = (layout: DisplayShellLayout): void => {
+    shellLayout = layout;
+    virtualLayout = computeVirtualControllerLayout(layout.stickRegion, layout.faceRegion);
+    fb.setShellSize(layout.shellW, layout.shellH);
+  };
+  applyShellLayout(shellLayout);
+  /** pointerId → soft face/shoulder control currently held (multitouch). */
+  const softPointerControls = new Map<number, FaceButtonId>();
   /** Active circle-pad pointer (one stick at a time). */
   let circlePadPointerId: number | null = null;
   let circlePadCodes = new Set<string>();
@@ -961,29 +983,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     knobDy: 0,
     active: false,
     dirs: { up: false, left: false, down: false, right: false },
-  };
-
-  const touchControlKeyCode = (id: TouchControlId): string | null => {
-    switch (id) {
-      case "up":
-        return "ArrowUp";
-      case "left":
-        return "ArrowLeft";
-      case "down":
-        return "ArrowDown";
-      case "right":
-        return "ArrowRight";
-      case "jump":
-        return "KeyZ";
-      case "attack":
-        return "KeyX";
-      case "sub":
-        return "KeyC";
-      case "dodge":
-        return "ShiftLeft";
-      case "pause":
-        return null;
-    }
   };
 
   const syncCirclePadDirs = (dirs: CirclePadDirs): void => {
@@ -1017,87 +1016,91 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     const id = softPointerControls.get(pointerId);
     if (!id) return;
     softPointerControls.delete(pointerId);
-    const code = touchControlKeyCode(id);
+    const code = faceButtonKeyCode(id);
     if (code) input.softKeyUp(code);
   };
 
-  const canvasPointToInternal = (e: PointerEvent): { ix: number; iy: number } | null => {
+  /** Client → shell buffer pixels (canvas.width/height space). */
+  const canvasPointToShell = (e: PointerEvent): { sx: number; sy: number } | null => {
     const rect = fb.canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
     return {
-      ix: ((e.clientX - rect.left) / rect.width) * INTERNAL_WIDTH,
-      iy: ((e.clientY - rect.top) / rect.height) * INTERNAL_HEIGHT,
+      sx: ((e.clientX - rect.left) / rect.width) * fb.canvas.width,
+      sy: ((e.clientY - rect.top) / rect.height) * fb.canvas.height,
     };
   };
 
   const onTouchControlsPointerDown = (e: PointerEvent): void => {
     if (submitDialogOpen || loginDialogOpen) return;
-    const pt = canvasPointToInternal(e);
-    if (!pt) return;
-    const { ix, iy } = pt;
-    const hudY0 = INTERNAL_HEIGHT - HUD_HEIGHT;
+    const shellPt = canvasPointToShell(e);
+    if (!shellPt) return;
+    const { sx, sy } = shellPt;
 
-    if (paused && pauseMenuHits.login.w > 0 && hitTestRect(ix, iy, pauseMenuHits.login)) {
-      e.preventDefault();
-      pauseLoginPending = true;
-      return;
-    }
-    if (paused && pauseMenuHits.viewBoard.w > 0 && hitTestRect(ix, iy, pauseMenuHits.viewBoard)) {
-      e.preventDefault();
-      pauseViewBoardPending = true;
-      return;
-    }
-    if (paused && pauseMenuHits.submit.w > 0 && hitTestRect(ix, iy, pauseMenuHits.submit)) {
-      e.preventDefault();
-      pauseSubmitPending = true;
-      return;
-    }
-    if (player.health.isDead) {
-      if (deathMenuHits.submit.w > 0 && hitTestRect(ix, iy, deathMenuHits.submit)) {
+    // Menu hits are in internal game coords (play region).
+    const internal = shellPointToInternal(sx, sy, shellLayout.play);
+    if (internal) {
+      const { ix, iy } = internal;
+      if (paused && pauseMenuHits.login.w > 0 && hitTestRect(ix, iy, pauseMenuHits.login)) {
+        e.preventDefault();
+        pauseLoginPending = true;
+        return;
+      }
+      if (paused && pauseMenuHits.viewBoard.w > 0 && hitTestRect(ix, iy, pauseMenuHits.viewBoard)) {
+        e.preventDefault();
+        pauseViewBoardPending = true;
+        return;
+      }
+      if (paused && pauseMenuHits.submit.w > 0 && hitTestRect(ix, iy, pauseMenuHits.submit)) {
         e.preventDefault();
         pauseSubmitPending = true;
         return;
       }
-      if (deathMenuHits.viewBoard.w > 0 && hitTestRect(ix, iy, deathMenuHits.viewBoard)) {
-        e.preventDefault();
-        deathViewBoardPending = true;
-        return;
-      }
-      if (deathMenuHits.restartNew.w > 0 && hitTestRect(ix, iy, deathMenuHits.restartNew)) {
-        e.preventDefault();
-        deathRestartPending = "new";
-        return;
-      }
-      if (deathMenuHits.retrySame.w > 0 && hitTestRect(ix, iy, deathMenuHits.retrySame)) {
-        e.preventDefault();
-        deathRestartPending = "same";
-        return;
+      if (player.health.isDead) {
+        if (deathMenuHits.submit.w > 0 && hitTestRect(ix, iy, deathMenuHits.submit)) {
+          e.preventDefault();
+          pauseSubmitPending = true;
+          return;
+        }
+        if (deathMenuHits.viewBoard.w > 0 && hitTestRect(ix, iy, deathMenuHits.viewBoard)) {
+          e.preventDefault();
+          deathViewBoardPending = true;
+          return;
+        }
+        if (deathMenuHits.restartNew.w > 0 && hitTestRect(ix, iy, deathMenuHits.restartNew)) {
+          e.preventDefault();
+          deathRestartPending = "new";
+          return;
+        }
+        if (deathMenuHits.retrySame.w > 0 && hitTestRect(ix, iy, deathMenuHits.retrySame)) {
+          e.preventDefault();
+          deathRestartPending = "same";
+          return;
+        }
       }
     }
 
-    const geo = computeTouchControlsGeometry(INTERNAL_WIDTH, hudY0, HUD_HEIGHT);
-    const hit = hitTestTouchControl(ix, iy, geo);
-    if (hit) {
+    // Virtual controller lives in shell space (gutters / bottom band).
+    const faceHit = hitTestFaceButton(sx, sy, virtualLayout.buttons);
+    if (faceHit) {
       e.preventDefault();
       try {
         fb.canvas.setPointerCapture(e.pointerId);
       } catch {
         /* ignore */
       }
-      if (hit === "pause") {
+      if (faceHit === "pause") {
         pauseButtonTogglePending = true;
         return;
       }
       if (paused || player.health.isDead) return;
-      softPointerControls.set(e.pointerId, hit);
-      const code = touchControlKeyCode(hit);
+      softPointerControls.set(e.pointerId, faceHit);
+      const code = faceButtonKeyCode(faceHit);
       if (code) input.softKeyDown(code);
       return;
     }
 
     if (paused || player.health.isDead) return;
-    const padLayout = computeCirclePadLayout();
-    if (circlePadPointerId == null && hitTestCirclePad(ix, iy, padLayout)) {
+    if (circlePadPointerId == null && hitTestCirclePad(sx, sy, virtualLayout.stick)) {
       e.preventDefault();
       try {
         fb.canvas.setPointerCapture(e.pointerId);
@@ -1105,7 +1108,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         /* ignore */
       }
       circlePadPointerId = e.pointerId;
-      const sample = sampleCirclePad(ix, iy, padLayout);
+      const sample = sampleCirclePad(sx, sy, virtualLayout.stick);
       circlePadDraw = {
         knobDx: sample.knobDx,
         knobDy: sample.knobDy,
@@ -1118,10 +1121,9 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   const onTouchControlsPointerMove = (e: PointerEvent): void => {
     if (circlePadPointerId !== e.pointerId) return;
-    const pt = canvasPointToInternal(e);
-    if (!pt) return;
-    const padLayout = computeCirclePadLayout();
-    const sample = sampleCirclePad(pt.ix, pt.iy, padLayout);
+    const shellPt = canvasPointToShell(e);
+    if (!shellPt) return;
+    const sample = sampleCirclePad(shellPt.sx, shellPt.sy, virtualLayout.stick);
     circlePadDraw = {
       knobDx: sample.knobDx,
       knobDy: sample.knobDy,
@@ -3534,7 +3536,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         g.fillText(runtimeCrash.slice(0, 72), 16, 58);
         g.fillStyle = "#12161c";
         g.fillRect(0, WORLD_VIEWPORT_H, INTERNAL_WIDTH, HUD_HEIGHT);
-        fb.present();
+        fb.present(shellLayout.play);
         return;
       }
 
@@ -3546,7 +3548,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         g.fillText(bootError ? `boot error: ${bootError}` : bootStatus, 16, 40);
         g.fillStyle = "#12161c";
         g.fillRect(0, WORLD_VIEWPORT_H, INTERNAL_WIDTH, HUD_HEIGHT);
-        fb.present();
+        fb.present(shellLayout.play);
         return;
       }
 
@@ -3562,7 +3564,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         g.fillStyle = "#000000";
         g.fillRect(0, 0, INTERNAL_WIDTH, INTERNAL_HEIGHT);
         drawLevelAscendPlayerOverlay(g, t.levelAscend, playerSprites);
-        fb.present();
+        fb.present(shellLayout.play);
         return;
       }
 
@@ -3992,17 +3994,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         subweaponCooldowns,
         {
           paused,
-          touchHeld: {
-            up: input.up,
-            left: input.left,
-            down: input.down,
-            right: input.right,
-            jump: input.jump,
-            attack: input.attack,
-            sub: input.subweapon,
-            dodge: input.shiftHeld,
-            pause: paused,
-          } satisfies TouchControlsHeld,
           kCandy: {
             forget: kCandyForgetHud,
             usesRemaining: kCandyUsesRemaining,
@@ -4010,12 +4001,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           },
         },
       );
-
-      // Web-only circle pad (above HUD, left). Fades with k-candy touch-control forget.
-      {
-        const touchOp = kCandyForgetHud.opacity(KCandyForgetTarget.TOUCH_CONTROLS);
-        drawCirclePad(g, computeCirclePadLayout(), circlePadDraw, touchOp);
-      }
 
       if (debug && !pickupOverlay.isActive()) {
         g.fillStyle = "#6ec8ff";
@@ -4061,7 +4046,23 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         kCandyVision.apply(g, INTERNAL_WIDTH, INTERNAL_HEIGHT);
       }
 
-      fb.present();
+      fb.present(shellLayout.play);
+      {
+        const touchOp = kCandyForgetHud.opacity(KCandyForgetTarget.TOUCH_CONTROLS);
+        drawVirtualController(
+          fb.ctx,
+          virtualLayout,
+          circlePadDraw,
+          {
+            jump: input.jump,
+            attack: input.attack,
+            sub: input.subweapon,
+            dodge: input.shiftHeld,
+            pause: paused,
+          },
+          touchOp,
+        );
+      }
     },
     onFpsUpdate: (f, u) => {
       fps = f;
@@ -4083,7 +4084,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         g.fillText(msg.slice(0, 72), 16, 58);
         g.fillStyle = "#12161c";
         g.fillRect(0, WORLD_VIEWPORT_H, INTERNAL_WIDTH, HUD_HEIGHT);
-        fb.present();
+        fb.present(shellLayout.play);
       } catch {
         /* ignore secondary paint failures */
       }
@@ -4407,6 +4408,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       parent.replaceChildren();
     },
     focus: () => fb.canvas.focus({ preventScroll: true }),
+    setShellLayout: applyShellLayout,
   };
 }
 

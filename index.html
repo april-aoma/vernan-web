@@ -208,26 +208,6 @@
       html.immersive #vernan-root canvas {
         max-width: none;
       }
-
-      /*
-       * When Screen Orientation lock is unavailable (iOS Safari, denied FS),
-       * rotate the stage so fullscreen still plays in landscape while the
-       * phone stays physically portrait.
-       */
-      @media (orientation: portrait) {
-        html.immersive.force-landscape body {
-          padding: 0;
-        }
-        html.immersive.force-landscape #vernan-root {
-          position: fixed;
-          top: 50%;
-          left: 50%;
-          width: 100dvh;
-          height: 100dvw;
-          transform: translate(-50%, -50%) rotate(90deg);
-          transform-origin: center center;
-        }
-      }
     </style>
   </head>
   <body>
@@ -244,7 +224,8 @@
       Up/W to change rooms. Pause with Enter/Esc — Login, View Leaderboard, and
       Submit Score are in the pause menu (<code>Q</code> submits &amp; quits; also on the
       death screen). F3 toggles debug. Seed via <code>?seed=12345</code>.
-      On phones: Fullscreen, or Add to Home Screen for a standalone app.
+      On phones: Fullscreen (native portrait or landscape — virtual controls in
+      gutters / bottom band), or Add to Home Screen for a standalone app.
     </p>
     <div class="page-footer page-chrome">
       <a class="nav-btn" href="./crashes.html">Crashes</a>
