@@ -4,48 +4,39 @@
  *   GET/POST /api/scores
  *   GET/POST /api/crashes
  *
+ * Storage: D1 (scores + crashes). Rate limits: Durable Object.
+ * Crash POSTs enqueue to vernan-crashes; the queue consumer batch-writes D1.
+ *
  * Score POST accepts an optional Bearer JWT issued by vernan-auth
  * (same AUTH_SECRET).
  */
 
 import { optionalAuth, sanitizeDisplayName } from "./auth";
+import {
+  crashCount,
+  insertCrashesBatch,
+  insertScore,
+  listCrashes,
+  listScores,
+  scoreCount,
+  trimCrashes,
+  trimScores,
+  type CrashEntry,
+  type ScoreEntry,
+} from "./db";
+import { RateLimiter } from "./rateLimiter";
+
+export { RateLimiter };
 
 export interface Env {
+  DB: D1Database;
+  /** Legacy KV — used only to one-shot migrate old scores/crashes blobs. */
   SCORES: KVNamespace;
+  RATE_LIMITER: DurableObjectNamespace;
+  CRASH_QUEUE: Queue<CrashEntry>;
   /** HMAC secret for JWTs — must match vernan-auth. */
   AUTH_SECRET: string;
 }
-
-type ScoreEntry = {
-  id: string;
-  playerName: string;
-  seed: number;
-  floorReached: number;
-  coins: number;
-  enemiesKilled: number;
-  /** Sum of per-kill difficulty; 0 for legacy rows. */
-  enemiesKillDifficulty: number;
-  durationSec: number;
-  itemIds: string[];
-  /** e.g. web_0.1.19 / desktop_0.1.53; empty for legacy rows. */
-  client: string;
-  /** Account id when submitted while logged in; empty for legacy rows. */
-  userId: string;
-  createdAt: string;
-};
-
-type CrashEntry = {
-  id: string;
-  message: string;
-  stack: string;
-  source: string;
-  pageUrl: string;
-  client: string;
-  seed: number | null;
-  floorReached: number | null;
-  userAgent: string;
-  createdAt: string;
-};
 
 const SCORES_KEY = "scores";
 const CRASHES_KEY = "crashes";
@@ -89,20 +80,6 @@ function json(data: unknown, status: number, origin: string | null): Response {
   });
 }
 
-function compareScores(a: ScoreEntry, b: ScoreEntry): number {
-  if (b.floorReached !== a.floorReached) return b.floorReached - a.floorReached;
-  if (b.coins !== a.coins) return b.coins - a.coins;
-  if (b.enemiesKilled !== a.enemiesKilled) return b.enemiesKilled - a.enemiesKilled;
-  if (b.enemiesKillDifficulty !== a.enemiesKillDifficulty) {
-    return b.enemiesKillDifficulty - a.enemiesKillDifficulty;
-  }
-  return a.createdAt.localeCompare(b.createdAt);
-}
-
-function compareCrashes(a: CrashEntry, b: CrashEntry): number {
-  return b.createdAt.localeCompare(a.createdAt);
-}
-
 function sanitizePlayerName(raw: unknown): string {
   return sanitizeDisplayName(raw);
 }
@@ -132,6 +109,18 @@ function formatUtcTimestamp(iso: string): string {
 
 function utcNow(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function normalizeKillDifficulty(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return 0;
+  return Math.floor(v);
+}
+
+function optionalInt(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.floor(n);
 }
 
 function isScoreEntry(v: unknown): v is ScoreEntry {
@@ -164,81 +153,6 @@ function isCrashEntry(v: unknown): v is CrashEntry {
     (o.seed === null || typeof o.seed === "number") &&
     (o.floorReached === null || typeof o.floorReached === "number")
   );
-}
-
-function normalizeKillDifficulty(v: unknown): number {
-  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return 0;
-  return Math.floor(v);
-}
-
-function optionalInt(v: unknown): number | null {
-  if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
-  if (!Number.isFinite(n)) return null;
-  return Math.floor(n);
-}
-
-async function readScores(env: Env): Promise<ScoreEntry[]> {
-  const raw = await env.SCORES.get(SCORES_KEY);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(isScoreEntry)
-      .map((e) => ({
-        ...e,
-        enemiesKillDifficulty: normalizeKillDifficulty(
-          (e as ScoreEntry).enemiesKillDifficulty,
-        ),
-        itemIds: normalizeItemIds(e.itemIds),
-        client: sanitizeClient((e as ScoreEntry).client),
-        userId:
-          typeof (e as ScoreEntry).userId === "string"
-            ? String((e as ScoreEntry).userId).slice(0, 64)
-            : "",
-        createdAt: formatUtcTimestamp(e.createdAt),
-      }))
-      .sort(compareScores);
-  } catch {
-    return [];
-  }
-}
-
-async function writeScores(env: Env, entries: ScoreEntry[]): Promise<void> {
-  const trimmed = entries.sort(compareScores).slice(0, MAX_SCORES);
-  await env.SCORES.put(SCORES_KEY, JSON.stringify(trimmed));
-}
-
-async function readCrashes(env: Env): Promise<CrashEntry[]> {
-  const raw = await env.SCORES.get(CRASHES_KEY);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(isCrashEntry)
-      .map((e) => ({
-        ...e,
-        message: sanitizeText(e.message, 500),
-        stack: sanitizeText(e.stack, 8000),
-        source: sanitizeText(e.source, 64) || "unknown",
-        pageUrl: sanitizeText(e.pageUrl, 500),
-        client: sanitizeClient(e.client),
-        seed: optionalInt(e.seed),
-        floorReached: optionalInt(e.floorReached),
-        userAgent: sanitizeText(e.userAgent, 300),
-        createdAt: formatUtcTimestamp(e.createdAt),
-      }))
-      .sort(compareCrashes);
-  } catch {
-    return [];
-  }
-}
-
-async function writeCrashes(env: Env, entries: CrashEntry[]): Promise<void> {
-  const trimmed = entries.sort(compareCrashes).slice(0, MAX_CRASHES);
-  await env.SCORES.put(CRASHES_KEY, JSON.stringify(trimmed));
 }
 
 function validateScoreBody(
@@ -314,12 +228,16 @@ async function rateLimited(
   prefix: string,
   max: number,
 ): Promise<boolean> {
-  const key = `${prefix}:${ip}`;
-  const raw = await env.SCORES.get(key);
-  const count = raw ? Number(raw) : 0;
-  if (count >= max) return true;
-  await env.SCORES.put(key, String(count + 1), { expirationTtl: RATE_LIMIT_WINDOW_SEC });
-  return false;
+  const id = env.RATE_LIMITER.idFromName(`${prefix}:${ip}`);
+  const stub = env.RATE_LIMITER.get(id);
+  const res = await stub.fetch("https://rate-limiter/check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ max, windowSec: RATE_LIMIT_WINDOW_SEC }),
+  });
+  if (!res.ok) return false;
+  const data = (await res.json()) as { allowed?: boolean };
+  return data.allowed !== true;
 }
 
 function clientIp(request: Request): string {
@@ -330,18 +248,80 @@ function clientIp(request: Request): string {
   );
 }
 
+/**
+ * One-shot: if a D1 table is empty, copy the matching legacy KV JSON blob.
+ * Safe to call on every request; no-ops once each table has rows.
+ */
+async function migrateFromKvIfNeeded(env: Env): Promise<void> {
+  if ((await scoreCount(env.DB)) === 0) {
+    const rawScores = await env.SCORES.get(SCORES_KEY);
+    if (rawScores) {
+      try {
+        const parsed = JSON.parse(rawScores) as unknown;
+        if (Array.isArray(parsed)) {
+          const entries = parsed.filter(isScoreEntry).map((e) => ({
+            ...e,
+            enemiesKillDifficulty: normalizeKillDifficulty(e.enemiesKillDifficulty),
+            itemIds: normalizeItemIds(e.itemIds),
+            client: sanitizeClient(e.client),
+            userId: typeof e.userId === "string" ? e.userId.slice(0, 64) : "",
+            createdAt: formatUtcTimestamp(e.createdAt),
+          }));
+          for (const entry of entries) {
+            try {
+              await insertScore(env.DB, entry);
+            } catch {
+              // skip duplicates / bad rows
+            }
+          }
+          await trimScores(env.DB, MAX_SCORES);
+        }
+      } catch {
+        // ignore corrupt KV
+      }
+    }
+  }
+
+  if ((await crashCount(env.DB)) > 0) return;
+
+  const rawCrashes = await env.SCORES.get(CRASHES_KEY);
+  if (!rawCrashes) return;
+  try {
+    const parsed = JSON.parse(rawCrashes) as unknown;
+    if (!Array.isArray(parsed)) return;
+    const entries = parsed.filter(isCrashEntry).map((e) => ({
+      ...e,
+      message: sanitizeText(e.message, 500),
+      stack: sanitizeText(e.stack, 8000),
+      source: sanitizeText(e.source, 64) || "unknown",
+      pageUrl: sanitizeText(e.pageUrl, 500),
+      client: sanitizeClient(e.client),
+      seed: optionalInt(e.seed),
+      floorReached: optionalInt(e.floorReached),
+      userAgent: sanitizeText(e.userAgent, 300),
+      createdAt: formatUtcTimestamp(e.createdAt),
+    }));
+    await insertCrashesBatch(env.DB, entries);
+    await trimCrashes(env.DB, MAX_CRASHES);
+  } catch {
+    // ignore
+  }
+}
+
 async function handleScores(
   request: Request,
   env: Env,
   origin: string | null,
   url: URL,
 ): Promise<Response> {
+  await migrateFromKvIfNeeded(env);
+
   if (request.method === "GET") {
     const limitRaw = Number(url.searchParams.get("limit") ?? "50");
     const limit = Number.isFinite(limitRaw)
       ? Math.min(Math.max(Math.floor(limitRaw), 1), MAX_SCORES)
       : 50;
-    const rows = (await readScores(env)).slice(0, limit);
+    const rows = await listScores(env.DB, limit);
     return json(rows, 200, origin);
   }
 
@@ -378,9 +358,8 @@ async function handleScores(
       createdAt: utcNow(),
     };
 
-    const existing = await readScores(env);
-    existing.push(entry);
-    await writeScores(env, existing);
+    await insertScore(env.DB, entry);
+    await trimScores(env.DB, MAX_SCORES);
     return json(entry, 201, origin);
   }
 
@@ -393,12 +372,14 @@ async function handleCrashes(
   origin: string | null,
   url: URL,
 ): Promise<Response> {
+  await migrateFromKvIfNeeded(env);
+
   if (request.method === "GET") {
     const limitRaw = Number(url.searchParams.get("limit") ?? "50");
     const limit = Number.isFinite(limitRaw)
       ? Math.min(Math.max(Math.floor(limitRaw), 1), MAX_CRASHES)
       : 50;
-    const rows = (await readCrashes(env)).slice(0, limit);
+    const rows = await listCrashes(env.DB, limit);
     return json(rows, 200, origin);
   }
 
@@ -428,9 +409,8 @@ async function handleCrashes(
       createdAt: utcNow(),
     };
 
-    const existing = await readCrashes(env);
-    existing.unshift(entry);
-    await writeCrashes(env, existing);
+    // Fast path: enqueue; consumer batch-inserts into D1 (at-least-once, idempotent by id).
+    await env.CRASH_QUEUE.send(entry);
     return json({ id: entry.id, createdAt: entry.createdAt }, 201, origin);
   }
 
@@ -454,5 +434,32 @@ export default {
     }
 
     return json({ error: "Not found" }, 404, origin);
+  },
+
+  async queue(batch: MessageBatch<CrashEntry>, env: Env): Promise<void> {
+    const entries: CrashEntry[] = [];
+    for (const msg of batch.messages) {
+      const body = msg.body;
+      if (isCrashEntry(body)) {
+        entries.push({
+          ...body,
+          message: sanitizeText(body.message, 500),
+          stack: sanitizeText(body.stack, 8000),
+          source: sanitizeText(body.source, 64) || "unknown",
+          pageUrl: sanitizeText(body.pageUrl, 500),
+          client: sanitizeClient(body.client),
+          seed: optionalInt(body.seed),
+          floorReached: optionalInt(body.floorReached),
+          userAgent: sanitizeText(body.userAgent, 300),
+          createdAt: formatUtcTimestamp(body.createdAt),
+        });
+        msg.ack();
+      } else {
+        msg.retry();
+      }
+    }
+    if (entries.length === 0) return;
+    await insertCrashesBatch(env.DB, entries);
+    await trimCrashes(env.DB, MAX_CRASHES);
   },
 };

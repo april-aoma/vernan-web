@@ -3,10 +3,36 @@ main = "src/index.ts"
 compatibility_date = "2025-07-01"
 account_id = "0eb5d31ce2d0428ce3aa240fb7655cff"
 
+# D1 — primary store for scores + crashes
+[[d1_databases]]
+binding = "DB"
+database_name = "vernan-db"
+database_id = "6d10da21-af3e-43d6-a0f2-2b6dad0434d7"
+
+# Legacy KV — kept for one-shot migrate-from-KV on first request; auth still uses this NS
 [[kv_namespaces]]
 binding = "SCORES"
 id = "bfbc8a98020a423293e604b4758d25d2"
 preview_id = "801f439d397c4c568134ac6c612db700"
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter"]
+
+[[queues.producers]]
+binding = "CRASH_QUEUE"
+queue = "vernan-crashes"
+
+[[queues.consumers]]
+queue = "vernan-crashes"
+max_batch_size = 25
+max_batch_timeout = 5
+max_retries = 5
+dead_letter_queue = "vernan-crashes-dlq"
 
 # Must match vernan-auth AUTH_SECRET (JWT verify only; login is on vernan-auth).
 # Set production secret: npx wrangler secret put AUTH_SECRET
