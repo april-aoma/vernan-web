@@ -1,7 +1,9 @@
 /**
  * Web-only virtual controller chrome for the display shell.
- * Circle pad + clustered Z/X/C face buttons + L pause / R Shift shoulders.
- * Side assignment is parameterized for a future handedness flip.
+ *
+ * Layout (default handedness):
+ *   Stick side — circle pad; pause (II) above and to the left of the stick.
+ *   Face side  — Z/X/C triangle; dodge (R) above and to the right of that cluster.
  */
 
 import type { ShellRect } from "../display/DisplayShell";
@@ -39,9 +41,9 @@ export type VirtualControllerHeld = {
   pause: boolean;
 };
 
-/** ~2× the first-pass radii — still fits side gutters / bottom band. */
+/** Preferred radii — clamped to fit each control region. */
 const FACE_R = 44;
-const SHOULDER_R = 32;
+const SHOULDER_R = 30;
 const FACE_GAP = 8;
 const HIT_PAD = 10;
 
@@ -50,106 +52,141 @@ function clampRadius(region: ShellRect, preferred: number, frac = 0.28): number 
   return Math.max(18, Math.min(preferred, lim));
 }
 
-/** Place the circle pad centered in its region. */
-export function computeStickInRegion(region: ShellRect): CirclePadLayout {
-  const preferred = Math.max(CIRCLE_PAD_OUTER_R * 2, 56);
-  const outerR = clampRadius(region, preferred, 0.36);
-  const margin = Math.max(6, Math.floor(Math.min(region.w, region.h) * 0.04));
-  const cx = region.x + Math.floor(region.w / 2);
-  const cy = region.y + Math.floor(region.h * 0.55);
-  const maxR =
-    Math.min(
-      cx - region.x,
-      region.x + region.w - cx,
-      cy - region.y,
-      region.y + region.h - cy,
-    ) - margin;
-  const r = Math.max(18, Math.min(outerR, maxR));
+function clampIntoRegion(
+  cx: number,
+  cy: number,
+  r: number,
+  region: ShellRect,
+  pad = 2,
+): { cx: number; cy: number } {
   return {
-    cx,
-    cy,
+    cx: Math.max(region.x + r + pad, Math.min(cx, region.x + region.w - r - pad)),
+    cy: Math.max(region.y + r + pad, Math.min(cy, region.y + region.h - r - pad)),
+  };
+}
+
+/**
+ * Stick anchored to the bottom-left of its region (mirrors face cluster on the right),
+ * with room above-left for the pause button.
+ */
+export function computeStickInRegion(region: ShellRect): CirclePadLayout {
+  const pad = 4;
+  const shoulderR = Math.max(14, Math.min(SHOULDER_R, Math.floor(Math.min(region.w, region.h) * 0.18)));
+  const preferred = Math.max(CIRCLE_PAD_OUTER_R * 2, 56);
+
+  // Leave a pause-sized pocket above-left; size the stick to fit what's left.
+  const maxByW = Math.floor((region.w - pad * 2 - shoulderR * 0.5) * 0.45);
+  const maxByH = Math.floor((region.h - pad * 2 - shoulderR - 8) * 0.5);
+  const r = Math.max(18, Math.min(preferred, maxByW, maxByH, clampRadius(region, preferred, 0.4)));
+
+  // Bottom-left of the stick region (screen bottom-left in portrait).
+  const cx = region.x + pad + Math.floor(r * 1.15);
+  const cy = region.y + region.h - pad - r;
+  const clamped = clampIntoRegion(cx, cy, r, region, pad);
+
+  return {
+    cx: clamped.cx,
+    cy: clamped.cy,
     outerR: r,
     knobR: Math.max(10, Math.round((r / CIRCLE_PAD_OUTER_R) * CIRCLE_PAD_KNOB_R * 1.4)),
   };
 }
 
+/** Pause (II): above the stick and to its left. */
+function computePauseForStick(
+  stick: CirclePadLayout,
+  region: ShellRect,
+): CircleButtonLayout {
+  const r = Math.max(14, Math.min(SHOULDER_R, Math.floor(stick.outerR * 0.55)));
+  const gap = 6;
+  let cx = stick.cx - stick.outerR * 0.65;
+  let cy = stick.cy - stick.outerR - r - gap;
+  const c = clampIntoRegion(cx, cy, r, region);
+  return { id: "pause", cx: c.cx, cy: c.cy, r, label: "II" };
+}
+
 /**
- * Face cluster: Z above, X left, C right — tight for chords.
- * Shoulders flank the cluster (II left, R right) at mid height.
+ * Face cluster: Z above, X left, C right — kept fully inside the face region.
+ * R sits above and to the right of that trio.
  */
 export function computeFaceInRegion(region: ShellRect): CircleButtonLayout[] {
-  const faceR = clampRadius(region, FACE_R, 0.26);
-  const shoulderR = Math.max(16, Math.min(SHOULDER_R, Math.floor(faceR * 0.75)));
+  const pad = 4;
+  const shoulderRPreferred = SHOULDER_R;
+
+  // Size face buttons so the triangle + R footprint fits in the region.
+  // Footprint approx: width ≈ pitch + faceR + shoulder clearance; height ≈ pitch + faceR + shoulder row.
+  const maxFaceByW = Math.floor((region.w - pad * 2 - shoulderRPreferred) / 3.2);
+  const maxFaceByH = Math.floor((region.h - pad * 2 - shoulderRPreferred) / 2.8);
+  const faceR = Math.max(18, Math.min(FACE_R, maxFaceByW, maxFaceByH));
+  const shoulderR = Math.max(14, Math.min(shoulderRPreferred, Math.floor(faceR * 0.7)));
   const pitch = faceR * 2 + FACE_GAP;
 
-  // Rough footprint: shoulders + face triangle.
-  const clusterCoreW = pitch + faceR;
-  const totalW = clusterCoreW + (shoulderR * 2 + faceR) * 2;
-  const totalH = pitch + faceR;
+  const clusterW = pitch + faceR; // X..C span roughly
+  const clusterH = pitch + faceR;
+  // Extra room on the top-right for R.
+  const footprintW = clusterW + shoulderR + faceR * 0.35;
+  const footprintH = clusterH + shoulderR + 10;
 
-  const cx = region.x + Math.floor(region.w / 2);
-  let cy = region.y + Math.floor(region.h * 0.55);
-  const halfH = Math.ceil(totalH / 2);
-  const halfW = Math.ceil(totalW / 2);
-  cy = Math.max(region.y + halfH + 4, Math.min(cy, region.y + region.h - halfH - 4));
-  // If region is narrow, nudge horizontally to stay inside.
-  const minCx = region.x + halfW + 4;
-  const maxCx = region.x + region.w - halfW - 4;
-  const mid = Math.max(minCx, Math.min(cx, maxCx));
+  // Anchor the ZXC cluster in the lower-left of the face region so R fits top-right.
+  const clusterOriginX =
+    region.x + pad + Math.max(0, Math.floor((region.w - pad * 2 - footprintW) * 0.15));
+  const clusterOriginY =
+    region.y + pad + Math.max(0, Math.floor(region.h - pad * 2 - footprintH));
 
-  const jump = {
-    cx: mid,
-    cy: cy - Math.floor(pitch * 0.55),
+  const midX = clusterOriginX + Math.floor(footprintW * 0.42);
+  const midY = clusterOriginY + shoulderR + 8 + Math.floor(clusterH * 0.55);
+
+  const jumpRaw = {
+    cx: midX,
+    cy: midY - Math.floor(pitch * 0.55),
     r: faceR,
-    id: "jump" as const,
-    label: "Z",
   };
-  const attack = {
-    cx: mid - Math.floor(pitch * 0.55),
-    cy: cy + Math.floor(pitch * 0.35),
+  const attackRaw = {
+    cx: midX - Math.floor(pitch * 0.55),
+    cy: midY + Math.floor(pitch * 0.35),
     r: faceR,
-    id: "attack" as const,
-    label: "X",
   };
-  const sub = {
-    cx: mid + Math.floor(pitch * 0.55),
-    cy: cy + Math.floor(pitch * 0.35),
+  const subRaw = {
+    cx: midX + Math.floor(pitch * 0.55),
+    cy: midY + Math.floor(pitch * 0.35),
     r: faceR,
-    id: "sub" as const,
-    label: "C",
   };
 
-  // Shoulders: one on each side of the cluster, mid-height of the face buttons.
-  const shoulderY = Math.floor((jump.cy + attack.cy) / 2);
-  const pause = {
-    cx: attack.cx - faceR - shoulderR - Math.max(6, FACE_GAP),
-    cy: shoulderY,
+  const jumpC = clampIntoRegion(jumpRaw.cx, jumpRaw.cy, faceR, region, pad);
+  const attackC = clampIntoRegion(attackRaw.cx, attackRaw.cy, faceR, region, pad);
+  const subC = clampIntoRegion(subRaw.cx, subRaw.cy, faceR, region, pad);
+
+  const jump: CircleButtonLayout = { ...jumpC, r: faceR, id: "jump", label: "Z" };
+  const attack: CircleButtonLayout = { ...attackC, r: faceR, id: "attack", label: "X" };
+  const sub: CircleButtonLayout = { ...subC, r: faceR, id: "sub", label: "C" };
+
+  // R: above and to the right of the ZXC trio.
+  const dodgeRaw = {
+    cx: Math.max(jump.cx, sub.cx) + Math.floor(faceR * 0.35),
+    cy: jump.cy - faceR - shoulderR - 4,
     r: shoulderR,
-    id: "pause" as const,
-    label: "II",
   };
-  const dodge = {
-    cx: sub.cx + faceR + shoulderR + Math.max(6, FACE_GAP),
-    cy: shoulderY,
+  const dodgeC = clampIntoRegion(dodgeRaw.cx, dodgeRaw.cy, shoulderR, region, pad);
+  const dodge: CircleButtonLayout = {
+    ...dodgeC,
     r: shoulderR,
-    id: "dodge" as const,
+    id: "dodge",
     label: "R",
   };
 
-  // Clamp shoulders into the region if needed.
-  pause.cx = Math.max(region.x + pause.r + 2, pause.cx);
-  dodge.cx = Math.min(region.x + region.w - dodge.r - 2, dodge.cx);
-
-  return [jump, attack, sub, pause, dodge];
+  return [jump, attack, sub, dodge];
 }
 
 export function computeVirtualControllerLayout(
   stickRegion: ShellRect,
   faceRegion: ShellRect,
 ): VirtualControllerLayout {
+  const stick = computeStickInRegion(stickRegion);
+  const pause = computePauseForStick(stick, stickRegion);
+  const face = computeFaceInRegion(faceRegion);
   return {
-    stick: computeStickInRegion(stickRegion),
-    buttons: computeFaceInRegion(faceRegion),
+    stick,
+    buttons: [...face, pause],
   };
 }
 

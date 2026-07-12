@@ -1,6 +1,7 @@
 import {
   DISPLAY_HEIGHT,
   DISPLAY_WIDTH,
+  WINDOW_SCALE,
 } from "../specs";
 import {
   computeDisplayShellLayout,
@@ -150,10 +151,17 @@ export function installGameDisplay(opts: GameDisplayOptions): GameDisplayHandle 
 
   const fitCanvas = (): void => {
     const { w: availW, h: availH } = availableSize();
-    const safe = isImmersive()
+    const immersive = isImmersive();
+    const safe = immersive
       ? readSafeInsets()
       : { top: 0, right: 0, bottom: 0, left: 0 };
-    shellLayout = computeDisplayShellLayout(availW, availH, { stickOnLeft, safe });
+    // Page: hug Java-sized game + control chrome. Immersive: fill the viewport.
+    shellLayout = computeDisplayShellLayout(availW, availH, {
+      stickOnLeft,
+      safe,
+      maxPlayScale: WINDOW_SCALE,
+      fitMode: immersive ? "window" : "content",
+    });
     applyShellSize(shellLayout);
     onShellLayout?.(shellLayout);
   };

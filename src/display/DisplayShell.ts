@@ -1,9 +1,17 @@
 /**
  * Display shell: integer-scales the 512×320 game into a centered play rect and
  * reserves gutters for the virtual controller (portrait bottom / landscape sides).
+ *
+ * Desktop (page): play capped at Java WINDOW_SCALE (2 → 1024×640); shell hugs
+ * game + control gutters instead of filling the monitor.
+ * Phone / immersive: shell fills the viewport; play scales down to fit.
  */
 
-import { INTERNAL_HEIGHT, INTERNAL_WIDTH } from "../specs";
+import {
+  INTERNAL_HEIGHT,
+  INTERNAL_WIDTH,
+  WINDOW_SCALE,
+} from "../specs";
 
 export type ShellRect = { x: number; y: number; w: number; h: number };
 
@@ -13,9 +21,9 @@ export type DisplayShellLayout = {
   /** Full shell canvas size (CSS / buffer pixels). */
   shellW: number;
   shellH: number;
-  /** Where the 512×320 game blit lands (integer multiple of internal size). */
+  /** Where the 512×320 game blit lands (usually an integer scale; portrait may use 0.5). */
   play: ShellRect;
-  /** Integer scale factor (play.w / 512). */
+  /** Scale factor (play.w / 512). */
   playScale: number;
   /** Stick / move cluster region. */
   stickRegion: ShellRect;
@@ -34,27 +42,56 @@ export type DisplayShellOptions = {
   minSideGutter?: number;
   /** Minimum bottom control band height in portrait (shell px). */
   minBottomBand?: number;
-  /** Safe-area insets already applied to the shell coordinate space (usually 0 if CSS pads). */
+  /** Safe-area insets in shell coordinates. */
   safe?: SafeInsets;
+  /**
+   * Max integer play scale. Default WINDOW_SCALE (2) = Java display size.
+   * Smaller viewports scale down automatically; we never upscale past this.
+   */
+  maxPlayScale?: number;
+  /**
+   * `content` — shell hugs game + control chrome (desktop page).
+   * `window` — shell fills available viewport (immersive / phone fullscreen).
+   */
+  fitMode?: "content" | "window";
 };
 
 /** Room for ~2× face buttons + flanking shoulders. */
-const DEFAULT_MIN_SIDE = 168;
-const DEFAULT_MIN_BOTTOM = 200;
+const DEFAULT_MIN_SIDE = 1200;
+const DEFAULT_MIN_BOTTOM = 12;
 
-function integerPlaySize(availW: number, availH: number): {
-  w: number;
-  h: number;
-  scale: number;
-} {
-  const scale = Math.max(
-    1,
-    Math.floor(Math.min(availW / INTERNAL_WIDTH, availH / INTERNAL_HEIGHT)),
-  );
+/**
+ * Pick play blit size. Prefer integer scales (crisp).
+ * Portrait immersive may drop to 0.5× when 1× cannot fit (phone width < 512).
+ */
+function playSize(
+  availW: number,
+  availH: number,
+  maxPlayScale: number,
+  allowHalf = false,
+): { w: number; h: number; scale: number } {
+  const ratio = Math.min(availW / INTERNAL_WIDTH, availH / INTERNAL_HEIGHT);
+  const intScale = Math.floor(ratio);
+  if (intScale >= 1) {
+    const scale = Math.min(maxPlayScale, intScale);
+    return {
+      w: INTERNAL_WIDTH * scale,
+      h: INTERNAL_HEIGHT * scale,
+      scale,
+    };
+  }
+  if (allowHalf) {
+    // Explicit portrait exception: half Java internal resolution (256×160).
+    return {
+      w: Math.round(INTERNAL_WIDTH * 0.5),
+      h: Math.round(INTERNAL_HEIGHT * 0.5),
+      scale: 0.5,
+    };
+  }
   return {
-    w: INTERNAL_WIDTH * scale,
-    h: INTERNAL_HEIGHT * scale,
-    scale,
+    w: INTERNAL_WIDTH,
+    h: INTERNAL_HEIGHT,
+    scale: 1,
   };
 }
 
@@ -67,53 +104,44 @@ function centerIn(outer: ShellRect, innerW: number, innerH: number): ShellRect {
   };
 }
 
-/**
- * Compute play + control regions for the available viewport (CSS pixels).
- * Play size is always an integer multiple of 512×320 for crisp pixels.
- */
-export function computeDisplayShellLayout(
-  availW: number,
-  availH: number,
-  opts: DisplayShellOptions = {},
+function buildLandscape(
+  usable: ShellRect,
+  shellW: number,
+  shellH: number,
+  stickOnLeft: boolean,
+  minSide: number,
+  maxPlayScale: number,
+  fitMode: "content" | "window",
 ): DisplayShellLayout {
-  const shellW = Math.max(1, Math.floor(availW));
-  const shellH = Math.max(1, Math.floor(availH));
-  const stickOnLeft = opts.stickOnLeft !== false;
-  const minSide = opts.minSideGutter ?? DEFAULT_MIN_SIDE;
-  const minBottom = opts.minBottomBand ?? DEFAULT_MIN_BOTTOM;
-  const safe = opts.safe ?? { top: 0, right: 0, bottom: 0, left: 0 };
-  const usable: ShellRect = {
-    x: Math.max(0, Math.floor(safe.left)),
-    y: Math.max(0, Math.floor(safe.top)),
-    w: Math.max(1, shellW - Math.floor(safe.left) - Math.floor(safe.right)),
-    h: Math.max(1, shellH - Math.floor(safe.top) - Math.floor(safe.bottom)),
-  };
-  const landscape = usable.w >= usable.h;
-
-  if (landscape) {
-    // Reserve side gutters, then integer-fit and center play in the full usable area
-    // so leftover vertical space is symmetric (true visual centering).
-    const gutter = Math.max(
-      minSide,
-      Math.min(Math.floor(usable.w * 0.22), Math.floor((usable.w - INTERNAL_WIDTH) / 2)),
-    );
-    const playAvailW = Math.max(1, usable.w - gutter * 2);
-    const fitted = integerPlaySize(playAvailW, usable.h);
-    const play = centerIn(usable, fitted.w, fitted.h);
-    const leftW = play.x - usable.x;
+  if (fitMode === "content") {
+    // Prefer Java-sized play; shrink only if the page can't host it + gutters.
+    const gutter = minSide;
+    const playBudgetW = Math.max(1, usable.w - gutter * 2);
+    const fitted = playSize(playBudgetW, usable.h, maxPlayScale);
+    const outW = Math.min(usable.w, fitted.w + gutter * 2);
+    const outH = Math.min(usable.h, Math.max(fitted.h, minSide));
+    // Re-fit if the hugged box is tighter than the first budget.
+    const playFit = playSize(Math.max(1, outW - gutter * 2), outH, maxPlayScale);
+    const play: ShellRect = {
+      x: Math.floor((outW - playFit.w) / 2),
+      y: Math.floor((outH - playFit.h) / 2),
+      w: playFit.w,
+      h: playFit.h,
+    };
+    const leftW = play.x;
     const rightX = play.x + play.w;
-    const rightW = usable.x + usable.w - rightX;
+    const rightW = outW - rightX;
     const stickRegion: ShellRect = stickOnLeft
-      ? { x: usable.x, y: usable.y, w: leftW, h: usable.h }
-      : { x: rightX, y: usable.y, w: rightW, h: usable.h };
+      ? { x: 0, y: 0, w: Math.max(leftW, 1), h: outH }
+      : { x: rightX, y: 0, w: Math.max(rightW, 1), h: outH };
     const faceRegion: ShellRect = stickOnLeft
-      ? { x: rightX, y: usable.y, w: rightW, h: usable.h }
-      : { x: usable.x, y: usable.y, w: leftW, h: usable.h };
+      ? { x: rightX, y: 0, w: Math.max(rightW, 1), h: outH }
+      : { x: 0, y: 0, w: Math.max(leftW, 1), h: outH };
     return {
-      shellW,
-      shellH,
+      shellW: outW,
+      shellH: outH,
       play,
-      playScale: fitted.scale,
+      playScale: playFit.scale,
       stickRegion,
       faceRegion,
       landscape: true,
@@ -121,10 +149,85 @@ export function computeDisplayShellLayout(
     };
   }
 
-  // Portrait: game on top (integer-scaled + centered), controls on bottom.
+  // Window fit: fill shell, center integer-scaled play, leftover → gutters.
+  const gutter = Math.max(
+    minSide,
+    Math.min(Math.floor(usable.w * 0.22), Math.floor((usable.w - INTERNAL_WIDTH) / 2)),
+  );
+  const playAvailW = Math.max(1, usable.w - gutter * 2);
+  const fitted = playSize(playAvailW, usable.h, maxPlayScale);
+  const play = centerIn(usable, fitted.w, fitted.h);
+  const leftW = play.x - usable.x;
+  const rightX = play.x + play.w;
+  const rightW = usable.x + usable.w - rightX;
+  const stickRegion: ShellRect = stickOnLeft
+    ? { x: usable.x, y: usable.y, w: leftW, h: usable.h }
+    : { x: rightX, y: usable.y, w: rightW, h: usable.h };
+  const faceRegion: ShellRect = stickOnLeft
+    ? { x: rightX, y: usable.y, w: rightW, h: usable.h }
+    : { x: usable.x, y: usable.y, w: leftW, h: usable.h };
+  return {
+    shellW,
+    shellH,
+    play,
+    playScale: fitted.scale,
+    stickRegion,
+    faceRegion,
+    landscape: true,
+    stickOnLeft,
+  };
+}
+
+function buildPortrait(
+  usable: ShellRect,
+  shellW: number,
+  shellH: number,
+  stickOnLeft: boolean,
+  minBottom: number,
+  maxPlayScale: number,
+  fitMode: "content" | "window",
+): DisplayShellLayout {
+  if (fitMode === "content") {
+    const bandH = minBottom;
+    const fitted = playSize(usable.w, Math.max(1, usable.h - bandH), maxPlayScale);
+    const outW = Math.min(usable.w, fitted.w);
+    const outH = Math.min(usable.h, fitted.h + bandH);
+    const playFit = playSize(outW, Math.max(1, outH - bandH), maxPlayScale);
+    const playAvailH = Math.max(1, outH - bandH);
+    const play: ShellRect = {
+      x: Math.floor((outW - playFit.w) / 2),
+      y: Math.floor((playAvailH - playFit.h) / 2),
+      w: playFit.w,
+      h: playFit.h,
+    };
+    const band: ShellRect = { x: 0, y: playAvailH, w: outW, h: outH - playAvailH };
+    const halfW = Math.floor(band.w / 2);
+    const stickRegion: ShellRect = stickOnLeft
+      ? { x: band.x, y: band.y, w: halfW, h: band.h }
+      : { x: band.x + halfW, y: band.y, w: band.w - halfW, h: band.h };
+    const faceRegion: ShellRect = stickOnLeft
+      ? { x: band.x + halfW, y: band.y, w: band.w - halfW, h: band.h }
+      : { x: band.x, y: band.y, w: halfW, h: band.h };
+    return {
+      shellW: outW,
+      shellH: outH,
+      play,
+      playScale: playFit.scale,
+      stickRegion,
+      faceRegion,
+      landscape: false,
+      stickOnLeft,
+    };
+  }
+
+  // Reserve a control band, but never more than leaves room for at least 0.5× play.
+  const halfPlayH = Math.round(INTERNAL_HEIGHT * 0.5);
   const bandH = Math.max(
     minBottom,
-    Math.min(Math.floor(usable.h * 0.36), Math.floor(usable.h - INTERNAL_HEIGHT)),
+    Math.min(
+      Math.floor(usable.h * 0.36),
+      Math.max(minBottom, usable.h - halfPlayH),
+    ),
   );
   const playAvail: ShellRect = {
     x: usable.x,
@@ -132,7 +235,8 @@ export function computeDisplayShellLayout(
     w: usable.w,
     h: Math.max(1, usable.h - bandH),
   };
-  const fitted = integerPlaySize(playAvail.w, playAvail.h);
+  // Portrait immersive: allow 0.5× when the phone is narrower than 512.
+  const fitted = playSize(playAvail.w, playAvail.h, maxPlayScale, true);
   const play = centerIn(playAvail, fitted.w, fitted.h);
   const bandY = playAvail.y + playAvail.h;
   const band: ShellRect = {
@@ -159,6 +263,39 @@ export function computeDisplayShellLayout(
     landscape: false,
     stickOnLeft,
   };
+}
+
+/**
+ * Compute play + control regions for the available viewport (CSS pixels).
+ * Play prefers integer multiples of 512×320 (crisp), capped at Java WINDOW_SCALE.
+ * Portrait immersive may use 0.5× when 1× cannot fit.
+ */
+export function computeDisplayShellLayout(
+  availW: number,
+  availH: number,
+  opts: DisplayShellOptions = {},
+): DisplayShellLayout {
+  const stickOnLeft = opts.stickOnLeft !== false;
+  const minSide = opts.minSideGutter ?? DEFAULT_MIN_SIDE;
+  const minBottom = opts.minBottomBand ?? DEFAULT_MIN_BOTTOM;
+  const maxPlayScale = Math.max(1, Math.floor(opts.maxPlayScale ?? WINDOW_SCALE));
+  const fitMode = opts.fitMode ?? "window";
+  const safe = opts.safe ?? { top: 0, right: 0, bottom: 0, left: 0 };
+
+  const shellW = Math.max(1, Math.floor(availW));
+  const shellH = Math.max(1, Math.floor(availH));
+  const usable: ShellRect = {
+    x: Math.max(0, Math.floor(safe.left)),
+    y: Math.max(0, Math.floor(safe.top)),
+    w: Math.max(1, shellW - Math.floor(safe.left) - Math.floor(safe.right)),
+    h: Math.max(1, shellH - Math.floor(safe.top) - Math.floor(safe.bottom)),
+  };
+  const landscape = usable.w >= usable.h;
+
+  if (landscape) {
+    return buildLandscape(usable, shellW, shellH, stickOnLeft, minSide, maxPlayScale, fitMode);
+  }
+  return buildPortrait(usable, shellW, shellH, stickOnLeft, minBottom, maxPlayScale, fitMode);
 }
 
 export function pointInShellRect(x: number, y: number, r: ShellRect): boolean {

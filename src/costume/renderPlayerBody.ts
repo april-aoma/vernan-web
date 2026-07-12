@@ -135,12 +135,12 @@ function drawAttackWeaponOverlays(
   const overlayJuice = { ...juice, solidRed: false, hurtTintAlpha: 0 };
 
   if (overlay.shield) {
-    const overlayLeft = player.facing >= 0 ? bodyLeft : bodyLeft - 16;
+    // Body-sized (32×32) — unlike sword, no left-facing −16 extension shift.
     drawStripFrameFeetPinned(
       g,
       overlay.shield,
       overlay.frameIndex,
-      overlayLeft,
+      bodyLeft,
       feetWorldY,
       player.facing,
       camera,

@@ -301,6 +301,7 @@ import {
   INTERNAL_HEIGHT,
   INTERNAL_WIDTH,
   TILE_SIZE,
+  WINDOW_SCALE,
   WORLD_VIEWPORT_H,
 } from "./specs";
 import {
@@ -963,6 +964,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   let shellLayout: DisplayShellLayout = computeDisplayShellLayout(
     DISPLAY_WIDTH,
     DISPLAY_HEIGHT,
+    { fitMode: "content", maxPlayScale: WINDOW_SCALE },
   );
   let virtualLayout: VirtualControllerLayout = computeVirtualControllerLayout(
     shellLayout.stickRegion,
@@ -1027,6 +1029,14 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     if (!cur || !isSlideRemapFaceButton(cur)) return;
     const hit = hitTestFaceButton(sx, sy, virtualLayout.buttons);
     if (!hit || hit === cur || !isSlideRemapFaceButton(hit)) return;
+    // While paused/dead, only Z/X may remap (room retry).
+    if (
+      (paused || player.health.isDead) &&
+      hit !== "jump" &&
+      hit !== "attack"
+    ) {
+      return;
+    }
     const prevCode = faceButtonKeyCode(cur);
     const nextCode = faceButtonKeyCode(hit);
     if (prevCode) input.softKeyUp(prevCode);
@@ -1100,7 +1110,15 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         pauseButtonTogglePending = true;
         return;
       }
-      if (paused || player.health.isDead) return;
+      // Z/X must work on death (and pause) for mobile "Z/X — retry room".
+      if (paused || player.health.isDead) {
+        if (faceHit === "jump" || faceHit === "attack") {
+          softPointerControls.set(e.pointerId, faceHit);
+          const code = faceButtonKeyCode(faceHit);
+          if (code) input.softKeyDown(code);
+        }
+        return;
+      }
       softPointerControls.set(e.pointerId, faceHit);
       const code = faceButtonKeyCode(faceHit);
       if (code) input.softKeyDown(code);

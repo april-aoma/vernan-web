@@ -225,12 +225,12 @@ export function drawAttackComposite(
     : undefined;
 
   if (shield) {
-    const overlayLeft = facing >= 0 ? bodyLeft : bodyLeft - 16;
+    // Body-sized (32×32) — unlike sword, no left-facing −16 extension shift.
     drawStripFrameFeetPinned(
       g,
       shield,
       frameIndex,
-      overlayLeft,
+      bodyLeft,
       feetWorldY,
       facing,
       camera,
