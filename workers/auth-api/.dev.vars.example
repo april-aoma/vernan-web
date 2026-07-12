@@ -1,0 +1,2 @@
+# Local wrangler secret for JWT signing (do not commit .dev.vars)
+AUTH_SECRET=local-dev-auth-secret-change-me

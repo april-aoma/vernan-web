@@ -1138,8 +1138,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   function leaderboardPageUrl(): URL {
     const leaderboardUrl = new URL("leaderboard.html", window.location.href);
     try {
-      const api = new URLSearchParams(window.location.search).get("scoresApi");
+      const params = new URLSearchParams(window.location.search);
+      const api = params.get("scoresApi");
       if (api) leaderboardUrl.searchParams.set("scoresApi", api);
+      const authApi = params.get("authApi");
+      if (authApi) leaderboardUrl.searchParams.set("authApi", authApi);
     } catch {
       /* ignore */
     }

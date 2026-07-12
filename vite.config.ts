@@ -32,6 +32,12 @@ const scoresApi =
     process.env.VITE_SCORES_API.trim()) ||
   "https://vernan-scores.henrysbasu.workers.dev";
 
+/** Auth Worker (login/register) — separate from scores/leaderboard. */
+const authApi =
+  (typeof process.env.VITE_AUTH_API === "string" &&
+    process.env.VITE_AUTH_API.trim()) ||
+  "https://vernan-auth.henrysbasu.workers.dev";
+
 /** Dev-only: serve repo `data/scores.json` without putting it in the Pages artifact. */
 function repoScoresDevPlugin(): Plugin {
   return {
@@ -66,6 +72,7 @@ export default defineConfig({
   define: {
     "import.meta.env.VITE_VERNAN_VERSION": JSON.stringify(vernanVersion),
     "import.meta.env.VITE_SCORES_API": JSON.stringify(scoresApi),
+    "import.meta.env.VITE_AUTH_API": JSON.stringify(authApi),
   },
   resolve: {
     alias: {

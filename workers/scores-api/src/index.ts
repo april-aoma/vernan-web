@@ -1,28 +1,18 @@
 /**
- * Vernan live scores + crash reports + auth API for the static game client.
+ * Vernan live scores + crash reports API for the static game client.
+ * Auth (register/login) lives on the separate vernan-auth worker.
  *   GET/POST /api/scores
  *   GET/POST /api/crashes
- *   POST /api/auth/register
- *   POST /api/auth/login
- *   GET  /api/auth/me
- *   POST /api/auth/logout
+ *
+ * Score POST accepts an optional Bearer JWT issued by vernan-auth
+ * (same AUTH_SECRET).
  */
 
-import {
-  authenticateUser,
-  createUser,
-  optionalAuth,
-  requireAuth,
-  sanitizeDisplayName,
-  signJwt,
-  validatePassword,
-  validateUsername,
-  type AuthUser,
-} from "./auth";
+import { optionalAuth, sanitizeDisplayName } from "./auth";
 
 export interface Env {
   SCORES: KVNamespace;
-  /** HMAC secret for JWTs — set with `wrangler secret put AUTH_SECRET`. */
+  /** HMAC secret for JWTs — must match vernan-auth. */
   AUTH_SECRET: string;
 }
 
@@ -64,7 +54,6 @@ const MAX_CRASHES = 100;
 const RATE_LIMIT_WINDOW_SEC = 60;
 const RATE_LIMIT_MAX = 12;
 const CRASH_RATE_LIMIT_MAX = 8;
-const AUTH_RATE_LIMIT_MAX = 20;
 
 const ALLOWED_ORIGINS = new Set([
   "https://april-aoma.github.io",
@@ -74,6 +63,8 @@ const ALLOWED_ORIGINS = new Set([
   "http://127.0.0.1:4173",
   "http://localhost:8787",
   "http://127.0.0.1:8787",
+  "http://localhost:8788",
+  "http://127.0.0.1:8788",
 ]);
 
 function corsHeaders(origin: string | null): HeadersInit {
@@ -339,100 +330,6 @@ function clientIp(request: Request): string {
   );
 }
 
-function authResponse(user: AuthUser, token: string) {
-  return { token, userId: user.id, username: user.username, displayName: user.displayName };
-}
-
-async function handleAuth(
-  request: Request,
-  env: Env,
-  origin: string | null,
-  url: URL,
-): Promise<Response> {
-  if (!env.AUTH_SECRET) {
-    return json({ error: "Auth not configured" }, 503, origin);
-  }
-
-  if (url.pathname === "/api/auth/me" && request.method === "GET") {
-    const auth = await requireAuth(request, env.AUTH_SECRET);
-    if ("error" in auth) return json({ error: auth.error }, auth.status, origin);
-    return json(
-      {
-        userId: auth.user.id,
-        username: auth.user.username,
-        displayName: auth.user.displayName,
-      },
-      200,
-      origin,
-    );
-  }
-
-  if (url.pathname === "/api/auth/logout" && request.method === "POST") {
-    // JWT is client-held; logout is a no-op for the server.
-    return json({ ok: true }, 200, origin);
-  }
-
-  if (url.pathname === "/api/auth/register" && request.method === "POST") {
-    if (await rateLimited(env, clientIp(request), "rl:auth", AUTH_RATE_LIMIT_MAX)) {
-      return json({ error: "Too many requests" }, 429, origin);
-    }
-    let body: Record<string, unknown>;
-    try {
-      body = (await request.json()) as Record<string, unknown>;
-    } catch {
-      return json({ error: "Invalid JSON" }, 400, origin);
-    }
-    let username: string;
-    let password: string;
-    try {
-      username = validateUsername(body.username);
-      password = validatePassword(body.password);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Invalid credentials";
-      return json({ error: msg }, 400, origin);
-    }
-    const displayName = sanitizeDisplayName(body.displayName ?? username);
-    try {
-      const user = await createUser(env.SCORES, username, password, displayName);
-      const token = await signJwt(user, env.AUTH_SECRET);
-      return json(authResponse(user, token), 201, origin);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Register failed";
-      const status = msg === "Username already taken" ? 409 : 500;
-      return json({ error: msg }, status, origin);
-    }
-  }
-
-  if (url.pathname === "/api/auth/login" && request.method === "POST") {
-    if (await rateLimited(env, clientIp(request), "rl:auth", AUTH_RATE_LIMIT_MAX)) {
-      return json({ error: "Too many requests" }, 429, origin);
-    }
-    let body: Record<string, unknown>;
-    try {
-      body = (await request.json()) as Record<string, unknown>;
-    } catch {
-      return json({ error: "Invalid JSON" }, 400, origin);
-    }
-    let username: string;
-    let password: string;
-    try {
-      username = validateUsername(body.username);
-      password = validatePassword(body.password);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Invalid credentials";
-      return json({ error: msg }, 400, origin);
-    }
-    const user = await authenticateUser(env.SCORES, username, password);
-    if (!user) {
-      return json({ error: "Invalid username or password" }, 401, origin);
-    }
-    const token = await signJwt(user, env.AUTH_SECRET);
-    return json(authResponse(user, token), 200, origin);
-  }
-
-  return json({ error: "Not found" }, 404, origin);
-}
-
 async function handleScores(
   request: Request,
   env: Env,
@@ -549,9 +446,6 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    if (url.pathname.startsWith("/api/auth/")) {
-      return handleAuth(request, env, origin, url);
-    }
     if (url.pathname === "/api/scores") {
       return handleScores(request, env, origin, url);
     }
