@@ -33,6 +33,10 @@ export class Framebuffer {
     this.canvas.style.display = "block";
     this.canvas.style.background = "#000";
     this.canvas.tabIndex = 0;
+    this.canvas.style.touchAction = "none";
+    this.canvas.style.userSelect = "none";
+    (this.canvas.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect =
+      "none";
 
     const ctx = this.canvas.getContext("2d", { alpha: false });
     if (!ctx) throw new Error("2D context unavailable (display)");

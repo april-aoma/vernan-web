@@ -77,6 +77,11 @@ export function installGameDisplay(opts: GameDisplayOptions): GameDisplayHandle 
 
   const isImmersive = (): boolean => html.classList.contains("immersive");
 
+  const blockBrowserGesture = (e: Event): void => {
+    if (!isImmersive()) return;
+    e.preventDefault();
+  };
+
   const setImmersive = (on: boolean): void => {
     html.classList.toggle("immersive", on);
     document.body.classList.toggle("immersive", on);
@@ -102,12 +107,28 @@ export function installGameDisplay(opts: GameDisplayOptions): GameDisplayHandle 
     }
   };
 
+  const readSafeInsets = (): { top: number; right: number; bottom: number; left: number } => {
+    const cs = getComputedStyle(html);
+    const px = (name: string): number => {
+      const raw = cs.getPropertyValue(name).trim();
+      const n = Number.parseFloat(raw);
+      return Number.isFinite(n) ? n : 0;
+    };
+    return {
+      top: px("--safe-t"),
+      right: px("--safe-r"),
+      bottom: px("--safe-b"),
+      left: px("--safe-l"),
+    };
+  };
+
   const availableSize = (): { w: number; h: number } => {
     const vv = window.visualViewport;
     const vw = Math.floor(vv?.width ?? window.innerWidth);
     const vh = Math.floor(vv?.height ?? window.innerHeight);
 
     if (isImmersive()) {
+      // Fill the visual viewport; safe-area is applied inside shell layout.
       return { w: Math.max(1, vw), h: Math.max(1, vh) };
     }
 
@@ -123,15 +144,16 @@ export function installGameDisplay(opts: GameDisplayOptions): GameDisplayHandle 
   const applyShellSize = (layout: DisplayShellLayout): void => {
     const el = canvas();
     if (!el) return;
-    // Framebuffer.setShellSize owns buffer+CSS when wired; also set CSS here
-    // for the first paint before mount publishes the layout callback.
     el.style.width = `${layout.shellW}px`;
     el.style.height = `${layout.shellH}px`;
   };
 
   const fitCanvas = (): void => {
     const { w: availW, h: availH } = availableSize();
-    shellLayout = computeDisplayShellLayout(availW, availH, { stickOnLeft });
+    const safe = isImmersive()
+      ? readSafeInsets()
+      : { top: 0, right: 0, bottom: 0, left: 0 };
+    shellLayout = computeDisplayShellLayout(availW, availH, { stickOnLeft, safe });
     applyShellSize(shellLayout);
     onShellLayout?.(shellLayout);
   };
@@ -234,6 +256,10 @@ export function installGameDisplay(opts: GameDisplayOptions): GameDisplayHandle 
   window.addEventListener("resize", onViewportChange);
   window.visualViewport?.addEventListener("resize", onViewportChange);
   window.addEventListener("orientationchange", onViewportChange);
+  // Keep immersive touches from selecting text / callouts / scroll-chaining.
+  document.addEventListener("selectstart", blockBrowserGesture, { capture: true });
+  document.addEventListener("gesturestart", blockBrowserGesture, { capture: true, passive: false });
+  document.addEventListener("touchmove", blockBrowserGesture, { capture: true, passive: false });
 
   if (isStandalone()) {
     setImmersive(true);
@@ -256,6 +282,9 @@ export function installGameDisplay(opts: GameDisplayOptions): GameDisplayHandle 
       window.removeEventListener("resize", onViewportChange);
       window.visualViewport?.removeEventListener("resize", onViewportChange);
       window.removeEventListener("orientationchange", onViewportChange);
+      document.removeEventListener("selectstart", blockBrowserGesture, { capture: true } as EventListenerOptions);
+      document.removeEventListener("gesturestart", blockBrowserGesture, { capture: true } as EventListenerOptions);
+      document.removeEventListener("touchmove", blockBrowserGesture, { capture: true } as EventListenerOptions);
     },
     getShellLayout: () => shellLayout,
     fitNow: fitCanvas,

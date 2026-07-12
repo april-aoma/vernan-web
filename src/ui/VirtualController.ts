@@ -39,81 +39,107 @@ export type VirtualControllerHeld = {
   pause: boolean;
 };
 
-const FACE_R = 22;
-const SHOULDER_R = 16;
-const FACE_GAP = 6;
-const HIT_PAD = 6;
+/** ~2× the first-pass radii — still fits side gutters / bottom band. */
+const FACE_R = 44;
+const SHOULDER_R = 32;
+const FACE_GAP = 8;
+const HIT_PAD = 10;
 
-function clampRadius(region: ShellRect, preferred: number): number {
-  const lim = Math.floor(Math.min(region.w, region.h) * 0.22);
-  return Math.max(14, Math.min(preferred, lim));
+function clampRadius(region: ShellRect, preferred: number, frac = 0.28): number {
+  const lim = Math.floor(Math.min(region.w, region.h) * frac);
+  return Math.max(18, Math.min(preferred, lim));
 }
 
 /** Place the circle pad centered in its region. */
 export function computeStickInRegion(region: ShellRect): CirclePadLayout {
-  const outerR = clampRadius(region, CIRCLE_PAD_OUTER_R);
-  const margin = Math.max(8, Math.floor(Math.min(region.w, region.h) * 0.06));
+  const preferred = Math.max(CIRCLE_PAD_OUTER_R * 2, 56);
+  const outerR = clampRadius(region, preferred, 0.36);
+  const margin = Math.max(6, Math.floor(Math.min(region.w, region.h) * 0.04));
   const cx = region.x + Math.floor(region.w / 2);
-  // Bias slightly toward the play edge / vertical center.
   const cy = region.y + Math.floor(region.h * 0.55);
-  const maxR = Math.min(cx - region.x, region.x + region.w - cx, cy - region.y, region.y + region.h - cy) - margin;
-  const r = Math.max(14, Math.min(outerR, maxR));
+  const maxR =
+    Math.min(
+      cx - region.x,
+      region.x + region.w - cx,
+      cy - region.y,
+      region.y + region.h - cy,
+    ) - margin;
+  const r = Math.max(18, Math.min(outerR, maxR));
   return {
     cx,
     cy,
     outerR: r,
-    knobR: Math.max(8, Math.round((r / CIRCLE_PAD_OUTER_R) * CIRCLE_PAD_KNOB_R)),
+    knobR: Math.max(10, Math.round((r / CIRCLE_PAD_OUTER_R) * CIRCLE_PAD_KNOB_R * 1.4)),
   };
 }
 
 /**
  * Face cluster: Z above, X left, C right — tight for chords.
- * Shoulders sit above the cluster (II left, R right).
+ * Shoulders flank the cluster (II left, R right) at mid height.
  */
 export function computeFaceInRegion(region: ShellRect): CircleButtonLayout[] {
-  const faceR = clampRadius(region, FACE_R);
-  const shoulderR = Math.max(12, Math.min(SHOULDER_R, faceR - 4));
+  const faceR = clampRadius(region, FACE_R, 0.26);
+  const shoulderR = Math.max(16, Math.min(SHOULDER_R, Math.floor(faceR * 0.75)));
   const pitch = faceR * 2 + FACE_GAP;
-  const clusterW = pitch + faceR; // X center to C center ≈ pitch
-  const clusterH = pitch + faceR;
-  const shoulderRowH = shoulderR * 2 + 10;
-  const totalH = clusterH + shoulderRowH;
-  const cx = region.x + Math.floor(region.w / 2);
-  let cy = region.y + Math.floor(region.h * 0.52);
-  // Keep cluster inside region.
-  const halfH = Math.ceil(totalH / 2);
-  cy = Math.max(region.y + halfH + 4, Math.min(cy, region.y + region.h - halfH - 4));
 
-  const jump = { cx, cy: cy - Math.floor(pitch * 0.55), r: faceR, id: "jump" as const, label: "Z" };
+  // Rough footprint: shoulders + face triangle.
+  const clusterCoreW = pitch + faceR;
+  const totalW = clusterCoreW + (shoulderR * 2 + faceR) * 2;
+  const totalH = pitch + faceR;
+
+  const cx = region.x + Math.floor(region.w / 2);
+  let cy = region.y + Math.floor(region.h * 0.55);
+  const halfH = Math.ceil(totalH / 2);
+  const halfW = Math.ceil(totalW / 2);
+  cy = Math.max(region.y + halfH + 4, Math.min(cy, region.y + region.h - halfH - 4));
+  // If region is narrow, nudge horizontally to stay inside.
+  const minCx = region.x + halfW + 4;
+  const maxCx = region.x + region.w - halfW - 4;
+  const mid = Math.max(minCx, Math.min(cx, maxCx));
+
+  const jump = {
+    cx: mid,
+    cy: cy - Math.floor(pitch * 0.55),
+    r: faceR,
+    id: "jump" as const,
+    label: "Z",
+  };
   const attack = {
-    cx: cx - Math.floor(pitch * 0.55),
+    cx: mid - Math.floor(pitch * 0.55),
     cy: cy + Math.floor(pitch * 0.35),
     r: faceR,
     id: "attack" as const,
     label: "X",
   };
   const sub = {
-    cx: cx + Math.floor(pitch * 0.55),
+    cx: mid + Math.floor(pitch * 0.55),
     cy: cy + Math.floor(pitch * 0.35),
     r: faceR,
     id: "sub" as const,
     label: "C",
   };
-  const shoulderY = Math.min(jump.cy, attack.cy, sub.cy) - faceR - shoulderR - 8;
+
+  // Shoulders: one on each side of the cluster, mid-height of the face buttons.
+  const shoulderY = Math.floor((jump.cy + attack.cy) / 2);
   const pause = {
-    cx: cx - Math.floor(clusterW * 0.35),
-    cy: Math.max(region.y + shoulderR + 4, shoulderY),
+    cx: attack.cx - faceR - shoulderR - Math.max(6, FACE_GAP),
+    cy: shoulderY,
     r: shoulderR,
     id: "pause" as const,
     label: "II",
   };
   const dodge = {
-    cx: cx + Math.floor(clusterW * 0.35),
-    cy: pause.cy,
+    cx: sub.cx + faceR + shoulderR + Math.max(6, FACE_GAP),
+    cy: shoulderY,
     r: shoulderR,
     id: "dodge" as const,
     label: "R",
   };
+
+  // Clamp shoulders into the region if needed.
+  pause.cx = Math.max(region.x + pause.r + 2, pause.cx);
+  dodge.cx = Math.min(region.x + region.w - dodge.r - 2, dodge.cx);
+
   return [jump, attack, sub, pause, dodge];
 }
 
@@ -132,7 +158,6 @@ export function hitTestFaceButton(
   iy: number,
   buttons: CircleButtonLayout[],
 ): FaceButtonId | null {
-  // Prefer smaller shoulders / closer centers — test nearest hit.
   let best: FaceButtonId | null = null;
   let bestDist = Infinity;
   for (const b of buttons) {
@@ -146,6 +171,11 @@ export function hitTestFaceButton(
     }
   }
   return best;
+}
+
+/** Face buttons that participate in slide-to-remap (not pause tap). */
+export function isSlideRemapFaceButton(id: FaceButtonId): boolean {
+  return id === "jump" || id === "attack" || id === "sub" || id === "dodge";
 }
 
 export function faceButtonKeyCode(id: FaceButtonId): string | null {
@@ -175,12 +205,12 @@ function drawCircleButton(
   g.fillStyle = fill;
   g.fill();
   g.strokeStyle = stroke;
-  g.lineWidth = 1;
+  g.lineWidth = Math.max(1, Math.round(b.r / 22));
   g.stroke();
   g.fillStyle = pressed ? "#f0dc78" : "#ffffff";
-  g.font = b.r >= 20 ? "11px monospace" : "9px monospace";
+  g.font = b.r >= 36 ? "16px monospace" : b.r >= 24 ? "13px monospace" : "10px monospace";
   const tw = g.measureText(b.label).width;
-  g.fillText(b.label, b.cx - tw / 2, b.cy + 4);
+  g.fillText(b.label, b.cx - tw / 2, b.cy + Math.floor(b.r * 0.18));
 }
 
 export function drawVirtualController(

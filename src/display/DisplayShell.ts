@@ -1,18 +1,22 @@
 /**
- * Display shell: aspect-fits the 512×320 game into a play region and reserves
- * gutters for the virtual controller (portrait bottom / landscape sides).
+ * Display shell: integer-scales the 512×320 game into a centered play rect and
+ * reserves gutters for the virtual controller (portrait bottom / landscape sides).
  */
 
 import { INTERNAL_HEIGHT, INTERNAL_WIDTH } from "../specs";
 
 export type ShellRect = { x: number; y: number; w: number; h: number };
 
+export type SafeInsets = { top: number; right: number; bottom: number; left: number };
+
 export type DisplayShellLayout = {
   /** Full shell canvas size (CSS / buffer pixels). */
   shellW: number;
   shellH: number;
-  /** Where the 512×320 game blit lands. */
+  /** Where the 512×320 game blit lands (integer multiple of internal size). */
   play: ShellRect;
+  /** Integer scale factor (play.w / 512). */
+  playScale: number;
   /** Stick / move cluster region. */
   stickRegion: ShellRect;
   /** Face buttons + shoulders region. */
@@ -30,20 +34,28 @@ export type DisplayShellOptions = {
   minSideGutter?: number;
   /** Minimum bottom control band height in portrait (shell px). */
   minBottomBand?: number;
+  /** Safe-area insets already applied to the shell coordinate space (usually 0 if CSS pads). */
+  safe?: SafeInsets;
 };
 
-const DEFAULT_MIN_SIDE = 108;
-const DEFAULT_MIN_BOTTOM = 132;
-const GAME_ASPECT = INTERNAL_WIDTH / INTERNAL_HEIGHT;
+/** Room for ~2× face buttons + flanking shoulders. */
+const DEFAULT_MIN_SIDE = 168;
+const DEFAULT_MIN_BOTTOM = 200;
 
-function fitAspect(availW: number, availH: number): { w: number; h: number } {
-  let w = Math.max(1, Math.floor(availW));
-  let h = Math.max(1, Math.floor(w / GAME_ASPECT));
-  if (h > availH) {
-    h = Math.max(1, Math.floor(availH));
-    w = Math.max(1, Math.floor(h * GAME_ASPECT));
-  }
-  return { w, h };
+function integerPlaySize(availW: number, availH: number): {
+  w: number;
+  h: number;
+  scale: number;
+} {
+  const scale = Math.max(
+    1,
+    Math.floor(Math.min(availW / INTERNAL_WIDTH, availH / INTERNAL_HEIGHT)),
+  );
+  return {
+    w: INTERNAL_WIDTH * scale,
+    h: INTERNAL_HEIGHT * scale,
+    scale,
+  };
 }
 
 function centerIn(outer: ShellRect, innerW: number, innerH: number): ShellRect {
@@ -57,7 +69,7 @@ function centerIn(outer: ShellRect, innerW: number, innerH: number): ShellRect {
 
 /**
  * Compute play + control regions for the available viewport (CSS pixels).
- * Always reserves control space by shrinking the play area when needed.
+ * Play size is always an integer multiple of 512×320 for crisp pixels.
  */
 export function computeDisplayShellLayout(
   availW: number,
@@ -69,36 +81,39 @@ export function computeDisplayShellLayout(
   const stickOnLeft = opts.stickOnLeft !== false;
   const minSide = opts.minSideGutter ?? DEFAULT_MIN_SIDE;
   const minBottom = opts.minBottomBand ?? DEFAULT_MIN_BOTTOM;
-  const landscape = shellW >= shellH;
+  const safe = opts.safe ?? { top: 0, right: 0, bottom: 0, left: 0 };
+  const usable: ShellRect = {
+    x: Math.max(0, Math.floor(safe.left)),
+    y: Math.max(0, Math.floor(safe.top)),
+    w: Math.max(1, shellW - Math.floor(safe.left) - Math.floor(safe.right)),
+    h: Math.max(1, shellH - Math.floor(safe.top) - Math.floor(safe.bottom)),
+  };
+  const landscape = usable.w >= usable.h;
 
   if (landscape) {
+    // Reserve side gutters, then integer-fit and center play in the full usable area
+    // so leftover vertical space is symmetric (true visual centering).
     const gutter = Math.max(
       minSide,
-      Math.min(Math.floor(shellW * 0.2), Math.floor((shellW - 160) / 2)),
+      Math.min(Math.floor(usable.w * 0.22), Math.floor((usable.w - INTERNAL_WIDTH) / 2)),
     );
-    const playAvail: ShellRect = {
-      x: gutter,
-      y: 0,
-      w: Math.max(1, shellW - gutter * 2),
-      h: shellH,
-    };
-    const fitted = fitAspect(playAvail.w, playAvail.h);
-    const play = centerIn(playAvail, fitted.w, fitted.h);
-    // Leftover horizontal space outside playAvail stays in gutters; if play is
-    // narrower than playAvail, grow gutters equally into the slack.
-    const leftW = play.x;
+    const playAvailW = Math.max(1, usable.w - gutter * 2);
+    const fitted = integerPlaySize(playAvailW, usable.h);
+    const play = centerIn(usable, fitted.w, fitted.h);
+    const leftW = play.x - usable.x;
     const rightX = play.x + play.w;
-    const rightW = shellW - rightX;
+    const rightW = usable.x + usable.w - rightX;
     const stickRegion: ShellRect = stickOnLeft
-      ? { x: 0, y: 0, w: leftW, h: shellH }
-      : { x: rightX, y: 0, w: rightW, h: shellH };
+      ? { x: usable.x, y: usable.y, w: leftW, h: usable.h }
+      : { x: rightX, y: usable.y, w: rightW, h: usable.h };
     const faceRegion: ShellRect = stickOnLeft
-      ? { x: rightX, y: 0, w: rightW, h: shellH }
-      : { x: 0, y: 0, w: leftW, h: shellH };
+      ? { x: rightX, y: usable.y, w: rightW, h: usable.h }
+      : { x: usable.x, y: usable.y, w: leftW, h: usable.h };
     return {
       shellW,
       shellH,
       play,
+      playScale: fitted.scale,
       stickRegion,
       faceRegion,
       landscape: true,
@@ -106,21 +121,26 @@ export function computeDisplayShellLayout(
     };
   }
 
-  // Portrait: game on top, controls on bottom.
+  // Portrait: game on top (integer-scaled + centered), controls on bottom.
   const bandH = Math.max(
     minBottom,
-    Math.min(Math.floor(shellH * 0.34), Math.floor(shellH - 120)),
+    Math.min(Math.floor(usable.h * 0.36), Math.floor(usable.h - INTERNAL_HEIGHT)),
   );
   const playAvail: ShellRect = {
-    x: 0,
-    y: 0,
-    w: shellW,
-    h: Math.max(1, shellH - bandH),
+    x: usable.x,
+    y: usable.y,
+    w: usable.w,
+    h: Math.max(1, usable.h - bandH),
   };
-  const fitted = fitAspect(playAvail.w, playAvail.h);
+  const fitted = integerPlaySize(playAvail.w, playAvail.h);
   const play = centerIn(playAvail, fitted.w, fitted.h);
   const bandY = playAvail.y + playAvail.h;
-  const band: ShellRect = { x: 0, y: bandY, w: shellW, h: shellH - bandY };
+  const band: ShellRect = {
+    x: usable.x,
+    y: bandY,
+    w: usable.w,
+    h: usable.y + usable.h - bandY,
+  };
   const halfW = Math.floor(band.w / 2);
   const stickRegion: ShellRect = stickOnLeft
     ? { x: band.x, y: band.y, w: halfW, h: band.h }
@@ -133,6 +153,7 @@ export function computeDisplayShellLayout(
     shellW,
     shellH,
     play,
+    playScale: fitted.scale,
     stickRegion,
     faceRegion,
     landscape: false,

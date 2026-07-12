@@ -163,6 +163,7 @@ import {
   faceButtonKeyCode,
   hitTestCirclePad,
   hitTestFaceButton,
+  isSlideRemapFaceButton,
   sampleCirclePad,
   type FaceButtonId,
   type VirtualControllerLayout,
@@ -1020,6 +1021,19 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     if (code) input.softKeyUp(code);
   };
 
+  /** Slide onto another face/shoulder button remaps the soft key; slide-off keeps hold. */
+  const remapSoftPointerIfNeeded = (pointerId: number, sx: number, sy: number): void => {
+    const cur = softPointerControls.get(pointerId);
+    if (!cur || !isSlideRemapFaceButton(cur)) return;
+    const hit = hitTestFaceButton(sx, sy, virtualLayout.buttons);
+    if (!hit || hit === cur || !isSlideRemapFaceButton(hit)) return;
+    const prevCode = faceButtonKeyCode(cur);
+    const nextCode = faceButtonKeyCode(hit);
+    if (prevCode) input.softKeyUp(prevCode);
+    softPointerControls.set(pointerId, hit);
+    if (nextCode) input.softKeyDown(nextCode);
+  };
+
   /** Client → shell buffer pixels (canvas.width/height space). */
   const canvasPointToShell = (e: PointerEvent): { sx: number; sy: number } | null => {
     const rect = fb.canvas.getBoundingClientRect();
@@ -1032,6 +1046,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
   const onTouchControlsPointerDown = (e: PointerEvent): void => {
     if (submitDialogOpen || loginDialogOpen) return;
+    // Always claim the gesture so the page behind can't select / scroll.
+    e.preventDefault();
     const shellPt = canvasPointToShell(e);
     if (!shellPt) return;
     const { sx, sy } = shellPt;
@@ -1041,38 +1057,31 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     if (internal) {
       const { ix, iy } = internal;
       if (paused && pauseMenuHits.login.w > 0 && hitTestRect(ix, iy, pauseMenuHits.login)) {
-        e.preventDefault();
         pauseLoginPending = true;
         return;
       }
       if (paused && pauseMenuHits.viewBoard.w > 0 && hitTestRect(ix, iy, pauseMenuHits.viewBoard)) {
-        e.preventDefault();
         pauseViewBoardPending = true;
         return;
       }
       if (paused && pauseMenuHits.submit.w > 0 && hitTestRect(ix, iy, pauseMenuHits.submit)) {
-        e.preventDefault();
         pauseSubmitPending = true;
         return;
       }
       if (player.health.isDead) {
         if (deathMenuHits.submit.w > 0 && hitTestRect(ix, iy, deathMenuHits.submit)) {
-          e.preventDefault();
           pauseSubmitPending = true;
           return;
         }
         if (deathMenuHits.viewBoard.w > 0 && hitTestRect(ix, iy, deathMenuHits.viewBoard)) {
-          e.preventDefault();
           deathViewBoardPending = true;
           return;
         }
         if (deathMenuHits.restartNew.w > 0 && hitTestRect(ix, iy, deathMenuHits.restartNew)) {
-          e.preventDefault();
           deathRestartPending = "new";
           return;
         }
         if (deathMenuHits.retrySame.w > 0 && hitTestRect(ix, iy, deathMenuHits.retrySame)) {
-          e.preventDefault();
           deathRestartPending = "same";
           return;
         }
@@ -1082,7 +1091,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     // Virtual controller lives in shell space (gutters / bottom band).
     const faceHit = hitTestFaceButton(sx, sy, virtualLayout.buttons);
     if (faceHit) {
-      e.preventDefault();
       try {
         fb.canvas.setPointerCapture(e.pointerId);
       } catch {
@@ -1101,7 +1109,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
 
     if (paused || player.health.isDead) return;
     if (circlePadPointerId == null && hitTestCirclePad(sx, sy, virtualLayout.stick)) {
-      e.preventDefault();
       try {
         fb.canvas.setPointerCapture(e.pointerId);
       } catch {
@@ -1120,17 +1127,24 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
   };
 
   const onTouchControlsPointerMove = (e: PointerEvent): void => {
-    if (circlePadPointerId !== e.pointerId) return;
     const shellPt = canvasPointToShell(e);
     if (!shellPt) return;
-    const sample = sampleCirclePad(shellPt.sx, shellPt.sy, virtualLayout.stick);
-    circlePadDraw = {
-      knobDx: sample.knobDx,
-      knobDy: sample.knobDy,
-      active: true,
-      dirs: sample.dirs,
-    };
-    syncCirclePadDirs(sample.dirs);
+
+    if (circlePadPointerId === e.pointerId) {
+      const sample = sampleCirclePad(shellPt.sx, shellPt.sy, virtualLayout.stick);
+      circlePadDraw = {
+        knobDx: sample.knobDx,
+        knobDy: sample.knobDy,
+        active: true,
+        dirs: sample.dirs,
+      };
+      syncCirclePadDirs(sample.dirs);
+      return;
+    }
+
+    if (softPointerControls.has(e.pointerId)) {
+      remapSoftPointerIfNeeded(e.pointerId, shellPt.sx, shellPt.sy);
+    }
   };
 
   const onTouchControlsPointerUp = (e: PointerEvent): void => {
