@@ -1,0 +1,16 @@
+name = "vernan-api-ops"
+main = "src/index.ts"
+compatibility_date = "2025-07-01"
+account_id = "0eb5d31ce2d0428ce3aa240fb7655cff"
+
+[[analytics_engine_datasets]]
+binding = "OPS"
+dataset = "vernan_api_ops"
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter"]

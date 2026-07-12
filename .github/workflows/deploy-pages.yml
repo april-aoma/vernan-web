@@ -39,6 +39,8 @@ jobs:
         env:
           VITE_SCORES_API: https://vernan-scores.henrysbasu.workers.dev
           VITE_AUTH_API: https://vernan-auth.henrysbasu.workers.dev
+          VITE_METRICS_API: https://vernan-metrics.henrysbasu.workers.dev
+          VITE_CLIENT_HEALTH_API: https://vernan-client-health.henrysbasu.workers.dev
         run: |
           COUNT=$(git rev-list --count HEAD)
           export VITE_VERNAN_VERSION="0.1.${COUNT}"

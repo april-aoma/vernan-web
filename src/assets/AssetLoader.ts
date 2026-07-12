@@ -6,6 +6,22 @@ export type AssetLoaderOptions = {
   assetBase: string;
 };
 
+export class AssetLoadError extends Error {
+  readonly path: string;
+  readonly kind: "image" | "text";
+  readonly httpStatus: number;
+
+  constructor(path: string, kind: "image" | "text", httpStatus: number, statusText = "") {
+    super(
+      `Failed to load ${kind} ${path}: ${httpStatus}${statusText ? ` ${statusText}` : ""}`,
+    );
+    this.name = "AssetLoadError";
+    this.path = path;
+    this.kind = kind;
+    this.httpStatus = httpStatus;
+  }
+}
+
 function joinBase(base: string, rel: string): string {
   const b = base.endsWith("/") ? base : `${base}/`;
   const r = rel.replace(/^\/+/, "");
@@ -35,7 +51,7 @@ export class AssetLoader {
     const load = (async () => {
       const res = await fetch(this.url(relPath));
       if (!res.ok) {
-        throw new Error(`Failed to load image ${relPath}: ${res.status} ${res.statusText}`);
+        throw new AssetLoadError(relPath, "image", res.status, res.statusText);
       }
       const blob = await res.blob();
       const bmp = await createImageBitmap(blob);
@@ -55,7 +71,7 @@ export class AssetLoader {
     if (cached) return cached;
     const res = await fetch(this.url(relPath));
     if (!res.ok) {
-      throw new Error(`Failed to load text ${relPath}: ${res.status} ${res.statusText}`);
+      throw new AssetLoadError(relPath, "text", res.status, res.statusText);
     }
     const text = await res.text();
     this.texts.set(relPath, text);

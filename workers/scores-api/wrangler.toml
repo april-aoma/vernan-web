@@ -37,3 +37,11 @@ dead_letter_queue = "vernan-crashes-dlq"
 # Must match vernan-auth AUTH_SECRET (JWT verify only; login is on vernan-auth).
 # Set production secret: npx wrangler secret put AUTH_SECRET
 # Local: copy .dev.vars.example → .dev.vars
+
+[[services]]
+binding = "API_OPS"
+service = "vernan-api-ops"
+
+[[services]]
+binding = "SECURITY"
+service = "vernan-security"

@@ -3,6 +3,8 @@
  * Login/register hit vernan-auth; scores still use vernan-scores.
  */
 
+import { trackProductEvent } from "../diagnostics/productMetrics";
+
 export type AuthSession = {
   token: string;
   userId: string;
@@ -131,6 +133,7 @@ export async function registerAccount(
   } catch {
     /* ignore */
   }
+  trackProductEvent("auth", { action: "register" });
   return session;
 }
 
@@ -150,6 +153,7 @@ export async function loginAccount(username: string, password: string): Promise<
   } catch {
     /* ignore */
   }
+  trackProductEvent("auth", { action: "login" });
   return session;
 }
 
