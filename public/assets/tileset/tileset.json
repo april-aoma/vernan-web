@@ -5747,12 +5747,11 @@
     },
     {
       "id": "sheet_3",
-      "imagePath": "/Users/aprilaberdeen/Desktop/new vernan!/tiles/la sheet.png",
+      "imagePath": "tiles/la sheet.png",
       "tileWidthPx": 16,
       "tileHeightPx": 16,
       "floorRange": {
-        "min": 5,
-        "max": 6
+        "min": 5
       }
     }
   ],
@@ -25756,6 +25755,14 @@
             },
             {
               "objectId": "object_4",
+              "weight": 1.0
+            },
+            {
+              "objectId": "object_5",
+              "weight": 1.0
+            },
+            {
+              "objectId": "object_7",
               "weight": 1.0
             },
             {
