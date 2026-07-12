@@ -4,6 +4,8 @@
  *   POST /api/auth/login
  *   GET  /api/auth/me
  *   POST /api/auth/logout
+ *
+ * Accounts remain in AUTH KV. Rate limits use a Durable Object.
  */
 
 import {
@@ -16,9 +18,13 @@ import {
   validateUsername,
   type AuthUser,
 } from "./auth";
+import { RateLimiter } from "./rateLimiter";
+
+export { RateLimiter };
 
 export interface Env {
   AUTH: KVNamespace;
+  RATE_LIMITER: DurableObjectNamespace;
   /** HMAC secret for JWTs — must match vernan-scores. */
   AUTH_SECRET: string;
 }
@@ -61,12 +67,16 @@ function json(data: unknown, status: number, origin: string | null): Response {
 }
 
 async function rateLimited(env: Env, ip: string): Promise<boolean> {
-  const key = `rl:auth:${ip}`;
-  const raw = await env.AUTH.get(key);
-  const count = raw ? Number(raw) : 0;
-  if (count >= AUTH_RATE_LIMIT_MAX) return true;
-  await env.AUTH.put(key, String(count + 1), { expirationTtl: RATE_LIMIT_WINDOW_SEC });
-  return false;
+  const id = env.RATE_LIMITER.idFromName(`rl:auth:${ip}`);
+  const stub = env.RATE_LIMITER.get(id);
+  const res = await stub.fetch("https://rate-limiter/check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ max: AUTH_RATE_LIMIT_MAX, windowSec: RATE_LIMIT_WINDOW_SEC }),
+  });
+  if (!res.ok) return false;
+  const data = (await res.json()) as { allowed?: boolean };
+  return data.allowed !== true;
 }
 
 function clientIp(request: Request): string {

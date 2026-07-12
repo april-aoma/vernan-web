@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 execute vernan-db --remote --file=./schema.sql",
+    "db:migrate:local": "wrangler d1 execute vernan-db --local --file=./schema.sql",
     "seed": "wrangler kv key put --binding=SCORES scores --path=../../data/scores.json --remote --preview false",
     "typecheck": "tsc --noEmit"
   },
