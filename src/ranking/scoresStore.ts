@@ -1,6 +1,7 @@
 import type { RunSummary, ScoreEntry } from "./types";
 import { authHeaders, loadAuthSession } from "./authStore";
 import { webClientId } from "./clientVersion";
+import { trackProductEvent } from "../diagnostics/productMetrics";
 
 const STORAGE_KEY = "vernan-web-scores";
 const NAME_KEY = "vernan-web-player-name";
@@ -261,85 +262,109 @@ export async function submitScore(
 ): Promise<ScoreEntry> {
   validateSummary(summary);
   const asGuest = opts?.asGuest === true;
-  const session = asGuest ? null : loadAuthSession();
-  const api = scoresApiBase();
-  const name = sanitizePlayerName(
-    api && session ? session.displayName : playerName,
-  );
-  savePlayerName(name);
+  try {
+    const session = asGuest ? null : loadAuthSession();
+    const api = scoresApiBase();
+    const name = sanitizePlayerName(
+      api && session ? session.displayName : playerName,
+    );
+    savePlayerName(name);
 
-  const entry: ScoreEntry = {
-    id: newId(),
-    playerName: name,
-    seed: summary.seed | 0,
-    floorReached: Math.floor(summary.floorReached),
-    coins: Math.floor(summary.coins),
-    enemiesKilled: Math.floor(summary.enemiesKilled),
-    enemiesKillDifficulty: Math.floor(summary.enemiesKillDifficulty),
-    durationSec: summary.durationSec,
-    itemIds: normalizeItemIds(summary.itemIds),
-    client: webClientId(),
-    userId: session?.userId ?? "",
-    createdAt: utcTimestampNow(),
-  };
+    const entry: ScoreEntry = {
+      id: newId(),
+      playerName: name,
+      seed: summary.seed | 0,
+      floorReached: Math.floor(summary.floorReached),
+      coins: Math.floor(summary.coins),
+      enemiesKilled: Math.floor(summary.enemiesKilled),
+      enemiesKillDifficulty: Math.floor(summary.enemiesKillDifficulty),
+      durationSec: summary.durationSec,
+      itemIds: normalizeItemIds(summary.itemIds),
+      client: webClientId(),
+      userId: session?.userId ?? "",
+      createdAt: utcTimestampNow(),
+    };
 
-  if (api) {
-    const headers = session?.token
-      ? authHeaders()
-      : { "Content-Type": "application/json" };
-    const res = await fetch(`${api}/api/scores`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        playerName: entry.playerName,
-        seed: entry.seed,
-        floorReached: entry.floorReached,
-        coins: entry.coins,
-        enemiesKilled: entry.enemiesKilled,
-        enemiesKillDifficulty: entry.enemiesKillDifficulty,
-        durationSec: entry.durationSec,
-        itemIds: entry.itemIds,
-        client: entry.client,
-      }),
-    });
-    if (!res.ok) {
-      let msg = `Submit failed (${res.status})`;
-      try {
-        const body = (await res.json()) as { error?: string };
-        if (typeof body.error === "string" && body.error) msg = body.error;
-      } catch {
-        /* ignore */
+    if (api) {
+      const headers = session?.token
+        ? authHeaders()
+        : { "Content-Type": "application/json" };
+      const res = await fetch(`${api}/api/scores`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          playerName: entry.playerName,
+          seed: entry.seed,
+          floorReached: entry.floorReached,
+          coins: entry.coins,
+          enemiesKilled: entry.enemiesKilled,
+          enemiesKillDifficulty: entry.enemiesKillDifficulty,
+          durationSec: entry.durationSec,
+          itemIds: entry.itemIds,
+          client: entry.client,
+        }),
+      });
+      if (!res.ok) {
+        let msg = `Submit failed (${res.status})`;
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (typeof body.error === "string" && body.error) msg = body.error;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(msg);
       }
-      throw new Error(msg);
+      const remote = (await res.json()) as Partial<ScoreEntry>;
+      if (typeof remote.id === "string") entry.id = remote.id;
+      if (typeof remote.createdAt === "string") {
+        entry.createdAt = formatUtcTimestamp(remote.createdAt);
+      }
+      if (typeof remote.client === "string") {
+        entry.client = sanitizeClientId(remote.client) || entry.client;
+      }
+      if (typeof remote.playerName === "string") {
+        entry.playerName = sanitizePlayerName(remote.playerName);
+        savePlayerName(entry.playerName);
+      }
+      if (typeof remote.userId === "string") {
+        entry.userId = remote.userId.slice(0, 64);
+      }
     }
-    const remote = (await res.json()) as Partial<ScoreEntry>;
-    if (typeof remote.id === "string") entry.id = remote.id;
-    if (typeof remote.createdAt === "string") {
-      entry.createdAt = formatUtcTimestamp(remote.createdAt);
+
+    const local = readLocal().filter((e) => e.id !== entry.id);
+    local.push(entry);
+    local.sort(compareScores);
+    writeLocal(local);
+
+    if (!api) {
+      const mirror = await fetchRepoMirror();
+      downloadScoresMirror(mergeById(mirror, local));
     }
-    if (typeof remote.client === "string") {
-      entry.client = sanitizeClientId(remote.client) || entry.client;
-    }
-    if (typeof remote.playerName === "string") {
-      entry.playerName = sanitizePlayerName(remote.playerName);
-      savePlayerName(entry.playerName);
-    }
-    if (typeof remote.userId === "string") {
-      entry.userId = remote.userId.slice(0, 64);
-    }
+
+    trackProductEvent("score_submit", {
+      ok: true,
+      as_guest: asGuest,
+      seed: summary.seed,
+      floor: summary.floorReached,
+      coins: summary.coins,
+      kills: summary.enemiesKilled,
+      kill_difficulty: summary.enemiesKillDifficulty,
+      duration_sec: summary.durationSec,
+    });
+    return entry;
+  } catch (err) {
+    trackProductEvent("score_submit", {
+      ok: false,
+      as_guest: asGuest,
+      seed: summary.seed,
+      floor: summary.floorReached,
+      coins: summary.coins,
+      kills: summary.enemiesKilled,
+      kill_difficulty: summary.enemiesKillDifficulty,
+      duration_sec: summary.durationSec,
+    });
+    throw err;
   }
-
-  const local = readLocal().filter((e) => e.id !== entry.id);
-  local.push(entry);
-  local.sort(compareScores);
-  writeLocal(local);
-
-  if (!api) {
-    const mirror = await fetchRepoMirror();
-    downloadScoresMirror(mergeById(mirror, local));
-  }
-
-  return entry;
 }
 
 /**

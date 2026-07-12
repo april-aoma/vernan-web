@@ -25,6 +25,7 @@ import {
   type ScoreEntry,
 } from "./db";
 import { RateLimiter } from "./rateLimiter";
+import { peekErrorMessage, reportRequestTelemetry } from "./telemetry";
 
 export { RateLimiter };
 
@@ -36,6 +37,10 @@ export interface Env {
   CRASH_QUEUE: Queue<CrashEntry>;
   /** HMAC secret for JWTs — must match vernan-auth. */
   AUTH_SECRET: string;
+  /** Optional service binding to vernan-api-ops. */
+  API_OPS?: Fetcher;
+  /** Optional service binding to vernan-security. */
+  SECURITY?: Fetcher;
 }
 
 const SCORES_KEY = "scores";
@@ -418,22 +423,36 @@ async function handleCrashes(
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const origin = request.headers.get("Origin");
     const url = new URL(request.url);
+    const t0 = Date.now();
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
+    let response: Response;
     if (url.pathname === "/api/scores") {
-      return handleScores(request, env, origin, url);
-    }
-    if (url.pathname === "/api/crashes") {
-      return handleCrashes(request, env, origin, url);
+      response = await handleScores(request, env, origin, url);
+    } else if (url.pathname === "/api/crashes") {
+      response = await handleCrashes(request, env, origin, url);
+    } else {
+      response = json({ error: "Not found" }, 404, origin);
     }
 
-    return json({ error: "Not found" }, 404, origin);
+    const errorMessage = await peekErrorMessage(response);
+    ctx.waitUntil(
+      reportRequestTelemetry(env, {
+        service: "scores",
+        route: url.pathname,
+        method: request.method,
+        status: response.status,
+        latency_ms: Date.now() - t0,
+        errorMessage,
+      }),
+    );
+    return response;
   },
 
   async queue(batch: MessageBatch<CrashEntry>, env: Env): Promise<void> {

@@ -38,6 +38,18 @@ const authApi =
     process.env.VITE_AUTH_API.trim()) ||
   "https://vernan-auth.henrysbasu.workers.dev";
 
+/** Product / gameplay metrics Worker. */
+const metricsApi =
+  (typeof process.env.VITE_METRICS_API === "string" &&
+    process.env.VITE_METRICS_API.trim()) ||
+  "https://vernan-metrics.henrysbasu.workers.dev";
+
+/** Client health Worker (boot / assets / rare perf). */
+const clientHealthApi =
+  (typeof process.env.VITE_CLIENT_HEALTH_API === "string" &&
+    process.env.VITE_CLIENT_HEALTH_API.trim()) ||
+  "https://vernan-client-health.henrysbasu.workers.dev";
+
 /** Dev-only: serve repo `data/scores.json` without putting it in the Pages artifact. */
 function repoScoresDevPlugin(): Plugin {
   return {
@@ -73,6 +85,8 @@ export default defineConfig({
     "import.meta.env.VITE_VERNAN_VERSION": JSON.stringify(vernanVersion),
     "import.meta.env.VITE_SCORES_API": JSON.stringify(scoresApi),
     "import.meta.env.VITE_AUTH_API": JSON.stringify(authApi),
+    "import.meta.env.VITE_METRICS_API": JSON.stringify(metricsApi),
+    "import.meta.env.VITE_CLIENT_HEALTH_API": JSON.stringify(clientHealthApi),
   },
   resolve: {
     alias: {

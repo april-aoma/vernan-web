@@ -21,3 +21,11 @@ new_sqlite_classes = ["RateLimiter"]
 # Must match vernan-scores AUTH_SECRET so leaderboard can verify JWTs.
 # Set production secret: npx wrangler secret put AUTH_SECRET
 # Local: copy .dev.vars.example → .dev.vars
+
+[[services]]
+binding = "API_OPS"
+service = "vernan-api-ops"
+
+[[services]]
+binding = "SECURITY"
+service = "vernan-security"

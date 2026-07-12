@@ -1,4 +1,4 @@
-import { AssetLoader } from "./assets/AssetLoader";
+import { AssetLoader, AssetLoadError } from "./assets/AssetLoader";
 import { resolveCameraScrollBounds, highestLadderRow, lowestLadderRow, usesTierOneCamera, type PlayableScrollX } from "./camera/playableScroll";
 import { WorldCamera, type CameraFollowInput } from "./camera/WorldCamera";
 import { Input } from "./input/Input";
@@ -175,6 +175,12 @@ import { isLoggedIn, logoutAccount } from "./ranking/authStore";
 import { submitScore } from "./ranking/scoresStore";
 import type { RunSummary } from "./ranking/types";
 import { reportUnknownCrash, setCrashContext } from "./diagnostics/crashReporter";
+import { trackProductEvent } from "./diagnostics/productMetrics";
+import {
+  trackAssetLoadFail,
+  trackHealthEvent,
+  trackPerfSignalIfNeeded,
+} from "./diagnostics/clientHealth";
 import { BrickChunk, spawnBreakableBrickChunks } from "./fx/BrickChunk";
 import {
   drawAllSeeingEyeOverlays,
@@ -526,7 +532,12 @@ async function loadStrip(
   try {
     const img = await assets.loadImage(path);
     return stripFromImage(img, frames);
-  } catch {
+  } catch (err) {
+    if (err instanceof AssetLoadError) {
+      trackAssetLoadFail(err.path, { kind: "image", http_status: err.httpStatus });
+    } else {
+      trackAssetLoadFail(path, { kind: "image" });
+    }
     return null;
   }
 }
@@ -534,7 +545,12 @@ async function loadStrip(
 async function loadImageSafe(assets: AssetLoader, path: string): Promise<ImageBitmap | null> {
   try {
     return await assets.loadImage(path);
-  } catch {
+  } catch (err) {
+    if (err instanceof AssetLoadError) {
+      trackAssetLoadFail(err.path, { kind: "image", http_status: err.httpStatus });
+    } else {
+      trackAssetLoadFail(path, { kind: "image" });
+    }
     return null;
   }
 }
@@ -545,6 +561,7 @@ async function loadImageSafe(assets: AssetLoader, path: string): Promise<ImageBi
 export function mount(root: string | HTMLElement, options: MountOptions = {}): VernanHandle {
   const parent = resolveRoot(root);
   const assetBase = options.assetBase ?? "/assets/";
+  const bootT0 = performance.now();
   let seed =
     options.seed ??
     seedFromUrl() ??
@@ -1255,6 +1272,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     dungeonRestartInProgress = true;
     void (async () => {
     try {
+      trackProductEvent("run_restart", {
+        mode,
+        seed,
+        floor: floorOrdinal,
+      });
       const newSeed =
         mode === "new" ? (Math.floor(Math.random() * 0x7fffffff) | 0) : seed;
       seed = newSeed;
@@ -1347,6 +1369,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       revealMiniMapForRoom(session.dungeon.layout, session.roomId, miniMapState);
       renderFacing = player.facing;
       turnAnimFramesLeft = 0;
+      trackProductEvent("run_start", {
+        restart_mode: mode,
+        seed,
+        floor: floorOrdinal,
+      });
     } finally {
       dungeonRestartInProgress = false;
     }
@@ -2274,9 +2301,27 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       revealMiniMapForRoom(session.dungeon.layout, session.roomId, miniMapState);
       playerWasOnGround = player.onGround;
       snapCameraToPlayer(session);
+      trackProductEvent("run_start", {
+        restart_mode: "boot",
+        seed,
+        floor: floorOrdinal,
+      });
+      trackHealthEvent("boot_timing", {
+        ok: true,
+        duration_ms: Math.round(performance.now() - bootT0),
+        seed,
+        floor: floorOrdinal,
+      });
     } catch (err) {
       bootError = err instanceof Error ? err.message : String(err);
       reportUnknownCrash(err, "boot");
+      trackHealthEvent("boot_timing", {
+        ok: false,
+        duration_ms: Math.round(performance.now() - bootT0),
+        error_class: err instanceof Error ? err.name.slice(0, 48) : "Error",
+        seed,
+        floor: floorOrdinal,
+      });
     }
   })();
 
@@ -2892,8 +2937,23 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       const map = currentMap(session);
 
       if (player.health.isDead) {
+        if (!runReachedDeath) {
+          const deathSummary = currentRunSummary();
+          trackProductEvent("run_death", {
+            seed: deathSummary.seed,
+            floor: deathSummary.floorReached,
+            coins: deathSummary.coins,
+            kills: deathSummary.enemiesKilled,
+            kill_difficulty: deathSummary.enemiesKillDifficulty,
+            duration_sec: deathSummary.durationSec,
+          });
+        }
         runReachedDeath = true;
         if (!submitDialogOpen && !loginDialogOpen && (input.jumpPressed || input.attackPressed)) {
+          trackProductEvent("run_retry", {
+            seed,
+            floor: floorOrdinal,
+          });
           player.health.max = player.stats.maxHealth;
           player.health.refill();
           leaderboardLocked = true;
@@ -3090,6 +3150,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           refreshRoomArtAndCamera();
           snapFamiliarsThroughRoomTransition();
           revealMiniMapForRoom(session!.dungeon.layout, session!.roomId, miniMapState);
+          trackProductEvent("floor_reached", {
+            seed,
+            floor: floorOrdinal,
+          });
 
           const ascendSession = session!;
           void loadSpritesForSessionDungeon(ascendSession)
@@ -4081,6 +4145,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     onFpsUpdate: (f, u) => {
       fps = f;
       ups = u;
+      trackPerfSignalIfNeeded(f, u, { seed, floor: floorOrdinal });
     },
     onFatalError: (err) => {
       const msg = err instanceof Error ? err.message : String(err);

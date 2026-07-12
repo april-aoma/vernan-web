@@ -19,6 +19,7 @@ import {
   type AuthUser,
 } from "./auth";
 import { RateLimiter } from "./rateLimiter";
+import { peekErrorMessage, reportRequestTelemetry } from "./telemetry";
 
 export { RateLimiter };
 
@@ -27,6 +28,10 @@ export interface Env {
   RATE_LIMITER: DurableObjectNamespace;
   /** HMAC secret for JWTs — must match vernan-scores. */
   AUTH_SECRET: string;
+  /** Optional service binding to vernan-api-ops. */
+  API_OPS?: Fetcher;
+  /** Optional service binding to vernan-security. */
+  SECURITY?: Fetcher;
 }
 
 const RATE_LIMIT_WINDOW_SEC = 60;
@@ -92,14 +97,37 @@ function authResponse(user: AuthUser, token: string) {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const origin = request.headers.get("Origin");
     const url = new URL(request.url);
+    const t0 = Date.now();
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
+    const response = await handleAuth(request, env, origin, url);
+    const errorMessage = await peekErrorMessage(response);
+    ctx.waitUntil(
+      reportRequestTelemetry(env, {
+        service: "auth",
+        route: url.pathname,
+        method: request.method,
+        status: response.status,
+        latency_ms: Date.now() - t0,
+        errorMessage,
+      }),
+    );
+    return response;
+  },
+};
+
+async function handleAuth(
+  request: Request,
+  env: Env,
+  origin: string | null,
+  url: URL,
+): Promise<Response> {
     if (!url.pathname.startsWith("/api/auth/")) {
       return json({ error: "Not found" }, 404, origin);
     }
@@ -186,5 +214,4 @@ export default {
     }
 
     return json({ error: "Not found" }, 404, origin);
-  },
-};
+}
