@@ -12,7 +12,7 @@ import {
   releaseBlackHeartBeatKnockback,
   tickBlackHeartEnemyHitstun,
 } from "../combat/BlackHeartEnemyCombat";
-import { applyStrikeElectrocuteJuice } from "../combat/EnemyHitstunJuice";
+import { applyStrikeElectrocuteJuice, applySolidRedHitstunJuice } from "../combat/EnemyHitstunJuice";
 import { seesPlayerAt, type PlayerCombatSnapshot, type WorldRect } from "../combat/EnemyVision";
 import {
   JACK_BLUE_MAX_HP,
@@ -611,8 +611,10 @@ export class JackBlue implements PeerWalkingEnemy {
     if (this.hitstun > 0 && strike.knockKind !== "black_heart_burst") return false;
     this.hp = Math.max(0, this.hp - strike.damage);
     if (this.hp <= 0) this.prepareDeathFxIfNeeded();
+    this.shieldClangSec = 0;
+    this.shieldKnockReleasePending = false;
     if (strike.knockKind === "black_heart_burst") {
-      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun, this);
       this.hurtTintRemaining = HURT_TINT_SECONDS;
       return true;
     }
@@ -652,7 +654,10 @@ export class JackBlue implements PeerWalkingEnemy {
     if (this.hp <= 0 || this.hitstun > 0) return false;
     this.hp = Math.max(0, this.hp - strike.damage);
     if (this.hp <= 0) this.prepareDeathFxIfNeeded();
+    this.shieldClangSec = 0;
+    this.shieldKnockReleasePending = false;
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
+    applySolidRedHitstunJuice(this);
     const kb = this.jackKnockConverted(knockbackForFrisbee(strike.projectileVelX));
     this.pendingKnockVx = kb.vx;
     this.pendingKnockVy = kb.vy;
@@ -705,6 +710,8 @@ export class JackBlue implements PeerWalkingEnemy {
     this.shieldClangSec = Math.max(this.shieldClangSec, strike.freezeFrames / 60);
     this.hitstun = Math.max(this.hitstun, strike.freezeFrames / 60);
     this.hitlagSolidRed = false;
+    this.hitlagElectrocute = false;
+    this.hurtTintRemaining = 0;
     this.shieldKnockReleasePending = true;
     const r = this.rect();
     const away = r.x + r.w * 0.5 >= strike.attackerX + strike.attackerW * 0.5 ? 1 : -1;
@@ -722,6 +729,8 @@ export class JackBlue implements PeerWalkingEnemy {
     this.shieldClangSec = Math.max(this.shieldClangSec, strike.freezeFrames / 60);
     this.hitstun = Math.max(this.hitstun, strike.freezeFrames / 60);
     this.hitlagSolidRed = false;
+    this.hitlagElectrocute = false;
+    this.hurtTintRemaining = 0;
     this.shieldKnockReleasePending = true;
     this.pendingKnockVx = 0;
     this.pendingKnockVy = 0;
@@ -733,6 +742,16 @@ export class JackBlue implements PeerWalkingEnemy {
 
   facingSign(): number {
     return this.collisionFacingSign();
+  }
+
+  /** Java hitstunSolidRed — suppress solid red while shield clang is active. */
+  hitstunSolidRed(): boolean {
+    if (this.shieldClangSec > 0) return false;
+    return (
+      this.hitlagSolidRed &&
+      (this.hitstun > 0 || this.blackHeartBeat.isLocked()) &&
+      !this.hitlagElectrocute
+    );
   }
 
   hurtTintAlpha(): number {

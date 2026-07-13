@@ -103,7 +103,12 @@ export function trySwordStrikeIce(
   shatter: (block: IceBlock) => void,
 ): number {
   const sword = player.attackHitbox();
-  if (!sword || player.attackHitLanded) return 0;
+  if (!sword) return 0;
+  if (player.disc.isHeavyActive()) {
+    if (player.disc.isHeavyAttackHitLanded()) return 0;
+  } else if (player.attackHitLanded) {
+    return 0;
+  }
   const hit = findBreakableIceHit(blocks, sword);
   if (!hit) return 0;
   const index = blocks.indexOf(hit);

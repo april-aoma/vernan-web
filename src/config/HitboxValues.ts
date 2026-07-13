@@ -268,25 +268,26 @@ export const HEADBAND_SIDE_ATTACK0_ACTIVE_B_LOCAL = [
 ];
 export const HEADBAND_SIDE_ATTACK0_ACTIVE_B_PIVOT_X = 16;
 
+// Local X −2 vs prior authoring: matches attack1 strip art (hit frame 2 shifted left 2px).
 export const HEAVY_ATTACK1_SWORD_ACTIVE_LOCAL = [
-  34, 14, 43, 18, 48, 28, 50, 36, 50, 48, 45, 48, 38, 45, 25, 35, 11, 32, 7, 32, 7, 26, 10, 20, 13, 17, 17, 15, 22, 14,
+  32, 14, 41, 18, 46, 28, 48, 36, 48, 48, 43, 48, 36, 45, 23, 35, 9, 32, 5, 32, 5, 26, 8, 20, 11, 17, 15, 15, 20, 14,
 ];
 export const HEAVY_ATTACK1_SWORD_ACTIVE_PIVOT_X = 16;
 
 export const HEAVY_ATTACK1_FLINT_ACTIVE_LOCAL = [
-  31, 28, 37, 31, 43, 37, 44, 40, 44, 44, 35, 44, 29, 43, 21, 38, 14, 34, 6, 32, 6, 28, 16, 26, 23, 26,
+  29, 28, 35, 31, 41, 37, 42, 40, 42, 44, 33, 44, 27, 43, 19, 38, 12, 34, 4, 32, 4, 28, 14, 26, 21, 26,
 ];
 export const HEAVY_ATTACK1_FLINT_ACTIVE_PIVOT_X = 16;
 
 export const HEAVY_ATTACK1_GEM_ACTIVE_LOCAL = [
-  38, 16, 42, 20, 45, 25, 48, 34, 48, 44, 45, 46, 37, 46, 34, 45, 26, 38, 19, 34, 10, 33, 5, 33, 5, 24, 8, 18, 13, 14, 20, 12, 30, 12,
+  36, 16, 40, 20, 43, 25, 46, 34, 46, 44, 43, 46, 35, 46, 32, 45, 24, 38, 17, 34, 8, 33, 3, 33, 3, 24, 6, 18, 11, 14, 18, 12, 28, 12,
 ];
 export const HEAVY_ATTACK1_GEM_ACTIVE_PIVOT_X = 16;
 
 export const HEAVY_ATTACK1_STICK_ACTIVE_LOCAL = [
-  46, 21, 58, 33, 58, 47, 47, 47, 3, 38, 3, 33, 7, 27, 12, 21, 19, 17, 22, 16, 34, 16,
+  44, 21, 56, 33, 56, 47, 45, 47, 1, 38, 1, 33, 5, 27, 10, 21, 17, 17, 20, 16, 32, 16,
 ];
-export const HEAVY_ATTACK1_STICK_ACTIVE_PIVOT_X = 8;
+export const HEAVY_ATTACK1_STICK_ACTIVE_PIVOT_X = 16;
 
 export const SHIELD_CROUCH_ATTACK_WINDUP_LOCAL = [17, 17, 27, 17, 27, 27, 25, 30, 20, 30, 17, 27];
 export const SHIELD_CROUCH_ATTACK_WINDUP_PIVOT_X = 16;

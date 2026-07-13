@@ -2,6 +2,7 @@ import type { GameColorPalette } from "./GameColorPalette";
 import {
   configureBandColumnShift,
   configureKCandyFadeSteps,
+  configureWrongColumnLut,
   createKCandyPaletteTables,
   kCandyFadePixel,
   kCandyWrongColumnPixel,
@@ -44,6 +45,7 @@ export class KCandyVisionEffect {
 
   private pixelScratch = new Uint32Array(0);
   private zoomSourceScratch = new Uint32Array(0);
+  private halfWarpScratch = new Uint32Array(0);
   private pocketCache: WorleyPocket[] = [];
   private pocketCacheCells = 0;
   private pocketCacheMinCx = 0;
@@ -51,8 +53,19 @@ export class KCandyVisionEffect {
   private pocketCacheMaxCx = 0;
   private pocketCacheMaxCy = 0;
   private pocketCacheSpanX = 0;
+  /** Active Worley cell size in the buffer currently being warped. */
+  private featureCellPx = KCandyVisionEffect.VORONOI_FEATURE_CELL_PX;
+  private pocketDriftPx = KCandyVisionEffect.POCKET_CENTER_DRIFT_PX;
+  /** Precomputed Worley site jitter for the active pocket cache (Java recomputes hashes; we cache). */
+  private siteJitterX = new Float64Array(0);
+  private siteJitterY = new Float64Array(0);
+  private siteJitterMinCx = 0;
+  private siteJitterMinCy = 0;
+  private siteJitterSpanX = 0;
   private readonly ownerCellScratch = [0, 0];
   private readonly ownerEdgeScratch = [0];
+  private scrollFx = 0;
+  private scrollFy = 0;
 
   bindPalette(palette: GameColorPalette | null): void {
     if (!palette?.isLoaded) {
@@ -108,16 +121,14 @@ export class KCandyVisionEffect {
 
   apply(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     if (!this.isActive() || !this.paletteTables || this.paletteGrid.length < 3) return;
+    // Same structure as Java BufferedImage.getRGB → int[] → setRGB, with one web adaptation:
+    // Worley fisheye runs at half-res (JS can't match HotSpot on that loop); palette fade stays full-res.
     const img = ctx.getImageData(0, 0, w, h);
     const px = img.data;
     const pixelCount = w * h;
     this.ensurePixelScratch(pixelCount);
     for (let i = 0, p = 0; i < pixelCount; i++, p += 4) {
-      const a = px[p + 3]!;
-      const r = px[p]!;
-      const g = px[p + 1]!;
-      const b = px[p + 2]!;
-      this.pixelScratch[i] = (a << 24) | (r << 16) | (g << 8) | b;
+      this.pixelScratch[i] = (px[p + 3]! << 24) | (px[p]! << 16) | (px[p + 1]! << 8) | px[p + 2]!;
     }
 
     const brightenStrength = this.brightenStrength();
@@ -125,49 +136,123 @@ export class KCandyVisionEffect {
     const doBrighten = brightenStrength > 1e-4;
     const doVoronoi = voronoiStrength > 1e-4;
     const baseColumnDelta = this.columnDeltaForFrame(brightenStrength);
-
-    if (doVoronoi) {
-      this.ensureZoomSourceScratch(pixelCount);
-      this.zoomSourceScratch.set(this.pixelScratch);
-      this.rebuildPocketCache(w, h, voronoiStrength);
+    const hueStrength = doBrighten ? this.hueMisreadStrength(brightenStrength) : 0;
+    const doHueMisread = hueStrength > 1e-4;
+    if (doHueMisread) {
+      configureWrongColumnLut(this.paletteGrid, this.paletteTables, baseColumnDelta);
     }
 
-    for (let row = 0; row < h; row++) {
-      const rowBase = row * w;
-      for (let col = 0; col < w; col++) {
-        const idx = rowBase + col;
-        let argb = this.pixelScratch[idx]!;
-        if (doVoronoi) {
-          argb = this.applyFisheyeNearestPixel(col, row, argb, w, h);
-        }
+    if (doVoronoi) {
+      this.applyVoronoiHalfRes(w, h, voronoiStrength);
+    }
+
+    const tables = this.paletteTables;
+    const grid = this.paletteGrid;
+    const pixels = this.pixelScratch;
+    if (doBrighten || doVoronoi) {
+      for (let i = 0; i < pixelCount; i++) {
+        let argb = pixels[i]!;
         if (doBrighten) {
-          argb = kCandyFadePixel(this.paletteGrid, this.paletteTables, argb, brightenStrength);
-          const hueStrength = this.hueMisreadStrength(brightenStrength);
-          if (hueStrength > 1e-4) {
-            argb = kCandyWrongColumnPixel(
-              this.paletteGrid,
-              this.paletteTables,
-              argb,
-              baseColumnDelta,
-              hueStrength,
-            );
+          argb = kCandyFadePixel(grid, tables, argb, brightenStrength);
+          if (doHueMisread) {
+            argb = kCandyWrongColumnPixel(grid, tables, argb, baseColumnDelta, hueStrength);
           }
         }
-        if (doBrighten || doVoronoi) {
-          argb = sanitizeKCandyPixel(this.paletteTables, argb);
-        }
-        this.pixelScratch[idx] = argb;
+        argb = sanitizeKCandyPixel(tables, argb);
+        pixels[i] = argb;
       }
     }
 
     for (let i = 0, p = 0; i < pixelCount; i++, p += 4) {
-      const argb = this.pixelScratch[i]!;
+      const argb = pixels[i]!;
       px[p] = (argb >>> 16) & 0xff;
       px[p + 1] = (argb >>> 8) & 0xff;
       px[p + 2] = argb & 0xff;
       px[p + 3] = (argb >>> 24) & 0xff;
     }
     ctx.putImageData(img, 0, 0);
+  }
+
+  /**
+   * Worley fisheye at half resolution, nearest-upscaled back into {@link #pixelScratch}.
+   * Palette ops stay full-res — this only covers the geometric pass that dominates JS time.
+   */
+  private applyVoronoiHalfRes(w: number, h: number, voronoiStrength: number): void {
+    const hw = Math.max(1, w >> 1);
+    const hh = Math.max(1, h >> 1);
+    const halfCount = hw * hh;
+    this.ensureZoomSourceScratch(halfCount);
+    const src = this.pixelScratch;
+    const half = this.zoomSourceScratch;
+
+    for (let row = 0; row < hh; row++) {
+      const sy = Math.min(h - 1, row * 2);
+      const srcRow = sy * w;
+      const dstRow = row * hw;
+      for (let col = 0; col < hw; col++) {
+        const sx = Math.min(w - 1, col * 2);
+        half[dstRow + col] = src[srcRow + sx]!;
+      }
+    }
+
+    // Feature cell scales with buffer so screen-space pocket size matches full-res Java.
+    const halfCell = Math.max(8, KCandyVisionEffect.VORONOI_FEATURE_CELL_PX >> 1);
+    this.featureCellPx = halfCell;
+    this.pocketDriftPx = KCandyVisionEffect.POCKET_CENTER_DRIFT_PX * (halfCell / KCandyVisionEffect.VORONOI_FEATURE_CELL_PX);
+    this.scrollFx = this.worleyScrollFx();
+    this.scrollFy = this.worleyScrollFy();
+    this.rebuildPocketCache(hw, hh, voronoiStrength);
+
+    if (this.halfWarpScratch.length !== halfCount) {
+      this.halfWarpScratch = new Uint32Array(halfCount);
+    }
+    const out = this.halfWarpScratch;
+    const edge = this.ownerEdgeScratch;
+    const owner = this.ownerCellScratch;
+    const zoomMix = KCandyVisionEffect.VORONOI_ZOOM_MIX;
+
+    for (let row = 0; row < hh; row++) {
+      const rowBase = row * hw;
+      for (let col = 0; col < hw; col++) {
+        const idx = rowBase + col;
+        let argb = half[idx]!;
+        if ((argb & 0x00ffffff) !== 0) {
+          this.resolveOwnerCell(col, row, owner, edge);
+          const cx = owner[0]!;
+          const cy = owner[1]!;
+          if (
+            cx >= this.pocketCacheMinCx &&
+            cx <= this.pocketCacheMaxCx &&
+            cy >= this.pocketCacheMinCy &&
+            cy <= this.pocketCacheMaxCy
+          ) {
+            const pidx = this.pocketCacheIndex(cx, cy);
+            const pocket = pidx >= 0 && pidx < this.pocketCacheCells ? this.pocketCache[pidx] : null;
+            if (pocket) {
+              const zoomStrength = 1 - edge[0]!;
+              const effScale = 1 + (pocket.scale - 1) * zoomMix * zoomStrength;
+              if (Math.abs(effScale - 1) >= 1e-4) {
+                const sampleX = pocket.centerX + (col - pocket.centerX) / effScale;
+                const sampleY = pocket.centerY + (row - pocket.centerY) / effScale;
+                argb = this.sampleFisheyeColor(sampleX, sampleY, hw, hh, argb);
+              }
+            }
+          }
+        }
+        out[idx] = argb;
+      }
+    }
+
+    // Nearest upscale into full pixelScratch.
+    for (let row = 0; row < h; row++) {
+      const sr = Math.min(hh - 1, row >> 1);
+      const srcRow = sr * hw;
+      const dstRow = row * w;
+      for (let col = 0; col < w; col++) {
+        const sc = Math.min(hw - 1, col >> 1);
+        src[dstRow + col] = out[srcRow + sc]!;
+      }
+    }
   }
 
   private fadeBrightenStepsForForget(): number {
@@ -207,36 +292,48 @@ export class KCandyVisionEffect {
     return Math.min(1, brightenStrength * (KCandyVisionEffect.HUE_DRIFT_PEAK + this.forgetBoost * 0.35));
   }
 
-  private applyFisheyeNearestPixel(col: number, row: number, argb: number, w: number, h: number): number {
-    if ((argb & 0x00ffffff) === 0) return argb;
-    const pocket = this.pocketForPixel(col, row, this.ownerEdgeScratch);
-    if (!pocket) return argb;
-    const zoomStrength = 1 - this.ownerEdgeScratch[0]!;
-    const effScale = 1 + (pocket.scale - 1) * KCandyVisionEffect.VORONOI_ZOOM_MIX * zoomStrength;
-    if (Math.abs(effScale - 1) < 1e-4) return argb;
-    const relX = col - pocket.centerX;
-    const relY = row - pocket.centerY;
-    const sampleX = pocket.centerX + relX / effScale;
-    const sampleY = pocket.centerY + relY / effScale;
-    return this.sampleFisheyeColor(sampleX, sampleY, w, h, argb);
-  }
-
   private rebuildPocketCache(w: number, h: number, strength: number): void {
     const scrollMargin = this.worleyScrollCellMargin();
+    const cellPx = this.featureCellPx;
     const minCx = -1;
-    const maxCx = Math.floor((w + KCandyVisionEffect.VORONOI_FEATURE_CELL_PX - 1) / KCandyVisionEffect.VORONOI_FEATURE_CELL_PX) + 1 + scrollMargin;
+    const maxCx = Math.floor((w + cellPx - 1) / cellPx) + 1 + scrollMargin;
     const minCy = -1;
-    const maxCy = Math.floor((h + KCandyVisionEffect.VORONOI_FEATURE_CELL_PX - 1) / KCandyVisionEffect.VORONOI_FEATURE_CELL_PX) + 1 + scrollMargin;
+    const maxCy = Math.floor((h + cellPx - 1) / cellPx) + 1 + scrollMargin;
     const spanX = maxCx - minCx + 1;
     const spanY = maxCy - minCy + 1;
     const cells = spanX * spanY;
-    this.pocketCache = new Array(cells);
+    if (this.pocketCache.length !== cells) {
+      this.pocketCache = new Array(cells);
+    }
     this.pocketCacheCells = cells;
     this.pocketCacheMinCx = minCx;
     this.pocketCacheMinCy = minCy;
     this.pocketCacheMaxCx = maxCx;
     this.pocketCacheMaxCy = maxCy;
     this.pocketCacheSpanX = spanX;
+
+    const jMinCx = minCx - 1;
+    const jMaxCx = maxCx + 1;
+    const jMinCy = minCy - 1;
+    const jMaxCy = maxCy + 1;
+    const jSpanX = jMaxCx - jMinCx + 1;
+    const jSpanY = jMaxCy - jMinCy + 1;
+    const jCells = jSpanX * jSpanY;
+    if (this.siteJitterX.length !== jCells) {
+      this.siteJitterX = new Float64Array(jCells);
+      this.siteJitterY = new Float64Array(jCells);
+    }
+    this.siteJitterMinCx = jMinCx;
+    this.siteJitterMinCy = jMinCy;
+    this.siteJitterSpanX = jSpanX;
+    for (let cy = jMinCy; cy <= jMaxCy; cy++) {
+      for (let cx = jMinCx; cx <= jMaxCx; cx++) {
+        const jidx = cx - jMinCx + (cy - jMinCy) * jSpanX;
+        this.siteJitterX[jidx] = KCandyVisionEffect.cellJitter(cx, cy, 0);
+        this.siteJitterY[jidx] = KCandyVisionEffect.cellJitter(cx, cy, 1);
+      }
+    }
+
     for (let cy = minCy; cy <= maxCy; cy++) {
       for (let cx = minCx; cx <= maxCx; cx++) {
         const idx = this.pocketCacheIndex(cx, cy);
@@ -247,23 +344,6 @@ export class KCandyVisionEffect {
 
   private pocketCacheIndex(cellCx: number, cellCy: number): number {
     return cellCx - this.pocketCacheMinCx + (cellCy - this.pocketCacheMinCy) * this.pocketCacheSpanX;
-  }
-
-  private pocketForPixel(col: number, row: number, outEdgeSoften: number[]): WorleyPocket | null {
-    this.resolveOwnerCell(col, row, this.ownerCellScratch, outEdgeSoften);
-    const cx = this.ownerCellScratch[0]!;
-    const cy = this.ownerCellScratch[1]!;
-    if (
-      cx < this.pocketCacheMinCx ||
-      cx > this.pocketCacheMaxCx ||
-      cy < this.pocketCacheMinCy ||
-      cy > this.pocketCacheMaxCy
-    ) {
-      return null;
-    }
-    const idx = this.pocketCacheIndex(cx, cy);
-    if (idx < 0 || idx >= this.pocketCacheCells) return null;
-    return this.pocketCache[idx] ?? null;
   }
 
   private worleyScrollFx(): number {
@@ -279,18 +359,25 @@ export class KCandyVisionEffect {
   }
 
   private resolveOwnerCell(col: number, row: number, outCxCy: number[], outEdgeSoften: number[] | null): void {
-    const fx = col / KCandyVisionEffect.VORONOI_FEATURE_CELL_PX + this.worleyScrollFx();
-    const fy = row / KCandyVisionEffect.VORONOI_FEATURE_CELL_PX + this.worleyScrollFy();
+    const cellPx = this.featureCellPx;
+    const fx = col / cellPx + this.scrollFx;
+    const fy = row / cellPx + this.scrollFy;
     const ix = Math.floor(fx);
     const iy = Math.floor(fy);
     let bestDistSq = Number.POSITIVE_INFINITY;
     let secondDistSq = Number.POSITIVE_INFINITY;
     let bestCx = ix;
     let bestCy = iy;
+    const jMinCx = this.siteJitterMinCx;
+    const jMinCy = this.siteJitterMinCy;
+    const jSpanX = this.siteJitterSpanX;
+    const jx = this.siteJitterX;
+    const jy = this.siteJitterY;
     for (let cy = iy - 1; cy <= iy + 1; cy++) {
       for (let cx = ix - 1; cx <= ix + 1; cx++) {
-        const px = cx + KCandyVisionEffect.cellJitter(cx, cy, 0);
-        const py = cy + KCandyVisionEffect.cellJitter(cx, cy, 1);
+        const jidx = cx - jMinCx + (cy - jMinCy) * jSpanX;
+        const px = cx + (jx[jidx] ?? KCandyVisionEffect.cellJitter(cx, cy, 0));
+        const py = cy + (jy[jidx] ?? KCandyVisionEffect.cellJitter(cx, cy, 1));
         const dx = fx - px;
         const dy = fy - py;
         const d2 = dx * dx + dy * dy;
@@ -317,11 +404,13 @@ export class KCandyVisionEffect {
   }
 
   private buildPocketForCell(cellCx: number, cellCy: number, strength: number): WorleyPocket {
-    const px = cellCx + KCandyVisionEffect.cellJitter(cellCx, cellCy, 0);
-    const py = cellCy + KCandyVisionEffect.cellJitter(cellCx, cellCy, 1);
-    let centerX = px * KCandyVisionEffect.VORONOI_FEATURE_CELL_PX;
-    let centerY = py * KCandyVisionEffect.VORONOI_FEATURE_CELL_PX;
-    const drift = KCandyVisionEffect.POCKET_CENTER_DRIFT_PX * strength;
+    const jidx =
+      cellCx - this.siteJitterMinCx + (cellCy - this.siteJitterMinCy) * this.siteJitterSpanX;
+    const px = cellCx + (this.siteJitterX[jidx] ?? KCandyVisionEffect.cellJitter(cellCx, cellCy, 0));
+    const py = cellCy + (this.siteJitterY[jidx] ?? KCandyVisionEffect.cellJitter(cellCx, cellCy, 1));
+    let centerX = px * this.featureCellPx;
+    let centerY = py * this.featureCellPx;
+    const drift = this.pocketDriftPx * strength;
     centerX +=
       drift *
       Math.sin(
@@ -335,7 +424,9 @@ export class KCandyVisionEffect {
           KCandyVisionEffect.cellBreathPhase(cellCx, cellCy, 7),
       );
     const wobble = this.pocketBreathWobble(cellCx, cellCy, strength);
-    const scale = KCandyVisionEffect.crispQuantizeScale(1 + KCandyVisionEffect.FISHEYE_ZOOM_FRAC * strength * wobble);
+    const scale = KCandyVisionEffect.crispQuantizeScale(
+      1 + KCandyVisionEffect.FISHEYE_ZOOM_FRAC * strength * wobble,
+    );
     return { centerX, centerY, scale };
   }
 

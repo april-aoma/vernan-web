@@ -1393,7 +1393,7 @@ export class Possessed implements CombatEnemy {
     this.hp = Math.max(0, this.hp - strike.damage);
     this.onDamaged(strike.freezeFrames);
     if (strike.knockKind === "black_heart_burst") {
-      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun, this);
       if (this.hp <= 0) this.beginDeath();
       return true;
     }

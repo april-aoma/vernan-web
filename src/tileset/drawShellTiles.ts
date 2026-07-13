@@ -96,6 +96,7 @@ export function drawShellTiles(
   // Deco underlay on EMPTY cells (behind terrain) — full opacity (Java ambient deco).
   // Authored sheet only (no floor primarySheetId remap). Skip prop-owned, DOOR,
   // BREAKABLE, and floating ground-only stamps (Java drawV3DecoTiles).
+  // Overlay layers (e.g. flame halo) are omitted here and drawn in drawShellDecoOverlay.
   if (atlas && extras.decoStamps?.length) {
     for (const stamp of extras.decoStamps) {
       if (propOwned.has(packCell(stamp.tx, stamp.ty))) continue;
@@ -120,6 +121,7 @@ export function drawShellTiles(
           CAMERA_ZOOM,
           wx,
           wy,
+          "world",
         )
       ) {
         continue;
@@ -330,4 +332,55 @@ function drawQuadrantIfNeeded(
   const mask = innerCornerMask(tx, ty, terrain, map, massCtx, project);
   if (mask === 0) return;
   drawQuadrantOverlay(g, atlas, project, sourceId, dx, dy, dw, mask, sheetOverride);
+}
+
+/**
+ * Mid deco pass for layers with {@code drawPass: "overlay"} (e.g. flame yellow halo).
+ * Call after terrain/props and before Vernan / enemies (Java drawV3DecoOverlayTiles).
+ */
+export function drawShellDecoOverlay(
+  g: CanvasRenderingContext2D,
+  map: TileMap,
+  camera: WorldCamera,
+  extras: Pick<
+    ShellDrawExtras,
+    "decoStamps" | "placedRoomObjects" | "project" | "simTick" | "tileWorld"
+  >,
+): void {
+  const project = extras.project ?? null;
+  const tileWorld = extras.tileWorld ?? null;
+  const deco = extras.decoStamps;
+  if (!project || !tileWorld || !deco?.length) return;
+  const simTick = extras.simTick ?? 0;
+  const placedExpanded =
+    extras.placedRoomObjects?.length
+      ? filterPlacedPropsForGroundSupport(
+          expandPlacedRoomObjectsForDraw(extras.placedRoomObjects, project),
+          project,
+          map,
+        )
+      : [];
+  const propOwned = placedPropOwnedCells(placedExpanded);
+  for (const stamp of deco) {
+    if (propOwned.has(packCell(stamp.tx, stamp.ty))) continue;
+    const cellTerrain = map.tileAt(stamp.tx, stamp.ty);
+    if (cellTerrain === TILE_DOOR || cellTerrain === TILE_BREAKABLE) continue;
+    if (isFloatingGroundOnlyDeco(project, map, stamp)) continue;
+    const wx = stamp.tx * TILE_SIZE;
+    const wy = stamp.ty * TILE_SIZE;
+    const dx = camera.worldToDeviceX(wx);
+    const dy = camera.worldToDeviceY(wy);
+    tileWorld.drawTileIfAnimated(
+      g,
+      project,
+      stamp.tileId,
+      simTick,
+      dx,
+      dy,
+      CAMERA_ZOOM,
+      wx,
+      wy,
+      "overlay",
+    );
+  }
 }

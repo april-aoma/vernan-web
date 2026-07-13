@@ -263,9 +263,13 @@ export function feetCrossedOntoFloorThisStep(
   if (vy <= 0) return false;
   const r = self.rect();
   const nextBottom = rectBottom(r);
+  if (!Number.isFinite(nextBottom) || !Number.isFinite(prevFeetBottom)) return false;
   const bottomTile = Math.floor((nextBottom - 1e-4) / TILE_SIZE);
   const leftTile = Math.floor((rectLeft(r) + 0.001) / TILE_SIZE);
   const rightTile = Math.floor((rectRight(r) - 0.001) / TILE_SIZE);
+  if (!Number.isFinite(bottomTile) || !Number.isFinite(leftTile) || !Number.isFinite(rightTile)) {
+    return false;
+  }
   for (let tx = leftTile; tx <= rightTile; tx++) {
     if (map.isSolidTile(tx, bottomTile) || map.isPlatformTile(tx, bottomTile)) {
       const floorY = bottomTile * TILE_SIZE;

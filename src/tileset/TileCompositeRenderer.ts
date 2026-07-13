@@ -5,6 +5,7 @@ import {
   resolve,
   type GlowPulse,
   type JsonMap,
+  type LayerDrawPass,
   type ResolvedLayer,
   type ScanlineWarp,
 } from "./TileRenderResolve";
@@ -27,8 +28,9 @@ export function previewTile(
   simTicks: number,
   paddingPx: number,
   warpPhaseOffsetRad = 0,
+  pass: LayerDrawPass | "all" = "all",
 ): HTMLCanvasElement | null {
-  const layers = resolve(tile, variationId, simTicks);
+  const layers = resolve(tile, variationId, simTicks, pass);
   if (!layers.length) return null;
   let maxTw = TILE_SIZE;
   let maxTh = TILE_SIZE;

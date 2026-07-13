@@ -9,6 +9,7 @@ import {
   HEAVY_ATTACK1_GEM_ACTIVE_LOCAL,
   HEAVY_ATTACK1_GEM_ACTIVE_PIVOT_X,
   HEAVY_ATTACK1_STICK_ACTIVE_LOCAL,
+  HEAVY_ATTACK1_STICK_ACTIVE_PIVOT_X,
   HEAVY_ATTACK1_SWORD_ACTIVE_LOCAL,
   HEAVY_ATTACK1_SWORD_ACTIVE_PIVOT_X,
   SHIELD_ATTACK_WINDUP_LOCAL,
@@ -36,12 +37,15 @@ import {
   SWORD_STICK_ATTACK_ACTIVE_LOCAL,
   SWORD_STICK_CROUCH_ATTACK_ACTIVE_LOCAL,
 } from "../config/HitboxValues";
+import { VernanFeetAnchor } from "../vernan/VernanFeetAnchor";
 
 /** shield player.png frame size (Java measures at load; 32×32 per strip cell). */
 export const SHIELD_OVERLAY_FRAME_W = 32;
 export const SHIELD_OVERLAY_FRAME_H = 32;
 /** disc04 heavy attack1 canvas height (Java HEAVY_ATTACK1_FRAME_H). */
 export const HEAVY_ATTACK1_FRAME_H = 48;
+/** disc04 heavy attack1 canvas width (512px sheet / 8 frames). */
+export const HEAVY_ATTACK1_FRAME_W = 64;
 /** disc01 slide body strip height (Java SLIDE_BODY_SPRITE_H). */
 export const SLIDE_BODY_SPRITE_H = 32;
 
@@ -122,7 +126,7 @@ function swordActiveSelection(args: MeleeWeaponHitboxArgs): PolySelection {
   }
 }
 
-function heavyActiveSelection(visual: SwordVisual, stickFrameW: number): PolySelection {
+function heavyActiveSelection(visual: SwordVisual): PolySelection {
   switch (visual) {
     case "flint":
       return {
@@ -136,14 +140,13 @@ function heavyActiveSelection(visual: SwordVisual, stickFrameW: number): PolySel
         pivot: HEAVY_ATTACK1_GEM_ACTIVE_PIVOT_X,
         centeredFrameW: 0,
       };
-    case "stick": {
-      const frameW = stickFrameW > 0 ? stickFrameW : 32;
+    case "stick":
+      // Same 64×48 attack1 canvas as sword/flint/gem — use authored pivot (not frameW/2).
       return {
         local: HEAVY_ATTACK1_STICK_ACTIVE_LOCAL,
-        pivot: frameW * 0.5,
-        centeredFrameW: frameW,
+        pivot: HEAVY_ATTACK1_STICK_ACTIVE_PIVOT_X,
+        centeredFrameW: 0,
       };
-    }
     default:
       return {
         local: HEAVY_ATTACK1_SWORD_ACTIVE_LOCAL,
@@ -278,20 +281,27 @@ export function shieldBlockHitboxPose(args: {
   return weaponHitboxPose(local, pivot, frameOriginX, anchorY, args.facing);
 }
 
-/** disc04 heavy swing active frame (Java heavyAttackHitboxPose). */
-export function heavyAttackHitbox(args: MeleeWeaponHitboxArgs): Aabb | null {
+/**
+ * disc04 heavy swing active-frame pose (Java heavyAttackHitboxPoseAt).
+ * Mirror axis at player center ({@code centerX - pivot}), anchor Y via VernanFeetAnchor.
+ * All attack1 weapon strips are 64×48 — stick uses the same path as sword/flint/gem.
+ */
+export function heavyAttackHitboxPose(args: MeleeWeaponHitboxArgs): HitboxPose | null {
   if (args.visual === "lemon" || args.visual === "fists" || args.visual === "whip") return null;
-  const sel = heavyActiveSelection(args.visual, args.stickFrameW);
+  const sel = heavyActiveSelection(args.visual);
   const feet = feetWorldY(args.y, args.h);
   const centerX = args.x + args.w * 0.5;
-  const pivot =
-    args.visual === "stick" && sel.centeredFrameW > 0 ? sel.centeredFrameW * 0.5 : sel.pivot;
-  const frameOriginX =
-    sel.centeredFrameW > 0
-      ? args.x + args.w * 0.5 - sel.centeredFrameW * 0.5
-      : centerX - pivot;
-  const anchorY = feet - HEAVY_ATTACK1_FRAME_H;
-  return placeWeaponPoly(sel.local, pivot, frameOriginX, anchorY, args.facing);
+  const pivot = sel.pivot;
+  // Java: frameOriginX = centerX - pivot (not flipped-canvas origin).
+  const frameOriginX = centerX - pivot;
+  const anchorY = VernanFeetAnchor.canvasWorldOriginY(feet, HEAVY_ATTACK1_FRAME_H, "attack1");
+  return weaponHitboxPose(sel.local, pivot, frameOriginX, anchorY, args.facing);
+}
+
+/** disc04 heavy swing active frame AABB (bounds of {@link heavyAttackHitboxPose}). */
+export function heavyAttackHitbox(args: MeleeWeaponHitboxArgs): Aabb | null {
+  const pose = heavyAttackHitboxPose(args);
+  return pose ? pose.bounds() : null;
 }
 
 /** disc01 slide kick leg strip (Java slideKickHitboxPose). */

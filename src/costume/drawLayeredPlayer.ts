@@ -6,6 +6,7 @@ import { VERNAN_BODY_PARTS, type VernanBodyPart } from "../vernan/VernanBodyPart
 import { vernanBodyLayerImage } from "../vernan/VernanBodyCompositor";
 import type { VernanBodyLibrary } from "../vernan/VernanBodyLibrary";
 import type { VernanBodyDrawContext } from "../vernan/VernanBodyDrawContext";
+import { VernanFeetAnchor } from "../vernan/VernanFeetAnchor";
 import { CostumeProfile } from "./CostumeProfile";
 import type { CostumeArtCache } from "./CostumeArtCache";
 import type { CostumeDrawConfig } from "./CostumeDrawConfig";
@@ -80,6 +81,7 @@ function drawBodyPart(opts: LayeredPlayerDrawOpts, part: VernanBodyPart): void {
     opts.facing,
     opts.juice,
     opts.feetAnchorBodyH,
+    opts.animKey,
   );
 }
 
@@ -125,7 +127,18 @@ function drawCostumeSlot(opts: LayeredPlayerDrawOpts, slot: CostumeSlot): void {
           holdOverhead,
           route.fileToken,
         );
-        drawCostumeFrame(g, camera, frame, centerX, feetWorldY, yOff, facing, juice, feetAnchorBodyH);
+        drawCostumeFrame(
+          g,
+          camera,
+          frame,
+          centerX,
+          feetWorldY,
+          yOff,
+          facing,
+          juice,
+          feetAnchorBodyH,
+          opts.animKey,
+        );
       }
       continue;
     }
@@ -144,7 +157,18 @@ function drawCostumeSlot(opts: LayeredPlayerDrawOpts, slot: CostumeSlot): void {
       holdOverhead,
       null,
     );
-    drawCostumeFrame(g, camera, frame, centerX, feetWorldY, yOff, facing, juice, feetAnchorBodyH);
+    drawCostumeFrame(
+      g,
+      camera,
+      frame,
+      centerX,
+      feetWorldY,
+      yOff,
+      facing,
+      juice,
+      feetAnchorBodyH,
+      opts.animKey,
+    );
   }
 }
 
@@ -158,12 +182,27 @@ function drawCostumeFrame(
   facing: number,
   juice: JuiceDrawOpts,
   feetAnchorBodyH: number,
+  layoutAnimKey = "",
 ): void {
   if (!image) return;
   const sw = image.width;
   const sh = image.height;
-  const anchorH = feetAnchorBodyH > 0 ? feetAnchorBodyH : sh;
-  const left = centerX - sw * 0.5;
+  const standBottomLeft = VernanFeetAnchor.usesStandBottomLeftLayout(layoutAnimKey);
+  const anchorH = standBottomLeft
+    ? VernanFeetAnchor.feetRowPx(layoutAnimKey, sh)
+    : feetAnchorBodyH > 0
+      ? feetAnchorBodyH
+      : sh;
+  // Java VernanFeetAnchor.canvasWorldOriginX(playerOrigin, w, …) — reconstruct origin from center.
+  const playerW = VernanFeetAnchor.STAND_SPRITE_W_PX;
+  const playerOriginX = centerX - playerW * 0.5;
+  const left = VernanFeetAnchor.canvasWorldOriginX(
+    playerOriginX,
+    playerW,
+    sw,
+    facing,
+    layoutAnimKey,
+  );
   // Java worldSpriteTopDeviceY(feet + yOff, anchorH) then +shake in device space.
   const dx = camera.worldToDeviceX(left);
   const dy = camera.worldSpriteTopDeviceY(feetWorldY + yOff, anchorH);
@@ -224,6 +263,17 @@ export function drawLayeredVernanBodyOnly(
 ): void {
   for (const part of parts) {
     const layer = vernanBodyLayerImage(bodyLibrary, animKey, frameIndex, part, bodyCtx);
-    drawCostumeFrame(g, camera, layer, centerX, feetWorldY, 0, facing, juice, feetAnchorBodyH);
+    drawCostumeFrame(
+      g,
+      camera,
+      layer,
+      centerX,
+      feetWorldY,
+      0,
+      facing,
+      juice,
+      feetAnchorBodyH,
+      animKey,
+    );
   }
 }

@@ -25,6 +25,9 @@ export type GlowPulse = {
   phaseRad: number;
 };
 
+/** World = early tile pass; overlay = mid (above terrain/props, under Vernan/enemies). */
+export type LayerDrawPass = "world" | "overlay";
+
 export type ResolvedLayer = {
   layerId: string;
   z: number;
@@ -44,6 +47,8 @@ export type ResolvedLayer = {
   rotPivotCustomY: number;
   scanlineWarp: ScanlineWarp | null;
   glowPulse: GlowPulse | null;
+  /** JSON {@code drawPass}; default world. Overlay layers paint above terrain, under actors. */
+  drawPass: LayerDrawPass;
 };
 
 export function glowScaleAt(glow: GlowPulse, simTicks: number, phaseOffsetRad: number): number {
@@ -62,6 +67,7 @@ export function resolve(
   tile: JsonMap,
   variationId: string,
   simTicks: number,
+  pass: LayerDrawPass | "all" = "all",
 ): ResolvedLayer[] {
   const stack = deepCopyLayers(baseRenderLayers(tile, variationId));
   applyVisualPlayback(tile, stack, simTicks);
@@ -77,6 +83,8 @@ export function resolve(
     let clipFrame = 0;
     if (typeof layer._clipFrameIdx === "number") clipFrame = layer._clipFrameIdx;
     delete layer._clipFrameIdx;
+    const drawPass = parseDrawPass(layer.drawPass);
+    if (pass !== "all" && drawPass !== pass) continue;
     out.push({
       layerId: str(layer.layerId, "base"),
       z: num(layer.z, 0),
@@ -96,26 +104,58 @@ export function resolve(
       rotPivotCustomY: pivot.customY,
       scanlineWarp: parseScanlineWarp(layer.scanlineWarp, clipFrame),
       glowPulse: parseGlowPulse(layer.glowPulse),
+      drawPass,
     });
   }
   out.sort((a, b) => a.z - b.z);
   return out;
 }
 
+/** True if any authored render layer (ignoring clips) uses {@code drawPass: "overlay"}. */
+export function tileHasOverlayDrawPass(tile: JsonMap | null | undefined): boolean {
+  if (!tile) return false;
+  for (const raw of asList(tile.renderLayers)) {
+    if (!raw || typeof raw !== "object") continue;
+    if (parseDrawPass((raw as JsonMap).drawPass) === "overlay") return true;
+  }
+  for (const vo of asList(tile.variations)) {
+    if (!vo || typeof vo !== "object") continue;
+    for (const raw of asList((vo as JsonMap).renderLayers)) {
+      if (!raw || typeof raw !== "object") continue;
+      if (parseDrawPass((raw as JsonMap).drawPass) === "overlay") return true;
+    }
+  }
+  return false;
+}
+
 export function resolvedStackUsesScanlineWarp(
   tile: JsonMap,
   variationId: string,
   simTicks: number,
+  pass: LayerDrawPass | "all" = "all",
 ): boolean {
-  return resolve(tile, variationId, simTicks).some((L) => L.scanlineWarp != null);
+  return resolve(tile, variationId, simTicks, pass).some((L) => L.scanlineWarp != null);
 }
 
 export function resolvedStackUsesGlowPulse(
   tile: JsonMap,
   variationId: string,
   simTicks: number,
+  pass: LayerDrawPass | "all" = "all",
 ): boolean {
-  return resolve(tile, variationId, simTicks).some((L) => L.glowPulse != null);
+  return resolve(tile, variationId, simTicks, pass).some((L) => L.glowPulse != null);
+}
+
+/** True if any resolved layer in this pass uses additive blend (e.g. flame halo). */
+export function resolvedStackUsesAddBlend(
+  tile: JsonMap,
+  variationId: string,
+  simTicks: number,
+  pass: LayerDrawPass | "all" = "all",
+): boolean {
+  return resolve(tile, variationId, simTicks, pass).some(
+    (L) => L.blend.toLowerCase() === "add",
+  );
 }
 
 /** True when the tile needs composite draw (clips / warp / glow / multi-layer). */
@@ -302,6 +342,10 @@ function parseGlowPulse(raw: unknown): GlowPulse | null {
     alphaFlickerSpeedRadPerTick: num(m.alphaFlickerSpeedRadPerTick, 0.22),
     phaseRad: num(m.phaseRad, 0),
   };
+}
+
+function parseDrawPass(raw: unknown): LayerDrawPass {
+  return typeof raw === "string" && raw.toLowerCase() === "overlay" ? "overlay" : "world";
 }
 
 function parseRotationPivot(raw: unknown): { kind: string; customX: number; customY: number } {

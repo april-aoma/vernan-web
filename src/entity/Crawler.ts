@@ -14,14 +14,16 @@ import {
   releaseBlackHeartBeatKnockback,
   tickBlackHeartEnemyHitstun,
 } from "../combat/BlackHeartEnemyCombat";
-import { applyStrikeElectrocuteJuice } from "../combat/EnemyHitstunJuice";
+import { applyStrikeElectrocuteJuice, applySolidRedHitstunJuice } from "../combat/EnemyHitstunJuice";
 import { KuriboStompFx } from "../combat/KuriboStompFx";
 import {
   CRAWLER_H,
   CRAWLER_HOP_COOLDOWN_MAX,
   CRAWLER_HOP_COOLDOWN_MIN,
   CRAWLER_HOP_VX,
+  CRAWLER_HOP_VX_MAX,
   CRAWLER_HOP_VY,
+  CRAWLER_HOP_VY_MIN,
   CRAWLER_HOP_WALL_PASS_CHANCE,
   CRAWLER_HOP_WALL_PASS_FOOT_BAND_PX,
   CRAWLER_JUMPSQUAT_FRAMES,
@@ -186,10 +188,16 @@ export class Crawler implements PeerWalkingEnemy {
       this.vy = 0;
       this.squash.applyStretchXHeld(1.2, 1);
       if (this.jumpsquat === 0) {
+        // Randomize hop height. Lower hops move faster horizontally (Java Enemy).
+        const r = Math.random();
+        const hopVy = CRAWLER_HOP_VY_MIN + (CRAWLER_HOP_VY - CRAWLER_HOP_VY_MIN) * r;
+        const missing =
+          1.0 - (hopVy - CRAWLER_HOP_VY_MIN) / Math.max(1e-6, CRAWLER_HOP_VY - CRAWLER_HOP_VY_MIN);
+        const hopVx = CRAWLER_HOP_VX + (CRAWLER_HOP_VX_MAX - CRAWLER_HOP_VX) * missing;
         this.ignoreHorizontalSolidsThisHop =
           !this.hurtLocked && this.hitstun <= 0 && Math.random() < CRAWLER_HOP_WALL_PASS_CHANCE;
-        this.vx = this.facing * CRAWLER_HOP_VX;
-        this.vy = -CRAWLER_HOP_VY;
+        this.vx = this.facing * hopVx;
+        this.vy = -hopVy;
         this.onGround = false;
         this.squash.applyStretchY(1.2, 20);
         this.hopCooldown =
@@ -304,7 +312,7 @@ export class Crawler implements PeerWalkingEnemy {
     if (this.hitstun > 0 && strike.knockKind !== "black_heart_burst") return false;
     this.hp = Math.max(0, this.hp - strike.damage);
     if (strike.knockKind === "black_heart_burst") {
-      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun, this);
       this.hurtTintRemaining = HURT_TINT_SECONDS;
       return true;
     }
@@ -350,6 +358,7 @@ export class Crawler implements PeerWalkingEnemy {
     if (this.hp <= 0 || this.hitstun > 0) return false;
     this.hp = Math.max(0, this.hp - strike.damage);
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
+    applySolidRedHitstunJuice(this);
     let kbVx = 0;
     let kbVy = 0;
     if (strike.knockKind === "psychic_debris") {

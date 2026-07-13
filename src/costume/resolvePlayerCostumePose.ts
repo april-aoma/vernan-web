@@ -110,6 +110,22 @@ export function resolvePlayerCostumePose(
     }
   }
 
+  // DISC04 heavy — Java drawPlayer / SmokeBodyPose attack1 before subweapon / attack0.
+  if (player.isHeavyAttackActive() && !player.isHurtLocked()) {
+    if (layeredBodyAnimReady(bodyLibrary, "attack1")) {
+      const useAir = player.heavyAttackFromAir();
+      return pose(
+        useAir ? "AIR_HEAVY_ATTACK" : "HEAVY_ATTACK",
+        player.heavyAttackFrameIndex(),
+        "attack1",
+        bodyCtx,
+        player.facing >= 0 ? 1 : -1,
+        0,
+        0,
+      );
+    }
+  }
+
   if (player.isSubweaponAnimating()) {
     const idx = player.subweaponAnimFrameIndex();
     if (player.subweaponUsesAttack0Strip() && layeredBodyAnimReady(bodyLibrary, "attack0")) {

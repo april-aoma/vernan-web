@@ -508,10 +508,9 @@ export class Nephilim implements CombatEnemy {
       this.walkPhase += dt * PUPPET_WALK_HZ * Math.sign(this.lastHorzStepPx || 1);
     }
 
+    // Java keeps integrating parts during hitstun so knock impulses settle instead of rubber-banding.
     const pose = this.currentPoseName(rig);
-    if (this.hitstun <= 0) {
-      this.integrateParts(dt, map, rig, pose);
-    }
+    this.integrateParts(dt, map, rig, pose);
     this.finalizeGroundedStance(rig, map);
 
     this.renderPrevX = this.x;
@@ -810,11 +809,7 @@ export class Nephilim implements CombatEnemy {
       let ang = pe.angleDeg;
       if (!p.loose && def.name === "head") ang += headTurnExtra;
       else if (!p.loose && def.name === "neck") ang += neckTurnExtra;
-      if (
-        !p.loose &&
-        poseName.startsWith("walk") &&
-        !(this.armGuardActive() && this.isArmGuardWalkOverlayPart(def.name))
-      ) {
+      if (!p.loose && poseName.startsWith("walk")) {
         const side = this.limbSideSign(def.name);
         const legStride =
           side !== 0 &&
@@ -864,25 +859,24 @@ export class Nephilim implements CombatEnemy {
       if (this.isGrabHoldPhase()) {
         partK *= 2.4;
         partC *= 1.35;
-      } else if (this.armGuardActive() && this.isArmGuardWalkOverlayPart(def.name)) {
-        partK *= 2.8;
-        partC *= 1.4;
       }
-      let angleK = ANGLE_K * follow;
+      const angleK = ANGLE_K * follow;
       const angleC = ANGLE_C * Math.sqrt(follow);
-      if (this.armGuardActive() && this.isArmGuardWalkOverlayPart(def.name)) {
-        angleK *= 2.4;
-      }
       p.vx += ((targetX[i]! - p.cx) * partK - p.vx * partC) * dt;
       p.vy += ((targetY[i]! - p.cy) * partK - p.vy * partC) * dt;
       p.angleVel += (this.angleDelta(targetAng[i]!, p.angleDeg) * angleK - p.angleVel * angleC) * dt;
       p.angleDeg += p.angleVel * dt;
+      this.applyAngleWrap(p);
       p.cx += p.vx * dt;
       p.cy += p.vy * dt;
     }
 
     if (grabReachU > 0) this.applyGrabReachArmIk(rig, grabReachU);
     this.applyChainConstraints(rig);
+    for (let i = 0; i < this.partSims.length; i++) {
+      const p = this.partSims[i]!;
+      if (p.loose) this.depenetrateLoosePart(rig, i, p, map);
+    }
     if (this.isLiftDropIkActive()) {
       this.applyLiftDropIk(rig);
     }
@@ -915,9 +909,19 @@ export class Nephilim implements CombatEnemy {
   }
 
   private limbSideSign(partName: string): number {
-    if (partName.includes("L") || partName.endsWith("L")) return -1;
-    if (partName.includes("R") || partName.endsWith("R")) return 1;
+    if (partName.includes("L")) return 1;
+    if (partName.includes("R")) return -1;
     return 0;
+  }
+
+  /** Wrap sim angle and shift prevAngle so render interpolation stays continuous (Java applyAngleWrap). */
+  private applyAngleWrap(p: NephilimPartSim): void {
+    const wrapped = this.wrapAngleDeg(p.angleDeg);
+    const shift = wrapped - p.angleDeg;
+    if (Math.abs(shift) > 1e-9) {
+      p.angleDeg = wrapped;
+      p.prevAngle += shift;
+    }
   }
 
   private facingMul(): number {
@@ -1103,6 +1107,41 @@ export class Nephilim implements CombatEnemy {
     }
   }
 
+  /** Nudge loose extremities out of solids after chain constraints (Java depenetrateLoosePart). */
+  private depenetrateLoosePart(
+    rig: NephilimRigData,
+    index: number,
+    p: NephilimPartSim,
+    map: TileMap,
+  ): void {
+    if (!p.loose || chainIsConnector(this.simNames[index]!)) return;
+    const step = 0.5;
+    for (let iter = 0; iter < 8; iter++) {
+      if (!this.collisionHullHitsSolid(rig, index, p.cx, p.cy, p.angleDeg, map)) return;
+      if (!this.collisionHullHitsSolid(rig, index, p.cx, p.cy - step, p.angleDeg, map)) {
+        p.cy -= step;
+        if (p.vy > 0) p.vy *= -LOOSE_FLOOR_REST * 0.5;
+        continue;
+      }
+      if (!this.collisionHullHitsSolid(rig, index, p.cx - step, p.cy, p.angleDeg, map)) {
+        p.cx -= step;
+        if (p.vx > 0) p.vx *= -LOOSE_WALL_REST * 0.5;
+        continue;
+      }
+      if (!this.collisionHullHitsSolid(rig, index, p.cx + step, p.cy, p.angleDeg, map)) {
+        p.cx += step;
+        if (p.vx < 0) p.vx *= -LOOSE_WALL_REST * 0.5;
+        continue;
+      }
+      if (!this.collisionHullHitsSolid(rig, index, p.cx, p.cy + step, p.angleDeg, map)) {
+        p.cy += step;
+        if (p.vy < 0) p.vy *= -LOOSE_WALL_REST * 0.5;
+        continue;
+      }
+      break;
+    }
+  }
+
   private collisionHullHitsSolid(
     rig: NephilimRigData,
     index: number,
@@ -1242,6 +1281,7 @@ export class Nephilim implements CombatEnemy {
       p.vy += ((ty - p.cy) * DEATH_POSE_K - p.vy * DEATH_POSE_C) * dt;
       p.angleVel += (this.angleDelta(ta, p.angleDeg) * ANGLE_K * 1.15 - p.angleVel * ANGLE_C) * dt;
       p.angleDeg += p.angleVel * dt;
+      this.applyAngleWrap(p);
       p.cx += p.vx * dt;
       p.cy += p.vy * dt;
     }
@@ -1261,6 +1301,7 @@ export class Nephilim implements CombatEnemy {
     p.vy += ((ty - p.cy) * DEATH_HEAD_HOLD_K - p.vy * DEATH_HEAD_HOLD_C) * dt;
     p.angleVel += (this.angleDelta(ta, p.angleDeg) * ANGLE_K - p.angleVel * ANGLE_C) * dt;
     p.angleDeg += p.angleVel * dt;
+    this.applyAngleWrap(p);
     p.cx += p.vx * dt;
     p.cy += p.vy * dt;
   }
@@ -1340,7 +1381,8 @@ export class Nephilim implements CombatEnemy {
 
   intersectsAttack(sword: Aabb): boolean {
     if (!this.isCombatActive()) return false;
-    if (this.shieldBlockAabb() && aabbOverlap(sword, this.shieldBlockAabb()!)) {
+    const shield = this.shieldBlockPose();
+    if (shield && shield.intersectsRect(sword)) {
       this.lastStruckParts.length = 0;
       return false;
     }
@@ -1367,7 +1409,7 @@ export class Nephilim implements CombatEnemy {
     this.onDamaged(strike.freezeFrames);
     this.noteHitForArmGuard();
     if (strike.knockKind === "black_heart_burst") {
-      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun, this);
       if (this.hp <= 0 && !this.deathStarted) {
         const rig = getNephilimRig();
         if (rig) this.startDeath(rig);
@@ -1470,39 +1512,21 @@ export class Nephilim implements CombatEnemy {
     let impx = 0;
     let cnt = 0;
     if (neck) {
-      this.loosenPart("head", kx, ky, spin * 0.55);
-      this.loosenPart("neck", kx, ky, spin * 0.58);
+      this.loosenLimbChain(NEPHILIM_LIMBS[0]!, kx, ky, spin, 0.55, 0.58, 0.86);
       impx += kx;
       cnt++;
     }
     if (armL) {
-      this.loosenPart("armL", kx, ky, -spin * 0.85);
-      this.loosenPart("handL", kx, ky, -spin * 0.78);
+      this.loosenLimbChain(NEPHILIM_LIMBS[1]!, kx, ky, -spin, 0.85, 0.78, 0.92);
       impx += kx;
       cnt++;
     }
     if (armR) {
-      this.loosenPart("armR", kx, ky, spin * 0.85);
-      this.loosenPart("handR", kx, ky, spin * 0.78);
+      this.loosenLimbChain(NEPHILIM_LIMBS[2]!, kx, ky, spin, 0.85, 0.78, 0.92);
       impx += kx;
       cnt++;
     }
     if (cnt > 0) this.vx += (ANCHOR_TRAIL_FRAC * impx) / cnt;
-  }
-
-  private loosenPart(name: string, impX: number, impY: number, spinDeg: number): void {
-    const idx = this.indexOf(name);
-    if (idx < 0) return;
-    const p = this.partSims[idx]!;
-    p.loose = true;
-    p.looseTimer = Math.max(p.looseTimer, LOOSE_MIN_SEC);
-    p.looseAge = 0;
-    p.vx += impX;
-    p.vy += impY;
-    p.angleVel += spinDeg;
-    if (name === "handL" || name === "handR" || name === "head" || name === "footL" || name === "footR") {
-      p.chainLen = Math.max(4, 12 * CHAIN_SLACK);
-    }
   }
 
   getHealth(): number {
@@ -1548,8 +1572,8 @@ export class Nephilim implements CombatEnemy {
 
   attackBlockedByShield(attack: Aabb): boolean {
     if (!this.armGuardActive()) return false;
-    const shield = this.shieldBlockAabb();
-    return shield != null && aabbOverlap(attack, shield);
+    const shield = this.shieldBlockPose();
+    return shield != null && shield.intersectsRect(attack);
   }
 
   applyShieldBlockStrike(strike: WeaponStrike): void {
@@ -2405,11 +2429,13 @@ export class Nephilim implements CombatEnemy {
     const stunSec = Math.max(0, freezeFrames) / 60;
     this.hitstun = Math.max(this.hitstun, stunSec);
     this.hitlagSolidRed = false;
+    this.hitlagElectrocute = false;
   }
 
-  private shieldBlockAabb(): Aabb | null {
+  /** Raised forearms only — Java shieldBlockPose / combinedHurtPose(shieldOnly). */
+  private shieldBlockPose(): HitboxPose | null {
     if (!this.armGuardActive()) return null;
-    return this.combinedRoleAabb(getNephilimRig()!, "hurt");
+    return this.combinedForearmShieldPose(0);
   }
 
   private combinedRoleAabb(rig: NephilimRigData, role: "hurt" | "hit"): Aabb | null {
@@ -3002,6 +3028,8 @@ export class Nephilim implements CombatEnemy {
           : LOOSE_ANGLE_DAMP;
     const damp = Math.max(0, 1 - angDamp * dt);
     p.angleVel *= damp;
+    p.angleDeg += p.angleVel * dt;
+    this.applyAngleWrap(p);
     p.vy += CHAIN_GRAVITY * (this.liftPhase === "RECOVER" ? 0.28 : 1) * dt;
     const linDampRate =
       partName === "head" || partName.startsWith("hand") ? LOOSE_LINEAR_DAMP_EXT : LOOSE_LINEAR_DAMP;
@@ -3320,7 +3348,8 @@ function transformHull(
   angleDeg: number,
   m: number,
 ): number[] {
-  const a = (angleDeg * Math.PI) / 180;
+  // Sim angles are authored facing-left; mirror rotation when flipping X (same as partRenders).
+  const a = (((m < 0 ? -angleDeg : angleDeg) * Math.PI) / 180);
   const cos = Math.cos(a);
   const sin = Math.sin(a);
   const out: number[] = new Array(local.length);

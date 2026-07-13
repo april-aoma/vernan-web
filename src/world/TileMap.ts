@@ -21,7 +21,14 @@ export class TileMap {
   private constructor(tiles: number[][]) {
     this.height = tiles.length;
     this.width = tiles[0]?.length ?? 0;
-    this.tiles = tiles.map((row) => row.slice());
+    // Densify so sparse source rows cannot leave holes (tiles[y] undefined).
+    this.tiles = Array.from({ length: this.height }, (_, y) => {
+      const row = tiles[y];
+      if (!row) return Array(this.width).fill(TILE_EMPTY);
+      const copy = row.slice(0, this.width);
+      while (copy.length < this.width) copy.push(TILE_EMPTY);
+      return copy;
+    });
   }
 
   static fromGrid(tiles: number[][]): TileMap {
@@ -54,19 +61,38 @@ export class TileMap {
     return this.height;
   }
 
+  /**
+   * Floor to cell indices (JS numbers are floats; Java TileMap takes ints).
+   * Non-finite coords are treated as out of bounds.
+   */
+  private cell(tx: number, ty: number): { x: number; y: number } | null {
+    const x = Math.floor(tx);
+    const y = Math.floor(ty);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }
+
+  private inBounds(x: number, y: number): boolean {
+    return x >= 0 && y >= 0 && x < this.width && y < this.height;
+  }
+
   tileAt(tx: number, ty: number): number {
-    if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) return TILE_SOLID;
-    return this.tiles[ty]![tx]!;
+    const c = this.cell(tx, ty);
+    if (!c || !this.inBounds(c.x, c.y)) return TILE_SOLID;
+    return this.tiles[c.y]![c.x]!;
   }
 
   setTile(tx: number, ty: number, tileId: number): void {
-    if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) return;
-    this.tiles[ty]![tx] = tileId;
+    const c = this.cell(tx, ty);
+    if (!c || !this.inBounds(c.x, c.y)) return;
+    this.tiles[c.y]![c.x] = tileId;
   }
 
   isSolidTile(tx: number, ty: number): boolean {
-    if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) return true;
-    const t = this.tiles[ty]![tx]!;
+    const c = this.cell(tx, ty);
+    // Outside / invalid → solid (same as Java TileMap).
+    if (!c || !this.inBounds(c.x, c.y)) return true;
+    const t = this.tiles[c.y]![c.x]!;
     return (
       t === TILE_SOLID ||
       t === TILE_BREAKABLE ||
@@ -76,7 +102,7 @@ export class TileMap {
   }
 
   isSolidAtPixel(px: number, py: number): boolean {
-    return this.isSolidTile(Math.floor(px / TILE_SIZE), Math.floor(py / TILE_SIZE));
+    return this.isSolidTile(px / TILE_SIZE, py / TILE_SIZE);
   }
 
   isPlatformTile(tx: number, ty: number): boolean {
@@ -92,19 +118,22 @@ export class TileMap {
   }
 
   isBreakableTile(tx: number, ty: number): boolean {
-    if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) return false;
-    return this.tiles[ty]![tx]! === TILE_BREAKABLE;
+    const c = this.cell(tx, ty);
+    if (!c || !this.inBounds(c.x, c.y)) return false;
+    return this.tiles[c.y]![c.x]! === TILE_BREAKABLE;
   }
 
   isStandableFloorTile(tx: number, ty: number): boolean {
-    if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) return false;
-    const t = this.tiles[ty]![tx]!;
+    const c = this.cell(tx, ty);
+    if (!c || !this.inBounds(c.x, c.y)) return false;
+    const t = this.tiles[c.y]![c.x]!;
     return t === TILE_SOLID || t === TILE_BREAKABLE || t === TILE_PLATFORM;
   }
 
   isLadderMouthDeckAt(tx: number, ty: number): boolean {
-    if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) return false;
-    return this.isPlatformTile(tx, ty) && ty + 1 < this.height && this.isLadderTile(tx, ty + 1);
+    const c = this.cell(tx, ty);
+    if (!c || !this.inBounds(c.x, c.y)) return false;
+    return this.isPlatformTile(c.x, c.y) && c.y + 1 < this.height && this.isLadderTile(c.x, c.y + 1);
   }
 
   /** True when the ground-top floor row in this column is a ladder mouth deck. */

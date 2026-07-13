@@ -29,7 +29,7 @@ import type { CombatEnemy } from "./CombatEnemy";
 import type { PlayerStats } from "./PlayerStats";
 import {
   SLIDE_BODY_SPRITE_H,
-  heavyAttackHitbox,
+  heavyAttackHitboxPose,
   swordKnockbackKind,
 } from "./WeaponHitbox";
 import type { SwordVisual } from "../combat/SwordVisual";
@@ -72,7 +72,7 @@ const AIR_DODGE_FLASH_ALPHA_OFF = 64;
 const HEAVY_ATTACK1_TICKS = [6, 6, 4, 4, 4, 4, 6, 6] as const;
 const HEAVY_ATTACK1_HIT_FRAME = 2;
 const HEAVY_ATTACK1_LATE_RECOVER_FRAME = 6;
-const HEAVY_ATTACK_DAMAGE_MULT = 2.5;
+export const HEAVY_ATTACK_DAMAGE_MULT = 2.5;
 const HEAVY_STAND_WINDUP_REF = ATTACK_WINDUP_FRAMES;
 const HEAVY_ATTACK_ACTIVE_REF = ATTACK_ACTIVE_FRAMES;
 const HEAVY_STAND_RECOVER_EARLY_REF = ATTACK_RECOVER_EARLY_FRAMES;
@@ -208,6 +208,9 @@ export interface DiscMechanicsHost {
   applySwordHitItemProcs(enemy: CombatEnemy): void;
   beginOffensiveHitlag(frames: number): void;
   hitlagFrames: number;
+  trySpawnHeavyAfterimage(): void;
+  /** Clear light-melee latch so disc04 heavy world-strikes are not gated by a prior swing. */
+  clearAttackHitLanded(): void;
 }
 
 /**
@@ -268,6 +271,8 @@ export class DiscMechanics {
   private heavyAttackHitLanded = false;
   private heavyAttackDamageConfirmed = false;
   heavyAttackStartedOnGround = false;
+  /** X+C chord during jumpsquat — begin heavy after lift-off (air variant). */
+  private pendingHeavyAfterJumpSquat = false;
   private attackChordBufferTimer = 0;
   private subweaponChordBufferTimer = 0;
   private heavyAttackScreenShakeFramesRemaining = 0;
@@ -423,6 +428,7 @@ export class DiscMechanics {
           this.heavyFrameIdx++;
           if (prev < HEAVY_ATTACK1_HIT_FRAME && this.heavyFrameIdx >= HEAVY_ATTACK1_HIT_FRAME) {
             this.triggerHeavyAttackScreenShake();
+            host.trySpawnHeavyAfterimage();
           }
           if (this.heavyFrameIdx >= HEAVY_ATTACK1_TICKS.length) {
             this.cancelHeavyAttack();
@@ -440,9 +446,27 @@ export class DiscMechanics {
       }
     }
     if (this.canBeginHeavyAttackFromInput(input, host)) {
-      this.beginHeavyAttack(host);
-      this.consumeAttackChordInput(input);
+      if (host.jumpSquatRemaining > 0) {
+        // Buffer through jumpsquat — begin after lift-off with air attack1 (like rising attack0).
+        this.pendingHeavyAfterJumpSquat = true;
+        this.consumeAttackChordInput(input);
+      } else {
+        this.beginHeavyAttack(host);
+        this.consumeAttackChordInput(input);
+      }
     }
+  }
+
+  /**
+   * After {@code finishJumpSquat}: start a heavy chord that was pressed during wind-up.
+   * Latches {@link heavyAttackStartedOnGround} from post-lift-off pose (air → air-legs).
+   */
+  tryBeginPendingHeavyAfterJumpSquat(host: DiscMechanicsHost): void {
+    if (!this.pendingHeavyAfterJumpSquat) return;
+    if (host.jumpSquatRemaining > 0) return;
+    this.pendingHeavyAfterJumpSquat = false;
+    if (this.heavyAttackActive || !this.heavyBeginGatesOk(host)) return;
+    this.beginHeavyAttack(host);
   }
 
   tickHeavyScreenShake(): void {
@@ -580,8 +604,13 @@ export class DiscMechanics {
     this.tickWallSlideAfterMove(map, left, right, host);
   }
 
-  onLeaveGroundWhileHeavy(): void {
-    if (this.heavyAttackActive && this.heavyAttackStartedOnGround) {
+  /**
+   * Cancel ground-started heavy on walk-off (Java wasOnGround && !onGround).
+   * Jumpsquat lift-off happens later — rising heavies are deferred via
+   * {@link pendingHeavyAfterJumpSquat} instead of starting grounded then canceling.
+   */
+  onLeaveGroundWhileHeavy(wasOnGround: boolean, onGround: boolean): void {
+    if (wasOnGround && !onGround && this.heavyAttackActive && this.heavyAttackStartedOnGround) {
       this.cancelHeavyAttack();
     }
   }
@@ -720,6 +749,11 @@ export class DiscMechanics {
     return this.heavyAttackActive;
   }
 
+  /** True after this heavy swing already connected (enemy, shield, or world strike). */
+  isHeavyAttackHitLanded(): boolean {
+    return this.heavyAttackHitLanded;
+  }
+
   heavyFrameIndex(): number {
     if (!this.heavyAttackActive) return 0;
     return Math.min(this.heavyFrameIdx, HEAVY_ATTACK1_TICKS.length - 1);
@@ -785,7 +819,7 @@ export class DiscMechanics {
     if (host.usesWhip()) {
       return host.whipHitboxPose();
     }
-    const aabb = heavyAttackHitbox({
+    return heavyAttackHitboxPose({
       visual: host.swordVisual as import("../combat/SwordVisual").SwordVisual,
       x: host.x,
       y: host.y,
@@ -793,15 +827,8 @@ export class DiscMechanics {
       h: host.h,
       facing: host.facing,
       groundCrouchAttack: false,
-      stickFrameW: 48,
+      stickFrameW: 0,
     });
-    if (!aabb) return null;
-    return HitboxPose.fromWorldPolygon([
-      aabb.x, aabb.y,
-      aabb.x + aabb.w, aabb.y,
-      aabb.x + aabb.w, aabb.y + aabb.h,
-      aabb.x, aabb.y + aabb.h,
-    ]);
   }
 
   applySlideHits(
@@ -866,6 +893,11 @@ export class DiscMechanics {
     return maxFreeze;
   }
 
+  /**
+   * disc04 heavy vs enemies + optional world strike (Java applyHeavyAttackHits).
+   * Latches {@link #heavyAttackHitLanded} — not light {@code attackHitLanded}.
+   * @param tryWorldStrike breakables/ice; called after enemies so both can connect same frame.
+   */
   applyHeavyHits(
     host: DiscMechanicsHost,
     enemies: CombatEnemy[],
@@ -875,6 +907,7 @@ export class DiscMechanics {
       sword: Aabb,
       vfx: MeleeHitVfxTag,
     ) => void,
+    tryWorldStrike?: () => number,
   ): number {
     if (!this.heavyAttackActive || this.heavyAttackHitLanded) return 0;
     const swordPose = this.heavyAttackHitboxPose(host);
@@ -883,7 +916,8 @@ export class DiscMechanics {
     const baseDmg = host.stats.outgoingDamage() * HEAVY_ATTACK_DAMAGE_MULT;
     const dmg = host.effectiveOutgoingDamage(baseDmg);
     const knockKind = swordKnockbackKind(host.swordVisual as SwordVisual, false);
-    let any = false;
+    let anyEnemyHit = false;
+    let anyShieldBlock = false;
     let maxFreeze = 0;
     for (const e of enemies) {
       if (e.isDead()) continue;
@@ -900,13 +934,13 @@ export class DiscMechanics {
           contact,
         );
         if (pen >= 0) {
-          any = true;
+          anyEnemyHit = true;
           maxFreeze = Math.max(maxFreeze, host.scaleOutgoingHitstun(pen));
           onHit?.(e, { damage: dmg, freezeFrames: pen, attackerX: host.x, attackerW: host.w, facing: host.facing, knockKind, contactWorldX: contact.x, contactWorldY: contact.y }, sword, "shield_break");
         } else {
           const ff = host.scaleOutgoingHitstun(freezeFrames(dmg));
           e.applyShieldBlockStrike({ damage: 0, freezeFrames: ff, attackerX: host.x, attackerW: host.w, facing: host.facing, knockKind, contactWorldX: contact.x, contactWorldY: contact.y });
-          any = true;
+          anyShieldBlock = true;
           maxFreeze = Math.max(maxFreeze, ff);
           onHit?.(e, { damage: 0, freezeFrames: ff, attackerX: host.x, attackerW: host.w, facing: host.facing, knockKind }, sword, "shield_block");
         }
@@ -931,7 +965,7 @@ export class DiscMechanics {
           contactWorldY: contact.y,
         };
         if (e.applyWeaponStrike(strike)) {
-          any = true;
+          anyEnemyHit = true;
           maxFreeze = Math.max(maxFreeze, ff);
           this.heavyAttackDamageConfirmed = true;
           AutismCombat.notifyPlayerDamageDealt(e, hitDmg);
@@ -951,7 +985,7 @@ export class DiscMechanics {
         knockKind,
       };
       if (e.applyWeaponStrike(strike)) {
-        any = true;
+        anyEnemyHit = true;
         maxFreeze = Math.max(maxFreeze, ff);
         this.heavyAttackDamageConfirmed = true;
         AutismCombat.notifyPlayerDamageDealt(e, dmg);
@@ -960,11 +994,12 @@ export class DiscMechanics {
         onHit?.(e, strike, sword, "slash");
       }
     }
-    if (any) {
+    const worldFreeze = tryWorldStrike?.() ?? 0;
+    if (anyEnemyHit || anyShieldBlock || worldFreeze > 0) {
       this.heavyAttackHitLanded = true;
-      host.beginOffensiveHitlag(maxFreeze);
+      host.beginOffensiveHitlag(Math.max(maxFreeze, worldFreeze));
     }
-    return maxFreeze;
+    return Math.max(maxFreeze, worldFreeze);
   }
 
   latchHeavyHit(freeze: number, host: DiscMechanicsHost): void {
@@ -980,6 +1015,7 @@ export class DiscMechanics {
     this.heavyAttackDamageConfirmed = false;
     this.heavyAttackStartedOnGround = false;
     this.heavyAttackScreenShakeArmed = false;
+    this.pendingHeavyAfterJumpSquat = false;
   }
 
   /**
@@ -1738,9 +1774,13 @@ export class DiscMechanics {
   }
 
   private canBeginHeavyAttackFromInput(input: Input, host: DiscMechanicsHost): boolean {
-    if (host.stats.disc04HeavyStacks <= 0 || this.heavyAttackActive) return false;
     if (!this.attackChordCompletedThisFrame(input)) return false;
     if (input.down || input.up) return false;
+    return this.heavyBeginGatesOk(host);
+  }
+
+  private heavyBeginGatesOk(host: DiscMechanicsHost): boolean {
+    if (host.stats.disc04HeavyStacks <= 0 || this.heavyAttackActive) return false;
     if (host.swordVisual === "lemon") return false;
     if (host.headbandActive() || host.attackPhase !== 0 || host.isSubweaponAnimating()) return false;
     if (host.carryThrowing() || host.carryBlocksAttack()) return false;
@@ -1758,6 +1798,7 @@ export class DiscMechanics {
   }
 
   private beginHeavyAttack(host: DiscMechanicsHost): void {
+    this.pendingHeavyAfterJumpSquat = false;
     this.heavyAttackActive = true;
     this.heavyFrameIdx = 0;
     this.heavyAttackHitLanded = false;
@@ -1765,6 +1806,8 @@ export class DiscMechanics {
     this.heavyAttackStartedOnGround = host.onGround;
     this.heavyAttackFrameTimeLeft = this.heavyAttackFrameSeconds(0, host);
     this.heavyAttackScreenShakeArmed = false;
+    // Heavy uses its own latch; a prior light/slide latch must not block breakables.
+    host.clearAttackHitLanded();
     host.fireAnimCueStrip("attack1", 0, -1, this.heavyAttackStartedOnGround);
   }
 

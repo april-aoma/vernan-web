@@ -1,10 +1,13 @@
 import type { SheetAtlas } from "./SheetAtlas";
 import { previewTile, type SheetBitmap } from "./TileCompositeRenderer";
 import {
+  resolvedStackUsesAddBlend,
   resolvedStackUsesGlowPulse,
   resolvedStackUsesScanlineWarp,
+  tileHasOverlayDrawPass,
   tileNeedsComposite,
   type JsonMap,
+  type LayerDrawPass,
 } from "./TileRenderResolve";
 import type { TileDefJson, TilesetProject } from "./TilesetProject";
 
@@ -51,6 +54,7 @@ export class TileWorldRenderer {
    * @param scale device scale (CAMERA_ZOOM) — composed tile is TILE_SIZE logical px.
    * @param phaseX/phaseY world-space px for warp/glow desync (Java draws in world space;
    *   device dst must not be used or camera motion retargets the phase bucket).
+   * @param pass world = skip overlay layers; overlay = only overlay layers (mid halo pass).
    */
   drawTile(
     g: CanvasRenderingContext2D,
@@ -62,24 +66,25 @@ export class TileWorldRenderer {
     scale = 1,
     phaseX = dstX,
     phaseY = dstY,
+    pass: LayerDrawPass = "world",
   ): boolean {
     if (!tileDef) return false;
     const tid = typeof tileDef.id === "string" ? tileDef.id : "";
     const varId = variationId || "";
     const tile = tileDef as JsonMap;
-    const warped = resolvedStackUsesScanlineWarp(tile, varId, simTicks);
-    const glowing = resolvedStackUsesGlowPulse(tile, varId, simTicks);
+    const warped = resolvedStackUsesScanlineWarp(tile, varId, simTicks, pass);
+    const glowing = resolvedStackUsesGlowPulse(tile, varId, simTicks, pass);
     const phaseAnimated = warped || glowing;
     const bucket = phaseAnimated ? warpPhaseBucket(phaseX, phaseY, tid) : 0;
     const pad = glowing ? GLOW_BLEED_PX : 0;
     const key = phaseAnimated
-      ? `${tid}\0${varId}\0${simTicks}\0w${bucket}`
-      : `${tid}\0${varId}\0${simTicks}`;
+      ? `${tid}\0${varId}\0${simTicks}\0${pass}\0w${bucket}`
+      : `${tid}\0${varId}\0${simTicks}\0${pass}`;
     const phaseRad = phaseAnimated ? warpPhaseOffsetFromBucket(bucket) : 0;
 
     let img = this.cache.get(key);
     if (!img) {
-      const composed = previewTile(this.sheetsById, tile, varId, simTicks, pad, phaseRad);
+      const composed = previewTile(this.sheetsById, tile, varId, simTicks, pad, phaseRad, pass);
       if (!composed) return false;
       img = composed;
       this.putCache(key, img);
@@ -89,7 +94,17 @@ export class TileWorldRenderer {
     const dw = Math.floor(img.width * s);
     const dh = Math.floor(img.height * s);
     const ox = Math.floor(pad * s);
-    g.drawImage(img, dstX - ox, dstY - ox, dw, dh);
+    // Overlay add layers (flame halo) must Add onto the live scene — not SrcOver a pre-baked bitmap.
+    const addOntoWorld =
+      pass === "overlay" && resolvedStackUsesAddBlend(tile, varId, simTicks, pass);
+    if (addOntoWorld) {
+      g.save();
+      g.globalCompositeOperation = "lighter";
+      g.drawImage(img, dstX - ox, dstY - ox, dw, dh);
+      g.restore();
+    } else {
+      g.drawImage(img, dstX - ox, dstY - ox, dw, dh);
+    }
     return true;
   }
 
@@ -104,10 +119,17 @@ export class TileWorldRenderer {
     scale = 1,
     phaseX = dstX,
     phaseY = dstY,
+    pass: LayerDrawPass = "world",
   ): boolean {
     const def = project.tileDef(tileId);
-    if (!def || !tileNeedsComposite(def as JsonMap)) return false;
-    return this.drawTile(g, def, "", simTicks, dstX, dstY, scale, phaseX, phaseY);
+    if (!def) return false;
+    const tile = def as JsonMap;
+    if (pass === "overlay") {
+      if (!tileHasOverlayDrawPass(tile)) return false;
+      return this.drawTile(g, def, "", simTicks, dstX, dstY, scale, phaseX, phaseY, pass);
+    }
+    if (!tileNeedsComposite(tile)) return false;
+    return this.drawTile(g, def, "", simTicks, dstX, dstY, scale, phaseX, phaseY, pass);
   }
 
   private putCache(key: string, img: HTMLCanvasElement): void {

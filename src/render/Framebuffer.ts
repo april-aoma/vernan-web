@@ -20,7 +20,7 @@ export class Framebuffer {
     this.internal = document.createElement("canvas");
     this.internal.width = INTERNAL_WIDTH;
     this.internal.height = INTERNAL_HEIGHT;
-    const ictx = this.internal.getContext("2d", { alpha: false });
+    const ictx = this.internal.getContext("2d", { alpha: false, willReadFrequently: true });
     if (!ictx) throw new Error("2D context unavailable (internal)");
     this.internalCtx = ictx;
     this.internalCtx.imageSmoothingEnabled = false;

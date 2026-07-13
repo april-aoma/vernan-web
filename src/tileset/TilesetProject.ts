@@ -51,6 +51,11 @@ export type AutotileObject = {
   usesMemberGraph: boolean;
   isFullObject: boolean;
   isHorizontalStripAutotile: boolean;
+  /**
+   * Java LogicalObjectLayout.usesAnchorOnlyDecoPoolExpansion — candle / full object /
+   * autotile / legacy spawnFirstMemberOnly: only tileIds[0] enters deco pick multisets.
+   */
+  usesAnchorOnlyDecoPoolExpansion: boolean;
 };
 
 /** Per-tile deco placement rule (Java DecoPlacementRules.Rule). */
@@ -439,6 +444,11 @@ export class TilesetProject {
       const anchorTileId = str(raw.anchorTileId) || tileIds[0] || id;
       const isFullObject = objectType === "full object" || objectType === "fullobject";
       const isAutotile = objectType === "autotile";
+      const isCandle = objectType === "candle";
+      const spawnFirstMemberOnly = bool(raw.spawnFirstMemberOnly, false);
+      // Java LogicalObjectLayout.usesAnchorOnlyDecoPoolExpansion / usesFirstMemberOnly.
+      const usesAnchorOnlyDecoPoolExpansion =
+        isCandle || isFullObject || isAutotile || spawnFirstMemberOnly;
       const usesMemberGraph =
         isAutotile && layout != null && layout.cells.length >= 2 && !isFullObject;
       // Footprints for autotile resolve + full-object deco stamps.
@@ -477,6 +487,7 @@ export class TilesetProject {
           usesMemberGraph &&
           islands.length === 1 &&
           isHorizontalStripFootprint(islands[0]!.cells),
+        usesAnchorOnlyDecoPoolExpansion,
       };
       this.objects.push(obj);
       this.objectById.set(id, obj);
@@ -693,15 +704,14 @@ export class TilesetProject {
 
   /**
    * Members that enter the deco pick multiset (Java buildObjectMembers):
-   * full object / autotile / candle → tileIds[0] only; else all tileIds.
+   * anchor-only layouts → tileIds[0] only; else all tileIds.
    */
   private decoPoolExpansionMembers(objectId: string): string[] {
     const obj = this.objectById.get(objectId);
     if (!obj?.tileIds.length) {
       return this.cell(objectId) ? [objectId] : [];
     }
-    const t = obj.objectType.toLowerCase();
-    if (t === "full object" || t === "fullobject" || t === "autotile" || t === "candle") {
+    if (obj.usesAnchorOnlyDecoPoolExpansion) {
       return [obj.tileIds[0]!];
     }
     return [...obj.tileIds];
@@ -764,28 +774,30 @@ export class TilesetProject {
     if (owner.isHorizontalStripAutotile) return false;
     const anchor = owner.tileIds[0];
     if (!anchor || tileId === anchor) return true;
-    if (owner.isFullObject || owner.objectType === "autotile") return false;
+    // Java: non-anchors of candle / full object / autotile must not orphan in root merge.
+    if (owner.usesAnchorOnlyDecoPoolExpansion) return false;
     return true;
   }
 
-  /** Member tile ids referenced by a room-kind deco pool (Java decoPoolMemberTileIds). */
-  decoPoolMemberTileIds(pool: Array<{ objectId: string; weight: number }>): Set<string> {
+  /**
+   * Member tile ids referenced by a room-kind deco pool after anchor-only expansion
+   * (Java decoPoolMemberTileIdsForRoomKind / buildObjectMembers).
+   */
+  decoPoolMemberTileIds(pool: Array<{ objectId: string; weight: number; tileIds?: string[]; memberIndices?: number[] }>): Set<string> {
     const out = new Set<string>();
     for (const entry of pool) {
-      const obj = this.objectById.get(entry.objectId);
-      if (obj?.tileIds.length) {
-        for (const tid of obj.tileIds) out.add(tid);
-      } else if (this.cell(entry.objectId)) {
-        out.add(entry.objectId);
-      }
+      const members = this.decoPoolExpansionMembers(entry.objectId);
+      if (!members.length) continue;
+      const selected = this.selectDecoPoolMembers(entry, members);
+      for (const tid of selected) out.add(tid);
     }
     return out;
   }
 
   private loadDecoPlacementRules(raw: Record<string, unknown> | undefined): void {
     if (!raw) return;
-    for (const [tileId, entry] of Object.entries(raw)) {
-      if (!tileId || !entry || typeof entry !== "object") continue;
+    for (const [key, entry] of Object.entries(raw)) {
+      if (!key || !entry || typeof entry !== "object") continue;
       const row = entry as Record<string, unknown>;
       const preferAbove = asStringList(row.preferAboveObjects);
       const preferredAboveTileIds: string[] = [];
@@ -810,7 +822,7 @@ export class TilesetProject {
         typeof row.despawnWhenUnsupported === "boolean"
           ? row.despawnWhenUnsupported
           : scatterOnEligibleGround && !crumbleWhenUnsupported;
-      this.decoPlacementRules.set(tileId, {
+      const rule: DecoPlacementRule = {
         spawnWeight: Math.max(0, num(row.spawnWeight, 1)),
         preferAboveWeight: Math.max(0, Math.min(1, num(row.preferAboveWeight, 1))),
         preferredAboveObjectIds: preferAbove,
@@ -821,7 +833,20 @@ export class TilesetProject {
         scatterOnEligibleGround,
         despawnWhenUnsupported,
         crumbleWhenUnsupported,
-      });
+      };
+      // Java DecoPlacementRules.parse: tile id key stays; object id expands to members.
+      if (this.tileCells.has(key)) {
+        this.decoPlacementRules.set(key, rule);
+        continue;
+      }
+      const obj = this.objectById.get(key);
+      if (obj?.tileIds.length) {
+        for (const tid of obj.tileIds) {
+          if (tid) this.decoPlacementRules.set(tid, rule);
+        }
+        continue;
+      }
+      this.decoPlacementRules.set(key, rule);
     }
   }
 }

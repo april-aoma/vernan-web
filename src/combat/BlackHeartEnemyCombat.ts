@@ -28,7 +28,8 @@ export function tickBlackHeartEnemyHitstun(dt: number, state: BlackHeartEnemyHit
   }
   const frozen = state.hitstun > 0 || state.blackHeartBeat.isLocked();
   if (frozen) {
-    state.hitlagSolidRed = !state.hitlagElectrocute;
+    // Solid-red is sticky from damage (Java hitstunSolidRedFlag) — do not re-force here,
+    // or shield-block clears (hitlagSolidRed = false) get overwritten every frame.
     state.hitlagShakeX = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
     state.hitlagShakeY = sampleShake(DEFAULT_SHAKE_AMPLITUDE_PX);
     return true;
@@ -45,9 +46,14 @@ export function queueBlackHeartBurstKnock(
   deferral: BlackHeartBeatDeferral,
   strike: WeaponStrike,
   hitstunSec: number,
+  juice?: ElectrocuteJuiceState,
 ): number {
   const kb = blackHeartBurstKnockVelocity(strike.damage);
   deferral.beginLivingKnock(kb.vx, kb.vy);
+  if (juice) {
+    juice.hitlagSolidRed = true;
+    juice.hitlagElectrocute = false;
+  }
   return Math.max(hitstunSec, strike.freezeFrames / 60);
 }
 

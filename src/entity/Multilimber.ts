@@ -587,7 +587,7 @@ export class Multilimber implements CombatEnemy {
     if (this.hitstun > 0 && strike.knockKind !== "black_heart_burst") return false;
     if (!this.applyPartDamage(this.lastStruckPart, strike.damage)) return false;
     if (strike.knockKind === "black_heart_burst") {
-      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun, this);
       this.hurtTintRemaining = HURT_TINT_SECONDS;
       return true;
     }

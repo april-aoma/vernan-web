@@ -214,16 +214,17 @@ function drawNephilimDrinkHealOverlay(
     healG.imageSmoothingEnabled = false;
     for (let y0 = tileOriginY; y0 <= maxY; y0 += tileDevH) {
       for (let x0 = tileOriginX; x0 <= maxX; x0 += tileDevW) {
+        // Canvas drawImage is src-first; Java Graphics2D is dest-corners then source.
         healG.drawImage(
           healTile,
-          x0 - minX,
-          y0 - minY,
-          x0 - minX + tileDevW,
-          y0 - minY + tileDevH,
           0,
           0,
           tileW,
           tileH,
+          x0 - minX,
+          y0 - minY,
+          tileDevW,
+          tileDevH,
         );
       }
     }

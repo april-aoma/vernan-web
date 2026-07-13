@@ -29,6 +29,7 @@ import {
 } from "./costume/renderPlayerBody";
 import { folderForCostumeId, loadCostumeLayers } from "./ranking/costumeResolve";
 import { VernanBodyLibrary } from "./vernan/VernanBodyLibrary";
+import { VernanFeetAnchor } from "./vernan/VernanFeetAnchor";
 import {
   eagerlyResolveFloorItems,
   uniqueEnemySpawnKinds,
@@ -75,6 +76,7 @@ import { Mouse } from "./entity/Mouse";
 import { GoldenRoach } from "./entity/GoldenRoach";
 import { drawGoldenRoach } from "./entity/drawGoldenRoach";
 import { JackBlue } from "./entity/JackBlue";
+import { JackBlueBone } from "./entity/JackBlueBone";
 import { drawJackBlueBones } from "./entity/drawJackBlue";
 import {
   processJackBlueDeathChunks,
@@ -195,7 +197,7 @@ import {
   snapshotIceHoldSprite,
 } from "./combat/freezeCombatEnemy";
 import { drawIceBlocks } from "./combat/drawIceBlock";
-import { feetOnIce, trySwordStrikeIce } from "./combat/IceBlockSupport";
+import { feetOnIce, findBreakableIceHit, trySwordStrikeIce } from "./combat/IceBlockSupport";
 import { isIceBlockFreezable } from "./combat/IceBlockFreeze";
 import { ICE_SHARD_VELOCITY_SCALE } from "./combat/IceBlockFx";
 import { CarryKind } from "./carry/CarryKind";
@@ -203,6 +205,8 @@ import { iceBlockPayload, type CarryPayload } from "./carry/CarryPayload";
 import {
   drawBrickChunksFloatZBehindPlayer,
   drawBrickChunksInFront,
+  drawOneBrickChunk,
+  brickChunkDrawsInFrontOfPlayer,
 } from "./fx/drawBrickChunk";
 import { PsychicSpoonController } from "./fx/PsychicSpoon";
 import { drawKillExplosion, KillExplosion } from "./fx/KillExplosion";
@@ -365,7 +369,12 @@ import {
 } from "./world/roomTransition";
 import { TilesetProject } from "./tileset/TilesetProject";
 import { SheetAtlas } from "./tileset/SheetAtlas";
-import { drawShellTiles } from "./tileset/drawShellTiles";
+import { drawShellDecoOverlay, drawShellTiles } from "./tileset/drawShellTiles";
+import {
+  deviceAabbFromWorld,
+  drawPlayerOcclusionSilhouette,
+} from "./render/PlayerOcclusionSilhouette";
+import type { DeviceAabb } from "./render/OccluderLayer";
 import { resolveBossDoorLayout, type BossDoorLayout } from "./world/BossDoorSpec";
 import {
   drawKeyblockSealsWorld,
@@ -393,6 +402,7 @@ import {
   finishSeamOpenAnimInstant,
   tickSeamOpenAnim,
   tryStrikeBreakablesInAabb,
+  tryStrikeTilesInAabb,
   type BreakableStrikeContext,
 } from "./world/BreakableStrike";
 import { tickKeyblockSeals } from "./world/KeyblockTick";
@@ -434,6 +444,11 @@ type PlayerSprites = {
   crouchGemSword: SpriteStrip | null;
   stickSword: SpriteStrip | null;
   crouchStickSword: SpriteStrip | null;
+  /** disc04 heavy attack1 weapon overlays (64×48 × 8). */
+  heavySword: SpriteStrip | null;
+  heavyFlintSword: SpriteStrip | null;
+  heavyGemSword: SpriteStrip | null;
+  heavyStickSword: SpriteStrip | null;
   doorEnter: SpriteStrip | null;
   doorExit: SpriteStrip | null;
   getup: SpriteStrip | null;
@@ -1419,6 +1434,10 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     crouchGemSword: null,
     stickSword: null,
     crouchStickSword: null,
+    heavySword: null,
+    heavyFlintSword: null,
+    heavyGemSword: null,
+    heavyStickSword: null,
     doorEnter: null,
     doorExit: null,
     getup: null,
@@ -1488,6 +1507,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       project: tilesetProject,
       snapshotTile: (tx, ty) =>
         snapshotBreakableTile(map, tx, ty, s, sheetAtlas, tilesetProject, floorOrdinal, tileWorldRenderer),
+      snapshotDecoTile: (tileId) => sheetAtlas?.snapshotTileId(tileId) ?? null,
       activeSeamOpenAnim,
       seamAnimPlayableScrollOverride,
     };
@@ -1864,6 +1884,16 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     const itemComposite = await compositeBodyStrip(itemLayers);
     playerSprites.itemPose =
       itemComposite?.image ?? (await loadImageSafe(assets, "sprites/vernan item.png"));
+    const [heavySword, heavyFlintSword, heavyGemSword, heavyStickSword] = await Promise.all([
+      loadStrip(assets, "sprites/attack1 sword.png", 8),
+      loadStrip(assets, "sprites/attack1 flint.png", 8),
+      loadStrip(assets, "sprites/attack1 gem sword.png", 8),
+      loadStrip(assets, "sprites/attack1 stick.png", 8),
+    ]);
+    playerSprites.heavySword = heavySword;
+    playerSprites.heavyFlintSword = heavyFlintSword;
+    playerSprites.heavyGemSword = heavyGemSword;
+    playerSprites.heavyStickSword = heavyStickSword;
   };
 
   /** Spawn kinds whose strips are already decoded (skip on later floors). */
@@ -2109,6 +2139,19 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           lilPossessedBulletBmp = bullet;
           lilPossessedBulletDieBmp = die;
           if (!smokeBmp) smokeBmp = smoke;
+        })(),
+      );
+    }
+    // Possessed Head always uses lil bullet art (Java drawPossessedHeadBulletsDevice), even without LIL_POSSESSED.
+    if (ids.has("POSSESSED_HEAD") && !lilPossessedBulletBmp) {
+      tasks.push(
+        (async () => {
+          const [bullet, die] = await Promise.all([
+            loadImageSafe(assets, "sprites/lil possessed bullet.png"),
+            loadImageSafe(assets, "sprites/lil possessed bullet die.png"),
+          ]);
+          lilPossessedBulletBmp = bullet;
+          lilPossessedBulletDieBmp = die;
         })(),
       );
     }
@@ -2659,16 +2702,95 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     );
   }
 
-  function spawnAfterimageGhost(snap: AfterimageSpawnSnapshot): void {
+  function countActiveAfterimageGhosts(): number {
+    let n = 0;
     for (const g of afterimageGhosts) {
-      if (g.isActive()) g.beginReplaceFade();
+      if (g.isActive()) n++;
     }
-    afterimageGhosts.push(new AfterimageGhost(snap));
-    while (afterimageGhosts.length > AfterimageGhost.MAX_ON_SCREEN) {
-      afterimageGhosts.shift();
+    return n;
+  }
+
+  function beginReplaceFadeOldestActiveAfterimage(): void {
+    for (const g of afterimageGhosts) {
+      if (g.isActive()) {
+        g.beginReplaceFade();
+        return;
+      }
     }
   }
 
+  function spawnAfterimageGhost(snap: AfterimageSpawnSnapshot): void {
+    while (countActiveAfterimageGhosts() >= AfterimageGhost.MAX_ON_SCREEN) {
+      beginReplaceFadeOldestActiveAfterimage();
+    }
+    afterimageGhosts.push(new AfterimageGhost(snap));
+  }
+
+  /** Lingering AFTERIMAGE sword smears (Java drawAfterimageGhostsDevice). */
+  function drawAfterimageGhosts(
+    g: CanvasRenderingContext2D,
+    ghosts: readonly AfterimageGhost[],
+    sprites: PlayerSprites,
+    camera: WorldCamera,
+  ): void {
+    if (ghosts.length === 0) return;
+    for (const ghost of ghosts) {
+      const alpha = ghost.drawAlpha();
+      if (alpha <= 0) continue;
+      g.save();
+      g.globalAlpha = alpha;
+      if (ghost.heavyAttack1Smear) {
+        const sword = pickHeavySwordOverlayStrip(sprites, ghost.swordVisual);
+        if (sword) {
+          const fi = AfterimageGhost.HEAVY_ATTACK1_SMEAR_FRAME_INDEX;
+          const worldLeft = VernanFeetAnchor.canvasWorldOriginX(
+            ghost.originX,
+            ghost.attackerWidth,
+            sword.frameW,
+            ghost.facing,
+            "attack1",
+          );
+          drawStripFrameFeetPinned(
+            g,
+            sword,
+            fi,
+            worldLeft,
+            ghost.feetWorldY,
+            ghost.facing,
+            camera,
+            undefined,
+            VernanFeetAnchor.feetRowPx("attack1", sword.frameH),
+          );
+        }
+        g.restore();
+        continue;
+      }
+      const sword = pickSwordOverlayStrip(
+        sprites,
+        ghost.swordVisual,
+        ghost.groundCrouchAttack,
+      );
+      if (sword) {
+        const stickCentered = ghost.swordVisual === "stick";
+        const bodyW = Math.max(1, sword.frameW - 16);
+        const overlayLeft = stickCentered
+          ? ghost.originX + ghost.attackerWidth * 0.5 - sword.frameW * 0.5
+          : ghost.facing >= 0
+            ? ghost.originX + ghost.attackerWidth * 0.5 - bodyW * 0.5
+            : ghost.originX + ghost.attackerWidth * 0.5 - bodyW * 0.5 - 16;
+        drawStripFrameFeetPinned(
+          g,
+          sword,
+          AfterimageGhost.SMEAR_FRAME_INDEX,
+          overlayLeft,
+          ghost.feetWorldY,
+          ghost.facing,
+          camera,
+        );
+      }
+      g.restore();
+    }
+  }
 
   function snapFamiliarsThroughRoomTransition(): void {
     const px = player.x + player.w * 0.5;
@@ -2801,35 +2923,20 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
     );
   }
 
+  /** Java GamePanel.trySwordStrikeTiles — lemon uses the same world-strike as the sword. */
   function tryLemonStrikeTiles(bounds: Aabb): boolean {
     if (!session) return false;
-    const map = currentMap(session);
-    const x0 = Math.floor(bounds.x / TILE_SIZE);
-    const x1 = Math.floor((bounds.x + bounds.w - 1e-5) / TILE_SIZE);
-    const y0 = Math.floor(bounds.y / TILE_SIZE);
-    const y1 = Math.floor((bounds.y + bounds.h - 1e-5) / TILE_SIZE);
     let any = false;
-    for (let ty = y0; ty <= y1; ty++) {
-      for (let tx = x0; tx <= x1; tx++) {
-        if (!map.isBreakableTile(tx, ty)) continue;
-        const bx = tx * TILE_SIZE;
-        const by = ty * TILE_SIZE;
-        map.setTile(tx, ty, TILE_EMPTY);
-        const snap = snapshotBreakableTile(
-          map,
-          tx,
-          ty,
-          session,
-          sheetAtlas,
-          tilesetProject,
-          floorOrdinal,
-          tileWorldRenderer,
-        );
-        spawnBreakableBrickChunks(bx, by, Math.random, brickChunks, 1, "#8a5a3a", snap);
-        any = true;
-      }
+    const ice = findBreakableIceHit(iceBlocks, bounds);
+    if (ice) {
+      const index = iceBlocks.indexOf(ice);
+      if (index >= 0) iceBlocks.splice(index, 1);
+      const snap = snapshotIceHoldSprite(ice);
+      const payload = iceBlockPayload(snap, ice.lootCopy(), ice.mirrorSourceX);
+      shatterIceBlockPayload(payload, ice.x, ice.y);
+      any = true;
     }
-    return any;
+    return tryStrikeTilesInAabb(bounds, breakableStrikeCtx()) || any;
   }
 
   function tickFlintFiresAndLemonShots(map: TileMap): void {
@@ -3198,10 +3305,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
 
       // Keyblock unlock freeze (Java keyblockGameplayFreezeSeal early return).
+      // Soft-chase toward Vernan (existing SideScrollCamera lerp) instead of a hard snap.
       if (session.keyblocks.freezeSeal != null) {
         tickKeyblockSeals(session.keyblocks, session.roomId, map, player, input);
         tickBrickChunkSim();
-        followCamera(session, false);
+        followCamera(session, true);
         return;
       }
 
@@ -3412,7 +3520,11 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         );
         player.stats.applyItemPassives(player.inventory, session.catalog);
       }
-      const headSwordEdge = possessedHead.consumeSwordActiveEdge(player.attackPhase);
+      // Sword-active rising edge: attackPhase 2, or disc04 heavy on hit frame (active hitbox).
+      const headSwordActive =
+        player.attackPhase === 2 ||
+        (player.disc.isHeavyActive() && player.disc.heavyFrameIndex() === 2);
+      const headSwordEdge = possessedHead.consumeSwordActiveEdge(headSwordActive);
       possessedHead.tick(FIXED_DT, player, map, session.enemies, headSwordEdge);
       tickBossDoorSealAnim(session);
 
@@ -3420,7 +3532,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       tickKeyblockSeals(session.keyblocks, session.roomId, map, player, input);
       if (session.keyblocks.freezeSeal != null) {
         tickBrickChunkSim();
-        followCamera(session, false);
+        // Soft chase already ran this step; keep lerping toward Vernan during unlock freeze.
+        followCamera(session, true);
         return;
       }
 
@@ -3719,6 +3832,14 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         keyblockStrip,
         keyblockConnectorStrip,
       );
+      // Flame halo: above terrain/props, under Vernan + enemies (not a full-screen overlay).
+      drawShellDecoOverlay(g, map, camera, {
+        decoStamps: session.dungeon.rooms[session.roomId]?.art?.decoStamps,
+        placedRoomObjects: session.dungeon.rooms[session.roomId]?.art?.placedRoomObjects,
+        project: tilesetProject,
+        simTick: Math.floor(session.timeSec * 60),
+        tileWorld: tileWorldRenderer,
+      });
       const room = session.dungeon.rooms[session.roomId]!;
       const art = room.art;
       const primarySheetId = art?.sheetId ?? tilesetProject?.primarySheetIdForFloor(floorOrdinal);
@@ -3767,6 +3888,22 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       for (const ep of activeEnemyLootPedestals(session)) preloadPedestalItem(ep);
       const kCandyRefillPed = activeSuperSecretKCandyRefill(session);
       preloadPedestalItem(kCandyRefillPed);
+      // Cat behind shop wares so pedestal / pickup art stays readable.
+      if (node.kind === RoomKind.SHOP) {
+        ensureShopResolved(session, player.stats.luck);
+        const keeper = activeShopKeeper(session);
+        if (keeper && shopKeeperFrames) {
+          drawShopKeeper(
+            g,
+            keeper,
+            shopKeeperFrames,
+            camera,
+            session.timeSec,
+            player.x + player.w * 0.5,
+            player.y + player.h * 0.5,
+          );
+        }
+      }
       drawPedestal(
         g,
         activePedestal(session),
@@ -3803,18 +3940,6 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           const labelY = camera.worldToDeviceY(p.hitbox().y) - 4;
           drawShopPriceLabel(g, labelX, labelY, p.priceCoins);
         }
-        const keeper = activeShopKeeper(session);
-        if (keeper && shopKeeperFrames) {
-          drawShopKeeper(
-            g,
-            keeper,
-            shopKeeperFrames,
-            camera,
-            session.timeSec,
-            player.x + player.w * 0.5,
-            player.y + player.h * 0.5,
-          );
-        }
       }
       for (const ep of activeEnemyLootPedestals(session)) {
         drawPedestal(
@@ -3846,6 +3971,121 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
           }
         }
       }
+      const psychicDash = psychicSpoon.dashTarget(brickChunks);
+      drawBrickChunksFloatZBehindPlayer(
+        g,
+        brickChunks,
+        player,
+        camera,
+        session.timeSec,
+        psychicFireStrip,
+        psychicDash,
+      );
+      drawAfterimageGhosts(g, afterimageGhosts, playerSprites, camera);
+      for (const ff of flintFires) {
+        drawFlintFire(g, ff, camera, fireStrip);
+      }
+      for (const sc of smokeClouds) {
+        drawSmokeCloud(g, sc, camera, smokeBmp);
+      }
+      drawFamiliars(
+        g,
+        camera,
+        familiarTrail,
+        lilPossessedFriendBmp,
+        lilMinerFriendBmp,
+        lilPossessedBulletBmp,
+      );
+      const playerDrawnThisFrame =
+        !levelAscendFadeOut && !isPlayerGrabDrawEmbeddedInNephilim(player, session.enemies);
+      // Java: offensive hitlag draws Vernan after enemies; silhouette only when occluders sit in front.
+      const drawPlayerInFrontOfEnemies =
+        playerDrawnThisFrame && player.offensiveHitlagRemaining > 0;
+      const ownedPalette = playerDrawnThisFrame
+        ? mergeOwnedPalette(player.inventory, session.catalog)
+        : null;
+      const itemPickupPose =
+        pickupOverlay.isActive() ||
+        miniBuyOverlayActive ||
+        kCandyHealSequence.isActive();
+      const drawPlayerMain = () => {
+        if (!playerDrawnThisFrame || !ownedPalette) return;
+        drawPlayer(
+          g,
+          player,
+          camera,
+          playerSprites,
+          renderFacing,
+          turnAnimFramesLeft > 0,
+          session!.transition.pose,
+          itemPickupPose,
+          costumeBundle,
+          ownedPalette,
+          whipPartBmp,
+        );
+      };
+      const drawPlayerCarryAndOverlays = () => {
+        if (!playerDrawnThisFrame) return;
+        const carryThrown = gardeningGlovesSupport?.thrownProjectiles() ?? [];
+        const heldCarry = player.carryPayload();
+        const needsIceReflection =
+          iceBlocks.length > 0 ||
+          heldCarry?.kind === CarryKind.ICE_BLOCK ||
+          carryThrown.some((p) => p.isAlive() && p.payload.kind === CarryKind.ICE_BLOCK);
+        const iceReflectionBackbuffer = needsIceReflection ? captureBackbuffer(fb.internal) : null;
+        drawCarryHeldAndThrown(
+          g,
+          camera,
+          player,
+          fruitCarrySprite,
+          carryThrown,
+          pickupBitmaps,
+          itemBitmaps,
+          session!.catalog,
+          iceReflectionBackbuffer,
+        );
+        drawIceBlocks(g, iceBlocks, camera, iceReflectionBackbuffer);
+        if (pickupOverlay.isActive() && pickupOverlay.itemId) {
+          const heldBmp = itemBitmaps.get(
+            session!.catalog.def(pickupOverlay.itemId).spriteFileName,
+          );
+          if (heldBmp) {
+            drawPickupItemAbovePlayer(
+              g,
+              player,
+              camera,
+              heldBmp,
+              playerSprites.itemPose?.height ?? 32,
+            );
+          }
+        } else if (kCandyHealSequence.isActive()) {
+          const kCandyBmp = itemBitmaps.get(session!.catalog.def("K_CANDY").spriteFileName);
+          if (kCandyBmp) {
+            drawPickupItemAbovePlayer(
+              g,
+              player,
+              camera,
+              kCandyBmp,
+              playerSprites.itemPose?.height ?? 32,
+            );
+          }
+        }
+        if (miniBuyOverlayActive) {
+          drawMiniBuyPickupAbovePlayer(
+            g,
+            player,
+            camera,
+            miniBuyKind,
+            pickupBitmaps,
+            playerSprites.itemPose?.height ?? 32,
+          );
+        }
+      };
+      if (playerDrawnThisFrame && !drawPlayerInFrontOfEnemies) {
+        drawPlayerMain();
+        drawPlayerCarryAndOverlays();
+      }
+      // Enemies / bones after Vernan (Java default) so they can occlude her for the silhouette pass.
       for (const e of session.enemies) {
         const simTick = Math.floor(session.timeSec * 60);
         drawEnemy(g, e, camera, enemySprites, player, playerSprites, simTick, electricShockStrip);
@@ -3873,104 +4113,12 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         possessedHead,
         camera,
         CAMERA_ZOOM,
-        lilPossessedBulletBmp ?? possessedBulletBmp,
-        lilPossessedBulletDieBmp ?? possessedBulletDieBmp,
-      );
-      const psychicDash = psychicSpoon.dashTarget(brickChunks);
-      drawBrickChunksFloatZBehindPlayer(
-        g,
-        brickChunks,
-        player,
-        camera,
-        session.timeSec,
-        psychicFireStrip,
-        psychicDash,
-      );
-      for (const ff of flintFires) {
-        drawFlintFire(g, ff, camera, fireStrip);
-      }
-      for (const sc of smokeClouds) {
-        drawSmokeCloud(g, sc, camera, smokeBmp);
-      }
-      drawFamiliars(
-        g,
-        camera,
-        familiarTrail,
-        lilPossessedFriendBmp,
-        lilMinerFriendBmp,
         lilPossessedBulletBmp,
+        lilPossessedBulletDieBmp,
       );
-      if (!levelAscendFadeOut && !isPlayerGrabDrawEmbeddedInNephilim(player, session.enemies)) {
-        const ownedPalette = mergeOwnedPalette(player.inventory, session.catalog);
-        drawPlayer(
-          g,
-          player,
-          camera,
-          playerSprites,
-          renderFacing,
-          turnAnimFramesLeft > 0,
-          session.transition.pose,
-          pickupOverlay.isActive() ||
-            miniBuyOverlayActive ||
-            kCandyHealSequence.isActive(),
-          costumeBundle,
-          ownedPalette,
-          whipPartBmp,
-        );
-        const carryThrown = gardeningGlovesSupport?.thrownProjectiles() ?? [];
-        const heldCarry = player.carryPayload();
-        const needsIceReflection =
-          iceBlocks.length > 0 ||
-          heldCarry?.kind === CarryKind.ICE_BLOCK ||
-          carryThrown.some((p) => p.isAlive() && p.payload.kind === CarryKind.ICE_BLOCK);
-        const iceReflectionBackbuffer = needsIceReflection ? captureBackbuffer(fb.internal) : null;
-        drawCarryHeldAndThrown(
-          g,
-          camera,
-          player,
-          fruitCarrySprite,
-          carryThrown,
-          pickupBitmaps,
-          itemBitmaps,
-          session.catalog,
-          iceReflectionBackbuffer,
-        );
-        drawIceBlocks(g, iceBlocks, camera, iceReflectionBackbuffer);
-        if (pickupOverlay.isActive() && pickupOverlay.itemId) {
-          const heldBmp = itemBitmaps.get(
-            session.catalog.def(pickupOverlay.itemId).spriteFileName,
-          );
-          if (heldBmp) {
-            drawPickupItemAbovePlayer(
-              g,
-              player,
-              camera,
-              heldBmp,
-              playerSprites.itemPose?.height ?? 32,
-            );
-          }
-        } else if (kCandyHealSequence.isActive()) {
-          const kCandyBmp = itemBitmaps.get(session.catalog.def("K_CANDY").spriteFileName);
-          if (kCandyBmp) {
-            drawPickupItemAbovePlayer(
-              g,
-              player,
-              camera,
-              kCandyBmp,
-              playerSprites.itemPose?.height ?? 32,
-            );
-          }
-        }
-        if (miniBuyOverlayActive) {
-          drawMiniBuyPickupAbovePlayer(
-            g,
-            player,
-            camera,
-            miniBuyKind,
-            pickupBitmaps,
-            playerSprites.itemPose?.height ?? 32,
-          );
-        }
+      if (playerDrawnThisFrame && drawPlayerInFrontOfEnemies) {
+        drawPlayerMain();
+        drawPlayerCarryAndOverlays();
       }
       drawBrickChunksInFront(
         g,
@@ -3981,6 +4129,30 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         psychicFireStrip,
         psychicDash,
       );
+      // Skip silhouette while Vernan is in front of enemies (offensive hitlag).
+      if (playerDrawnThisFrame && !drawPlayerInFrontOfEnemies) {
+        drawVernanOcclusionSilhouettePass({
+          g,
+          player,
+          camera,
+          enemies: session.enemies,
+          playerSprites,
+          enemySprites,
+          renderFacing,
+          turnWindowOpen: turnAnimFramesLeft > 0,
+          doorPose: session.transition.pose,
+          itemPickupPose,
+          costumeBundle,
+          ownedPalette: ownedPalette!,
+          whipPartBmp,
+          brickChunks,
+          timeSec: session.timeSec,
+          psychicFireStrip,
+          psychicDash,
+          electricShockStrip,
+          jackBlueBoneBmp,
+        });
+      }
       const warpOrbReflectionBackbuffer =
         warpOrbProjectiles.length > 0 ? captureBackbuffer(fb.internal) : null;
       for (const f of frisbeeProjectiles) {
@@ -4129,7 +4301,8 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
 
       // Java GLOBAL_PALETTE_CLAMP — snap full backbuffer after HUD/overlays.
-      if (gamePalette?.isLoaded) {
+      // Skip when k-candy vision will reprocess the buffer (avoids a second full readback).
+      if (gamePalette?.isLoaded && !kCandyVision.isActive()) {
         gamePalette.applyToCanvas(g, INTERNAL_WIDTH, INTERNAL_HEIGHT);
       }
       if (
@@ -4901,6 +5074,144 @@ function isPlayerGrabDrawEmbeddedInNephilim(
   return false;
 }
 
+/** Black Vernan silhouette ∩ enemies / in-front debris / Jack Blue bones (not ice). */
+function drawVernanOcclusionSilhouettePass(args: {
+  g: CanvasRenderingContext2D;
+  player: Player;
+  camera: WorldCamera;
+  enemies: readonly CombatEnemy[];
+  playerSprites: PlayerSprites;
+  enemySprites: EnemySprites;
+  renderFacing: number;
+  turnWindowOpen: boolean;
+  doorPose: DoorTransitionPose;
+  itemPickupPose: boolean;
+  costumeBundle: CostumeRenderBundle | null;
+  ownedPalette: ReadonlyMap<number, number>;
+  whipPartBmp: ImageBitmap | null;
+  brickChunks: BrickChunk[];
+  timeSec: number;
+  psychicFireStrip: SpriteStrip | null;
+  psychicDash: BrickChunk | null;
+  electricShockStrip: SpriteStrip | null;
+  jackBlueBoneBmp: ImageBitmap | null;
+}): void {
+  const {
+    g,
+    player,
+    camera,
+    enemies,
+    playerSprites,
+    enemySprites,
+    renderFacing,
+    turnWindowOpen,
+    doorPose,
+    itemPickupPose,
+    costumeBundle,
+    ownedPalette,
+    whipPartBmp,
+    brickChunks,
+    timeSec,
+    psychicFireStrip,
+    psychicDash,
+    electricShockStrip,
+    jackBlueBoneBmp,
+  } = args;
+
+  // Skip while invuln blink hides the solid body (same gate as drawPlayer).
+  if (
+    !player.hitlagSolidRed &&
+    player.health.isInvulnerable &&
+    Math.floor(performance.now() / 80) % 2 === 0
+  ) {
+    return;
+  }
+
+  const hb = player.hitboxPose().bounds();
+  // Pad for squash/stretch + costume overhang.
+  const squashPad = 10;
+  const playerAabb = deviceAabbFromWorld(
+    camera,
+    hb.x - squashPad,
+    hb.y - squashPad,
+    hb.w + squashPad * 2,
+    hb.h + squashPad * 2,
+  );
+
+  const occluderAabbs: DeviceAabb[] = [];
+  for (const e of enemies) {
+    if (e.isDead()) continue;
+    const r = e.damageReceivePose();
+    occluderAabbs.push(deviceAabbFromWorld(camera, r.x, r.y, r.w, r.h));
+  }
+  for (const b of brickChunks) {
+    if (!brickChunkDrawsInFrontOfPlayer(b, timeSec)) continue;
+    if (!b.isDrawVisible()) continue;
+    const s = b.worldSize();
+    occluderAabbs.push(deviceAabbFromWorld(camera, b.x, b.y, s, s));
+  }
+  for (const e of enemies) {
+    if (!(e instanceof JackBlue) || e.isDead()) continue;
+    for (const bone of e.bonesCopy()) {
+      if (!bone.alive) continue;
+      occluderAabbs.push(
+        deviceAabbFromWorld(
+          camera,
+          bone.x,
+          bone.y,
+          JackBlueBone.FRAME_W,
+          JackBlueBone.FRAME_H,
+        ),
+      );
+    }
+  }
+
+  const simTick = Math.floor(timeSec * 60);
+  drawPlayerOcclusionSilhouette({
+    dest: g,
+    playerAabb,
+    occluderAabbs,
+    drawPlayer: (cg) => {
+      drawPlayer(
+        cg,
+        player,
+        camera,
+        playerSprites,
+        renderFacing,
+        turnWindowOpen,
+        doorPose,
+        itemPickupPose,
+        costumeBundle,
+        ownedPalette,
+        whipPartBmp,
+      );
+    },
+    stampOccluders: (cg) => {
+      for (const e of enemies) {
+        if (e.isDead()) continue;
+        drawEnemy(
+          cg,
+          e,
+          camera,
+          enemySprites,
+          player,
+          playerSprites,
+          simTick,
+          electricShockStrip,
+        );
+      }
+      for (const e of enemies) {
+        if (!(e instanceof JackBlue) || e.isDead()) continue;
+        drawJackBlueBones(cg, e, camera, jackBlueBoneBmp);
+      }
+      for (const b of brickChunks) {
+        if (!brickChunkDrawsInFrontOfPlayer(b, timeSec)) continue;
+        drawOneBrickChunk(cg, b, camera, player, timeSec, psychicFireStrip, psychicDash);
+      }
+    },
+  });
+}
+
 function drawPlayer(
   g: CanvasRenderingContext2D,
   player: Player,
@@ -4957,7 +5268,21 @@ function drawPlayer(
 
   if (costumeBundle) {
     let attackOverlay: AttackOverlayDraw | undefined;
-    if (player.isAttacking() && !player.headband.isActive()) {
+    if (player.isHeavyAttackActive() && !player.isHurtLocked()) {
+      const visual = playerSwordVisual(player);
+      const heavySword =
+        visual != null ? pickHeavySwordOverlayStrip(sprites, visual) : sprites.heavySword;
+      attackOverlay = {
+        sword: heavySword,
+        shield: null,
+        stickCentered: false,
+        frameIndex: player.heavyAttackFrameIndex(),
+        bodyFrameW: sprites.heavyAttack?.frameW ?? VernanFeetAnchor.STAND_SPRITE_W_PX,
+        layoutAnimKey: "attack1",
+        playerOriginX: player.x,
+        playerWidth: player.w,
+      };
+    } else if (player.isAttacking() && !player.headband.isActive()) {
       const crouchSwing = player.isGroundCrouchAttack();
       const body = crouchSwing
         ? (sprites.crouchAttack ?? sprites.attack)
@@ -5114,11 +5439,68 @@ function drawPlayer(
     return;
   }
 
-  if (player.isHeavyAttackActive() && sprites.heavyAttack) {
+  if (player.isHeavyAttackActive() && !player.isHurtLocked() && sprites.heavyAttack) {
     const idx = player.heavyAttackFrameIndex();
-    drawFeetPinnedStrip(g, sprites.heavyAttack, idx, cx, feet, player.facing, camera, juice);
+    const facingHeavy = player.facing >= 0 ? 1 : -1;
+    const bodyLeft = VernanFeetAnchor.canvasWorldOriginX(
+      player.x,
+      player.w,
+      sprites.heavyAttack.frameW,
+      facingHeavy,
+      "attack1",
+    );
+    const bodyAnchorH = VernanFeetAnchor.feetRowPx("attack1", sprites.heavyAttack.frameH);
+    drawStripFrameFeetPinned(
+      g,
+      sprites.heavyAttack,
+      idx,
+      bodyLeft,
+      feet,
+      facingHeavy,
+      camera,
+      juice,
+      bodyAnchorH,
+    );
     if (player.heavyAttackFromAir() && sprites.heavyAttackAirLegs) {
-      drawFeetPinnedStrip(g, sprites.heavyAttackAirLegs, idx, cx, feet, player.facing, camera, juice);
+      const legsLeft = VernanFeetAnchor.canvasWorldOriginX(
+        player.x,
+        player.w,
+        sprites.heavyAttackAirLegs.frameW,
+        facingHeavy,
+        "attack1",
+      );
+      drawStripFrameFeetPinned(
+        g,
+        sprites.heavyAttackAirLegs,
+        idx,
+        legsLeft,
+        feet,
+        facingHeavy,
+        camera,
+        juice,
+        VernanFeetAnchor.feetRowPx("attack1", sprites.heavyAttackAirLegs.frameH),
+      );
+    }
+    const heavySword = pickHeavySwordOverlayStrip(sprites, player.swordVisualId());
+    if (heavySword) {
+      const worldLeft = VernanFeetAnchor.canvasWorldOriginX(
+        player.x,
+        player.w,
+        heavySword.frameW,
+        facingHeavy,
+        "attack1",
+      );
+      drawStripFrameFeetPinned(
+        g,
+        heavySword,
+        idx,
+        worldLeft,
+        feet,
+        facingHeavy,
+        camera,
+        juice ? { ...juice, solidRed: false, hurtTintAlpha: 0 } : undefined,
+        VernanFeetAnchor.feetRowPx("attack1", heavySword.frameH),
+      );
     }
     drawWhipOverlay();
     return;
@@ -5273,16 +5655,23 @@ type ElectrocuteEnemyDrawState = {
   hitstun: number;
   squash?: { scaleX(): number; scaleY(): number };
   hurtTintAlpha(): number;
+  /** Optional Java-parity gate (e.g. Jack Blue suppresses red during shield clang). */
+  hitstunSolidRed?(): boolean;
 };
 
 function enemyStrikeJuice(e: ElectrocuteEnemyDrawState, simTicks: number): JuiceDrawOpts {
   const electrocuteBw = !!(e.hitlagElectrocute && e.hitstun > 0);
+  const solidRed = electrocuteBw
+    ? false
+    : e.hitstunSolidRed
+      ? e.hitstunSolidRed()
+      : e.hitlagSolidRed;
   return {
     shakeX: e.hitlagShakeX,
     shakeY: e.hitlagShakeY,
     scaleX: e.squash?.scaleX() ?? 1,
     scaleY: e.squash?.scaleY() ?? 1,
-    solidRed: electrocuteBw ? false : e.hitlagSolidRed,
+    solidRed,
     electrocuteBw,
     simTicks,
     hurtTintAlpha: e.hurtTintAlpha(),
@@ -5630,6 +6019,26 @@ function pickSwordOverlayStrip(
       return null;
     default:
       return fallback;
+  }
+}
+
+function pickHeavySwordOverlayStrip(
+  sprites: PlayerSprites,
+  visual: SwordVisual,
+): SpriteStrip | null {
+  switch (visual) {
+    case "flint":
+      return sprites.heavyFlintSword ?? sprites.heavySword;
+    case "gem":
+      return sprites.heavyGemSword ?? sprites.heavySword;
+    case "stick":
+      return sprites.heavyStickSword ?? sprites.heavySword;
+    case "lemon":
+    case "fists":
+    case "whip":
+      return null;
+    default:
+      return sprites.heavySword;
   }
 }
 

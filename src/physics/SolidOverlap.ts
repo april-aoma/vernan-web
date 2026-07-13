@@ -32,6 +32,52 @@ export function overlapsAnySolidTile(map: TileMap, pose: HitboxPose): boolean {
 }
 
 /**
+ * True when previous foot/bottom was at or above the tile top (or in a higher tile row).
+ * Java Physics.crossedLandFromAbove.
+ */
+export function crossedLandFromAbove(prevBottom: number, tileRowY: number): boolean {
+  const floorTopY = tileRowY * TILE_SIZE;
+  const prevBottomTile = Math.floor((prevBottom - 1e-4) / TILE_SIZE);
+  return prevBottom <= floorTopY + 1e-3 || prevBottomTile < tileRowY;
+}
+
+/**
+ * Solids always block; one-way platforms block only when crossed from above (pickup landing).
+ * Java Physics.overlapsAnySolidOrLandingPlatform.
+ */
+export function overlapsAnySolidOrLandingPlatform(
+  map: TileMap,
+  pose: HitboxPose,
+  prevFootY: number,
+): boolean {
+  const b = pose.bounds();
+  if (b.w <= 0 || b.h <= 0) return false;
+  const x0 = Math.floor(b.x / TILE_SIZE);
+  const y0 = Math.floor(b.y / TILE_SIZE);
+  const x1 = Math.floor((b.x + b.w - 1e-6) / TILE_SIZE);
+  const y1 = Math.floor((b.y + b.h - 1e-6) / TILE_SIZE);
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) {
+      const solid = map.isSolidTile(tx, ty);
+      const platform =
+        !solid && map.isPlatformTile(tx, ty) && crossedLandFromAbove(prevFootY, ty);
+      if (!solid && !platform) continue;
+      if (
+        pose.intersectsRect({
+          x: tx * TILE_SIZE,
+          y: ty * TILE_SIZE,
+          w: TILE_SIZE,
+          h: TILE_SIZE,
+        })
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Binary search along (x0,y0)→(x1,y1): latest clear point assuming start is clear.
  * (Java Physics.backstepPositionUntilClear.)
  */
@@ -44,10 +90,41 @@ export function backstepPositionUntilClear(
   poseAt: (ax: number, ay: number) => HitboxPose,
   maxIter: number,
 ): { x: number; y: number } {
-  if (overlapsAnySolidTile(map, poseAt(x0, y0))) {
+  return backstepPositionUntilClearLanding(
+    map,
+    x0,
+    y0,
+    x1,
+    y1,
+    poseAt,
+    maxIter,
+    Number.POSITIVE_INFINITY,
+  );
+}
+
+/**
+ * Like backstepPositionUntilClear, but treats one-way platforms as blocking when landing from above.
+ * Java Physics.backstepPositionUntilClearLanding.
+ */
+export function backstepPositionUntilClearLanding(
+  map: TileMap,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  poseAt: (ax: number, ay: number) => HitboxPose,
+  maxIter: number,
+  prevFootY: number,
+): { x: number; y: number } {
+  const landing = Number.isFinite(prevFootY);
+  const blocked = (pose: HitboxPose) =>
+    landing
+      ? overlapsAnySolidOrLandingPlatform(map, pose, prevFootY)
+      : overlapsAnySolidTile(map, pose);
+  if (blocked(poseAt(x0, y0))) {
     return { x: x0, y: y0 };
   }
-  if (!overlapsAnySolidTile(map, poseAt(x1, y1))) {
+  if (!blocked(poseAt(x1, y1))) {
     return { x: x1, y: y1 };
   }
   let lo = 0;
@@ -56,7 +133,7 @@ export function backstepPositionUntilClear(
     const mid = (lo + hi) * 0.5;
     const xm = x0 + (x1 - x0) * mid;
     const ym = y0 + (y1 - y0) * mid;
-    if (overlapsAnySolidTile(map, poseAt(xm, ym))) {
+    if (blocked(poseAt(xm, ym))) {
       hi = mid;
     } else {
       lo = mid;
@@ -160,6 +237,18 @@ export function contactNormalSolidTowardPose(
   map: TileMap,
   pose: HitboxPose,
 ): { x: number; y: number } | null {
+  return contactNormalSolidOrLandingPlatformTowardPose(map, pose, Number.POSITIVE_INFINITY);
+}
+
+/**
+ * Like contactNormalSolidTowardPose, but also includes one-way platforms when landing from above.
+ * Java Physics.contactNormalSolidOrLandingPlatformTowardPolygon.
+ */
+export function contactNormalSolidOrLandingPlatformTowardPose(
+  map: TileMap,
+  pose: HitboxPose,
+  prevFootY: number,
+): { x: number; y: number } | null {
   const b = pose.bounds();
   const cx = b.x + b.w * 0.5;
   const cy = b.y + b.h * 0.5;
@@ -170,9 +259,16 @@ export function contactNormalSolidTowardPose(
   let sx = 0;
   let sy = 0;
   let count = 0;
+  const includePlatforms = Number.isFinite(prevFootY);
   for (let ty = y0; ty <= y1; ty++) {
     for (let tx = x0; tx <= x1; tx++) {
-      if (!map.isSolidTile(tx, ty)) continue;
+      const solid = map.isSolidTile(tx, ty);
+      const platform =
+        includePlatforms &&
+        !solid &&
+        map.isPlatformTile(tx, ty) &&
+        crossedLandFromAbove(prevFootY, ty);
+      if (!solid && !platform) continue;
       const tile = {
         x: tx * TILE_SIZE,
         y: ty * TILE_SIZE,

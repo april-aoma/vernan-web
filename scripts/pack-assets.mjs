@@ -104,6 +104,10 @@ function overlayCombatSpritesFromJava(javaRoot) {
     "golden roach2.png",
     "golden roach2 fly.png",
     "FX enemy heal.png",
+    "attack1 sword.png",
+    "attack1 flint.png",
+    "attack1 gem sword.png",
+    "attack1 stick.png",
   ];
   let n = 0;
   for (const rel of overlay) {

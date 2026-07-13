@@ -57,7 +57,7 @@ export type DisplayShellOptions = {
 };
 
 /** Room for ~2× face buttons + flanking shoulders. */
-const DEFAULT_MIN_SIDE = 1200;
+const DEFAULT_MIN_SIDE = 168;
 const DEFAULT_MIN_BOTTOM = 12;
 
 /**
@@ -114,19 +114,20 @@ function buildLandscape(
   fitMode: "content" | "window",
 ): DisplayShellLayout {
   if (fitMode === "content") {
-    // Prefer Java-sized play; shrink only if the page can't host it + gutters.
-    const gutter = minSide;
-    const playBudgetW = Math.max(1, usable.w - gutter * 2);
-    const fitted = playSize(playBudgetW, usable.h, maxPlayScale);
+    // Prefer Java-sized play (WINDOW_SCALE), then add control gutters if they fit.
+    // Never let gutter mins steal width from play before scale is chosen.
+    const fitted = playSize(usable.w, usable.h, maxPlayScale);
+    let gutter = minSide;
+    if (fitted.w + gutter * 2 > usable.w) {
+      gutter = Math.max(0, Math.floor((usable.w - fitted.w) / 2));
+    }
     const outW = Math.min(usable.w, fitted.w + gutter * 2);
-    const outH = Math.min(usable.h, Math.max(fitted.h, minSide));
-    // Re-fit if the hugged box is tighter than the first budget.
-    const playFit = playSize(Math.max(1, outW - gutter * 2), outH, maxPlayScale);
+    const outH = Math.min(usable.h, fitted.h);
     const play: ShellRect = {
-      x: Math.floor((outW - playFit.w) / 2),
-      y: Math.floor((outH - playFit.h) / 2),
-      w: playFit.w,
-      h: playFit.h,
+      x: Math.floor((outW - fitted.w) / 2),
+      y: Math.floor((outH - fitted.h) / 2),
+      w: fitted.w,
+      h: fitted.h,
     };
     const leftW = play.x;
     const rightX = play.x + play.w;
@@ -141,7 +142,7 @@ function buildLandscape(
       shellW: outW,
       shellH: outH,
       play,
-      playScale: playFit.scale,
+      playScale: fitted.scale,
       stickRegion,
       faceRegion,
       landscape: true,
@@ -150,12 +151,8 @@ function buildLandscape(
   }
 
   // Window fit: fill shell, center integer-scaled play, leftover → gutters.
-  const gutter = Math.max(
-    minSide,
-    Math.min(Math.floor(usable.w * 0.22), Math.floor((usable.w - INTERNAL_WIDTH) / 2)),
-  );
-  const playAvailW = Math.max(1, usable.w - gutter * 2);
-  const fitted = playSize(playAvailW, usable.h, maxPlayScale);
+  // Size play from the full usable rect so large min gutters cannot force 1×.
+  const fitted = playSize(usable.w, usable.h, maxPlayScale);
   const play = centerIn(usable, fitted.w, fitted.h);
   const leftW = play.x - usable.x;
   const rightX = play.x + play.w;

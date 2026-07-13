@@ -133,12 +133,13 @@ export function installGameDisplay(opts: GameDisplayOptions): GameDisplayHandle 
       return { w: Math.max(1, vw), h: Math.max(1, vh) };
     }
 
-    // Leave room for page chrome + body padding when not immersive.
+    // Page mode: leave room for chrome horizontally, but never starve height
+    // below Java's display size — prefer a bit of page scroll over 1× play.
     const pad = 48;
     const chromeBudget = 220;
     return {
       w: Math.max(1, vw - pad),
-      h: Math.max(1, vh - chromeBudget),
+      h: Math.max(DISPLAY_HEIGHT, vh - chromeBudget),
     };
   };
 

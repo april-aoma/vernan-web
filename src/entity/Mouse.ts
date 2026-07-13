@@ -14,7 +14,7 @@ import {
   releaseBlackHeartBeatKnockback,
   tickBlackHeartEnemyHitstun,
 } from "../combat/BlackHeartEnemyCombat";
-import { applyStrikeElectrocuteJuice } from "../combat/EnemyHitstunJuice";
+import { applyStrikeElectrocuteJuice, applySolidRedHitstunJuice } from "../combat/EnemyHitstunJuice";
 import { seesPlayerAt, type PlayerCombatSnapshot } from "../combat/EnemyVision";
 import {
   MOUSE_H,
@@ -326,7 +326,7 @@ export class Mouse implements PeerWalkingEnemy {
     if (this.hitstun > 0 && strike.knockKind !== "black_heart_burst") return false;
     this.hp = Math.max(0, this.hp - strike.damage);
     if (strike.knockKind === "black_heart_burst") {
-      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun);
+      this.hitstun = queueBlackHeartBurstKnock(this.blackHeartBeat, strike, this.hitstun, this);
       this.hurtTintRemaining = HURT_TINT_SECONDS;
       return true;
     }
@@ -364,6 +364,7 @@ export class Mouse implements PeerWalkingEnemy {
     if (this.hp <= 0 || this.hitstun > 0) return false;
     this.hp = Math.max(0, this.hp - strike.damage);
     this.hitstun = Math.max(0.12, strike.freezeFrames / 60);
+    applySolidRedHitstunJuice(this);
     let kbVx = 0;
     let kbVy = 0;
     if (strike.knockKind === "flint_fire_pull") {

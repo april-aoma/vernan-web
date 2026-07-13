@@ -179,7 +179,7 @@ export function ensureShopResolved(session: RoomSession, luck = 0): void {
   const picks: ShopWorldPickupSpec[] = layout.pickups.map((p) => ({ ...p, collected: false }));
   session.shopPedestals[roomId] = peds;
   session.shopWorldPickups[roomId] = picks;
-  session.shopKeepers[roomId] = placeShopKeeper(map, peds, picks);
+  session.shopKeepers[roomId] = placeShopKeeper(map, peds, picks, ladderTxs);
 }
 
 /** Mount uncollected shop heart/key pickups into the live world list (per room enter). */
@@ -309,11 +309,16 @@ export function tryBuyShopPedestal(
   return null;
 }
 
-/** Place cat left of leftmost pedestal (or west wall), clearing ware footprints. */
+/**
+ * Place cat left of leftmost pedestal (or west wall), clearing ware footprints.
+ * Never on a ladder mouth deck or the room ladder shaft (±1) — sealed shafts often have a
+ * breakable foot rather than a platform mouth, so the mouth-only check is not enough (seed 57).
+ */
 function placeShopKeeper(
   map: TileMap,
   peds: ItemPedestal[],
   picks: ShopWorldPickupSpec[],
+  ladderTxs: number[],
 ): ShopKeeper {
   const frame = SHOPKEEP_FRAME_PX;
   const catHalf = frame * 0.5;
@@ -336,11 +341,13 @@ function placeShopKeeper(
   const loTx = 2;
   const hiTx = map.getWidth() - 3;
   const preferredTx = clampInt(Math.floor(preferredX / TILE_SIZE), loTx, hiTx);
+  const columnBlocked = (tx: number) =>
+    shopKeeperOnLadderShaft(tx, ladderTxs) || map.isLadderMouthSpawnColumn(tx);
 
   let bestTx = -1;
   let bestDist = Number.MAX_SAFE_INTEGER;
   for (let tx = loTx; tx <= hiTx; tx++) {
-    if (map.isLadderMouthSpawnColumn(tx)) continue;
+    if (columnBlocked(tx)) continue;
     const cx = (tx + 0.5) * TILE_SIZE;
     if (!shopKeeperColumnClearOfWares(cx, catHalf, clearMargin, wares)) continue;
     const d = Math.abs(tx - preferredTx);
@@ -353,11 +360,11 @@ function placeShopKeeper(
   let tx: number;
   if (bestTx >= 0) {
     tx = bestTx;
-  } else if (map.isLadderMouthSpawnColumn(preferredTx)) {
+  } else if (columnBlocked(preferredTx)) {
     let altTx = -1;
     let altDist = Number.MAX_SAFE_INTEGER;
     for (let t = loTx; t <= hiTx; t++) {
-      if (map.isLadderMouthSpawnColumn(t)) continue;
+      if (columnBlocked(t)) continue;
       const d = Math.abs(t - preferredTx);
       if (d < altDist) {
         altDist = d;
@@ -388,10 +395,16 @@ function shopKeeperColumnClearOfWares(
   return true;
 }
 
-function isAllowedShopSlotTileX(tx: number, ladderTxs: number[], doorTxs: number[]): boolean {
+/** Same ladder ±1 band as {@link isAllowedShopSlotTileX} (shop ware spawn allowances). */
+function shopKeeperOnLadderShaft(tx: number, ladderTxs: number[]): boolean {
   for (const L of ladderTxs) {
-    if (Math.abs(tx - L) <= 1) return false;
+    if (Math.abs(tx - L) <= 1) return true;
   }
+  return false;
+}
+
+function isAllowedShopSlotTileX(tx: number, ladderTxs: number[], doorTxs: number[]): boolean {
+  if (shopKeeperOnLadderShaft(tx, ladderTxs)) return false;
   for (const D of doorTxs) {
     if (Math.abs(tx - D) <= 1) return false;
   }
@@ -443,7 +456,7 @@ export async function loadShopKeeperFrames(
 }
 
 /**
- * Draw cat shopkeep before Vernan (Java drawShopKeeperDevice).
+ * Draw cat shopkeep behind shop wares / before Vernan (Java drawShopKeeperDevice).
  * Tail row-warp + head bob + pupils tracking player center.
  */
 export function drawShopKeeper(

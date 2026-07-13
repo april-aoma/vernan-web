@@ -7128,6 +7128,7 @@
           "flipV": false,
           "rotationMilliDeg": 0,
           "blend": "add",
+          "drawPass": "overlay",
           "glowPulse": {
             "enabled": true,
             "scaleMin": 0.6,

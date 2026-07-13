@@ -69,10 +69,27 @@ export function tryStrikeBreakablesInAabb(hit: Aabb, ctx: BreakableStrikeContext
   return strikeBreakablesInAabb(hit, ctx);
 }
 
+/**
+ * Java GamePanel.trySwordStrikeTiles terrain+deco half (ice is handled by the caller).
+ * Used by lemon shots and other AABB world-strikes that skip sword latch/hitlag.
+ */
+export function tryStrikeTilesInAabb(hit: Aabb, ctx: BreakableStrikeContext): boolean {
+  if (ctx.activeSeamOpenAnim.current) return false;
+  const terrainHit = strikeBreakablesInAabb(hit, ctx);
+  const decoHit = tryStrikeBreakableDeco(hit, ctx);
+  return terrainHit || decoHit;
+}
+
 export function applySwordBreakables(ctx: BreakableStrikeContext): number {
   const { player } = ctx;
   const sword = player.attackHitbox();
-  if (!sword || player.attackHitLanded) return 0;
+  if (!sword) return 0;
+  // Heavy swings latch heavyAttackHitLanded (Java); light uses attackHitLanded.
+  if (player.disc.isHeavyActive()) {
+    if (player.disc.isHeavyAttackHitLanded()) return 0;
+  } else if (player.attackHitLanded) {
+    return 0;
+  }
   if (ctx.activeSeamOpenAnim.current) return 0;
   const terrainHit = strikeBreakablesInAabb(sword, ctx);
   const decoHit = tryStrikeBreakableDeco(sword, ctx);

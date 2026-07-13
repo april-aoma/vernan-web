@@ -23,9 +23,9 @@ import {
 import { SquashStretch } from "../render/SquashStretch";
 import {
   axisSnapContactNormalIfDiagonal,
-  backstepPositionUntilClear,
-  contactNormalSolidTowardPose,
-  overlapsAnySolidTile,
+  backstepPositionUntilClearLanding,
+  contactNormalSolidOrLandingPlatformTowardPose,
+  overlapsAnySolidOrLandingPlatform,
   PICKUP_BACKSTEP_MAX_ITER,
 } from "../physics/SolidOverlap";
 import type { TileMap } from "./TileMap";
@@ -213,8 +213,8 @@ export class WorldPickup {
     const tryY = prevY + this.vy * dt;
     const poseAt = (ax: number, ay: number) => this.physicsPoseAt(ax, ay);
 
-    if (overlapsAnySolidTile(map, poseAt(tryX, tryY))) {
-      const cleared = backstepPositionUntilClear(
+    if (overlapsAnySolidOrLandingPlatform(map, poseAt(tryX, tryY), this.prevFootY)) {
+      const cleared = backstepPositionUntilClearLanding(
         map,
         prevX,
         prevY,
@@ -222,6 +222,7 @@ export class WorldPickup {
         tryY,
         poseAt,
         PICKUP_BACKSTEP_MAX_ITER,
+        this.prevFootY,
       );
       this.x = cleared.x;
       this.y = cleared.y;
@@ -232,14 +233,16 @@ export class WorldPickup {
       if (moveLen > 1e-6) {
         const dirx = ddx / moveLen;
         const diry = ddy / moveLen;
-        let n = contactNormalSolidTowardPose(
+        let n = contactNormalSolidOrLandingPlatformTowardPose(
           map,
           poseAt(this.x + dirx * CONTACT_PROBE_PX, this.y + diry * CONTACT_PROBE_PX),
+          this.prevFootY,
         );
         if (!n) {
-          n = contactNormalSolidTowardPose(
+          n = contactNormalSolidOrLandingPlatformTowardPose(
             map,
             poseAt(this.x + dirx * CONTACT_PROBE_PX * 3, this.y + diry * CONTACT_PROBE_PX * 3),
+            this.prevFootY,
           );
         }
         n = axisSnapContactNormalIfDiagonal(n);

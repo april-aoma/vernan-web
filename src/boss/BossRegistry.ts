@@ -17,11 +17,14 @@ const ENTRIES: BossEntry[] = [
   { kind: BossKind.MODERN_CHICKEN, maxHealth: 224 },
 ];
 
-/** Java BossRegistry.pickForFloor — all kinds eligible; pick by seed. */
+/** Ported bosses only — exclude Modern Chicken until its spawn/combat path exists. */
+const PICKABLE: BossEntry[] = ENTRIES.filter((e) => e.kind !== BossKind.MODERN_CHICKEN);
+
+/** Pick among ported bosses by seed (Chicken omitted until ported). */
 export function pickBossForFloor(_floor: number, contentSeed: bigint): BossEntry {
   const rng = new JavaRandom(contentSeed);
-  const i = rng.nextInt(ENTRIES.length);
-  return ENTRIES[i] ?? ENTRIES[0]!;
+  const i = rng.nextInt(PICKABLE.length);
+  return PICKABLE[i] ?? PICKABLE[0]!;
 }
 
 /** @deprecated Use pickBossForFloor — delegates for legacy call sites. */

@@ -750,7 +750,7 @@ function tileIdAllowedInMergedDecoRootPool(project: TilesetProject, tileId: stri
   if (owner.isHorizontalStripAutotile) return false;
   const anchor = owner.tileIds[0];
   if (!anchor || tileId === anchor) return true;
-  if (owner.isFullObject || owner.objectType === "autotile") return false;
+  if (owner.usesAnchorOnlyDecoPoolExpansion) return false;
   return true;
 }
 
@@ -1207,7 +1207,7 @@ function pickFallbackTileForArgb(fallback: DecoClusterFallback, argb: number): s
 
 function expandDecoPoolTileIds(
   project: TilesetProject,
-  pool: Array<{ objectId: string; weight: number }>,
+  pool: Array<{ objectId: string; weight: number; tileIds?: string[]; memberIndices?: number[] }>,
   floorOrdinal: number,
   poolMembers: Set<string>,
   roomKind: RoomKind,
@@ -1219,16 +1219,31 @@ function expandDecoPoolTileIds(
     if (count <= 0) continue;
     const obj = project.objectById.get(entry.objectId);
     if (obj && !objectAllowedInRoomKind(obj, roomKind)) continue;
-    if (obj?.isFullObject) {
+    // Java buildObjectMembers + selectMembers: candle / full object / autotile → anchor only.
+    if (obj?.usesAnchorOnlyDecoPoolExpansion) {
       const anchor = obj.anchorTileId || obj.tileIds[0];
-      if (anchor && tileEligibleForAmbient(project, anchor, groundScatter, floorOrdinal, poolMembers, roomKind)) {
+      if (
+        anchor &&
+        tileEligibleForAmbient(project, anchor, groundScatter, floorOrdinal, poolMembers, roomKind)
+      ) {
         for (let i = 0; i < count; i++) out.push(anchor);
       }
       continue;
     }
     if (obj?.tileIds.length) {
-      for (const mid of obj.tileIds) {
-        if (!tileEligibleForAmbient(project, mid, groundScatter, floorOrdinal, poolMembers, roomKind)) continue;
+      let members = [...obj.tileIds];
+      if (entry.tileIds?.length) {
+        const allow = new Set(entry.tileIds);
+        members = members.filter((m) => allow.has(m));
+      } else if (entry.memberIndices?.length) {
+        members = entry.memberIndices
+          .filter((idx) => idx >= 0 && idx < obj.tileIds.length)
+          .map((idx) => obj.tileIds[idx]!);
+      }
+      for (const mid of members) {
+        if (!tileEligibleForAmbient(project, mid, groundScatter, floorOrdinal, poolMembers, roomKind)) {
+          continue;
+        }
         for (let i = 0; i < count; i++) out.push(mid);
       }
       continue;

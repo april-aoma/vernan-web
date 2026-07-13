@@ -71,6 +71,7 @@ import {
   HURT_DI_MAX_FRAC,
   HURT_KNOCKBACK_X,
   HURT_KNOCKBACK_Y,
+  PROJECTILE_LEMON_SHOT_PIVOT_X,
 } from "../config/HitboxValues";
 import { FIXED_STEP_HZ, TILE_SIZE } from "../specs";
 import {
@@ -122,7 +123,7 @@ import type { Input } from "../input/Input";
 import { TileMap } from "../world/TileMap";
 import type { CombatEnemy } from "./CombatEnemy";
 import { HeadbandCombat } from "./HeadbandCombat";
-import { DiscMechanics, type DiscMechanicsHost } from "./DiscMechanics";
+import { DiscMechanics, HEAVY_ATTACK_DAMAGE_MULT, type DiscMechanicsHost } from "./DiscMechanics";
 import { HeelysMechanics, SKATE_STEER_STRIDE_HOLD_MULT } from "./HeelysMechanics";
 import type { LemonShotHost } from "./LemonShotHost";
 import { swordKnockbackKind, swordMeleeHitboxPose, shieldAttackWindupHitboxPose, shieldBlockHitboxPose } from "./WeaponHitbox";
@@ -1051,10 +1052,11 @@ export class Player {
         this.carry.cancelThrowOnGroundChange(this, this.tickGardeningHost, input);
       }
     }
-    this.disc.onLeaveGroundWhileHeavy();
+    this.disc.onLeaveGroundWhileHeavy(wasOnGroundPreMove, this.onGround);
     this.headband.syncAirborneLatch(wasOnGroundPreMove, this.headbandHost());
     this.detectWalkOff();
     this.finishJumpSquat(map, dt, input);
+    this.disc.tryBeginPendingHeavyAfterJumpSquat(this.discHost());
     this.tickExtendedFall(dt);
     const landSteer = (left ? -1 : 0) + (right ? 1 : 0);
     this.applyLandingFromTouchdown(landSteer);
@@ -1171,8 +1173,10 @@ export class Player {
     return this.attackAnimFrameIndex();
   }
 
+  /** Body strip cell size (Java attackBodyW / heavyAttackBodyW) — not sword overlay width. */
   private whipFrameW(): number {
-    return this.disc.isHeavyActive() ? 64 : 48;
+    // attack0 / crouchattack0: 128×32 → 4×32; attack1: 512×48 → 8×64
+    return this.disc.isHeavyActive() ? 64 : 32;
   }
 
   private whipFrameH(): number {
@@ -1487,7 +1491,8 @@ export class Player {
   /** Which shield player.png frame applies for passive block (Java shieldOverlaySheetIndex subset). */
   shieldBlockFrameIndex(): 0 | 1 | -1 {
     if (this.shieldStacks <= 0) return -1;
-    if (this.attackPhase !== 0 || this.headband.isActive()) return -1;
+    // Java: slide / air dodge / isAttacking (light, headband, or disc04 attack1 heavy).
+    if (this.disc.slideActive || this.disc.airDodgeActive || this.isAttacking()) return -1;
     if (this.crouching || this.isCrouchJumpMode() || this.isJumpSquatting() || this.isLandingLocked()) {
       return 1;
     }
@@ -1497,7 +1502,8 @@ export class Player {
   /** shield player.png frame for draw (-1 = hidden). Includes climb frames 2–3. */
   shieldOverlayFrameIndex(climbAnimMod2 = 0): number {
     if (this.shieldStacks <= 0) return -1;
-    if (this.attackPhase !== 0 || this.headband.isActive()) return -1;
+    // Java: slide / air dodge / isAttacking (light, headband, or disc04 attack1 heavy).
+    if (this.disc.slideActive || this.disc.airDodgeActive || this.isAttacking()) return -1;
     if (this.climbing) return 2 + (climbAnimMod2 & 1);
     if (
       this.crouching ||
@@ -1734,6 +1740,10 @@ export class Player {
       },
       get hitlagFrames() { return p.hitlagFrames; },
       set hitlagFrames(v: number) { p.hitlagFrames = v; },
+      trySpawnHeavyAfterimage: () => p.trySpawnHeavyAfterimage(),
+      clearAttackHitLanded: () => {
+        p.attackHitLanded = false;
+      },
       onHeelysAirDodgeLanding: (combinedVx) =>
         p.heelys.onAirDodgeLanding(p.stats.heelysStacks, combinedVx, p.stats),
       onHeelysSlideSpeedBase: () =>
@@ -2430,6 +2440,31 @@ export class Player {
     });
   }
 
+  /** disc04 heavy active-frame smear (Java Player.trySpawnHeavyAfterimage). */
+  trySpawnHeavyAfterimage(): void {
+    if (!this.afterimageSpawnHost || this.stats.afterimageStacks <= 0) return;
+    if (this.swordVisual === "fists" || this.swordVisual === "lemon") return;
+    const pose = this.disc.heavyAttackHitboxPose(this.discHost());
+    if (!pose) return;
+    const dmg = this.effectiveOutgoingDamage(
+      this.stats.outgoingDamage() * HEAVY_ATTACK_DAMAGE_MULT,
+    );
+    const kb = swordKnockbackKind(this.swordVisual, false);
+    this.afterimageSpawnHost({
+      originX: this.x,
+      feetWorldY: this.y + this.h,
+      attackerWidth: this.w,
+      facing: this.facing,
+      bodyW: this.w,
+      hitboxPose: pose,
+      damage: dmg,
+      knockbackKind: kb,
+      swordVisual: this.swordVisual,
+      groundCrouchAttack: false,
+      heavyAttack1Smear: true,
+    });
+  }
+
   usesWhip(): boolean {
     return this.swordVisual === "whip" || this.inventory.stacksOf("WHIP") > 0;
   }
@@ -2447,20 +2482,18 @@ export class Player {
   private applyPreMoveCombatHits(): void {
     const enemies = this.tickCombatEnemies as CombatEnemy[];
     const onHit = this.frameMeleeHit ?? undefined;
-    // Java order: heavy → whip wiggle → sword/headband/slide (applyAttackHits), then world.
-    let maxFreeze = 0;
+    // Java order: heavy (enemies + world) → whip wiggle → sword/headband/slide, then world for light.
     if (this.disc.isHeavyActive()) {
-      maxFreeze = Math.max(
-        maxFreeze,
-        this.disc.applyHeavyHits(this.discHost(), enemies, (e, strike, sword, vfx) =>
-          onHit?.(e, strike, sword, vfx),
-        ),
+      this.disc.applyHeavyHits(
+        this.discHost(),
+        enemies,
+        (e, strike, sword, vfx) => onHit?.(e, strike, sword, vfx),
+        () => this.frameWorldStrike?.() ?? 0,
       );
+      return;
     }
-    maxFreeze = Math.max(maxFreeze, this.applyWhipHits(enemies));
-    if (!this.disc.isHeavyActive()) {
-      maxFreeze = Math.max(maxFreeze, this.applyAttackHits(enemies, onHit));
-    }
+    let maxFreeze = this.applyWhipHits(enemies);
+    maxFreeze = Math.max(maxFreeze, this.applyAttackHits(enemies, onHit));
     const worldFreeze = this.frameWorldStrike?.() ?? 0;
     if (maxFreeze > 0 || worldFreeze > 0) {
       this.latchAttackHit(Math.max(maxFreeze, worldFreeze));
@@ -3032,10 +3065,26 @@ export class Player {
     this.lemonPoseSecondsRemaining = Math.max(0, this.lemonPoseSecondsRemaining - dt);
     this.lemonRefireCooldown = Math.max(0, this.lemonRefireCooldown - dt);
     if (!this.usesLemonBuster() || !host?.hasLemonShooter()) return;
-    if (this.hurtLocked || this.landingLockFrames > 0 || this.getupLockFrames > 0) return;
-    if (this.isSubweaponAnimating() || this.climbing) return;
+    if (
+      this.hurtLocked ||
+      this.landingLockFrames > 0 ||
+      this.getupLockFrames > 0 ||
+      this.disc.slideActive ||
+      this.disc.airDodgeLockedUntilLand
+    ) {
+      return;
+    }
+    if (
+      this.isSubweaponAnimating() ||
+      this.carry.isHolding() ||
+      this.carry.isThrowing() ||
+      this.carry.isPlucking()
+    ) {
+      return;
+    }
     const attackEdge = input.attackPressed;
     const attackHeld = input.attack;
+    // Visual: holding X uses lemon pose (incl. climb / wall-slide); after release linger for one refire period.
     if (attackHeld || attackEdge) {
       this.lemonPoseSecondsRemaining = Math.max(
         this.lemonPoseSecondsRemaining,
@@ -3043,28 +3092,32 @@ export class Player {
       );
     }
     if (!attackEdge && !attackHeld) return;
-    const eligible =
-      this.onGround ||
-      this.isWalkOffLedgeActive() ||
-      this.usesJumpCollisionHull() ||
-      this.crouching ||
-      this.isCrouchJumpMode() ||
-      this.isLandingLocked();
-    if (!eligible) return;
-    if (host.lemonShotsOnScreen() >= 3) return;
-    const fireNow = attackEdge || (attackHeld && this.lemonRefireCooldown <= 0);
-    if (!fireNow) return;
+    // Only allow firing during actions that have lemon sprite equivalents (idle/walk/walk-off/jump/turn/climb/crouch).
     const crouchMuzzle =
       this.isJumpSquatting() ||
       this.crouching ||
       this.isCrouchJumpMode() ||
       this.isLandingLocked() ||
       this.isGroundCrouchAttack();
+    const eligible =
+      this.disc.wallSlideActive ||
+      this.climbing ||
+      this.usesJumpCollisionHull() ||
+      this.isWalkOffLedgeActive() ||
+      this.onGround ||
+      crouchMuzzle;
+    if (!eligible) return;
+    if (host.lemonShotsOnScreen() >= 3) return;
+    const fireNow = attackEdge || (attackHeld && this.lemonRefireCooldown <= 0);
+    if (!fireNow) return;
+    const wallSlide = this.disc.wallSlideActive;
+    const side = wallSlide ? this.disc.wallSlideSide : this.facing;
     const sx =
-      this.x + this.w * 0.5 + this.facing * Player.SUBWEAPON_SPAWN_OFF_X - 4;
+      this.x + this.w * 0.5 + side * Player.SUBWEAPON_SPAWN_OFF_X - PROJECTILE_LEMON_SHOT_PIVOT_X;
     let sy = this.y + (crouchMuzzle ? Player.LEMON_SPAWN_OFF_Y_CROUCH : Player.LEMON_SPAWN_OFF_Y_STAND);
     sy = Math.min(sy, this.y + this.h - 6);
-    host.spawnLemonShot(sx, sy, this.facing, host.lemonShotDamage());
+    const shotFacing = wallSlide ? -this.disc.wallSlideSide : this.facing;
+    host.spawnLemonShot(sx, sy, shotFacing, host.lemonShotDamage());
     this.lemonRefireCooldown = host.lemonShotRefireSeconds();
   }
 
@@ -3989,7 +4042,8 @@ export class Player {
     if (this.attackPhase !== 0) return;
     if (this.getupLockFrames > 0) return;
     if (this.jumpSquatRemaining > 0) return;
-    if (this.landingLockFrames > 0) return;
+    // Java `landingLocked` — grounded lag only; airborne climb may jump off mid-lag.
+    if (this.landingLockFrames > 0 && this.onGround) return;
 
     this.climbing = false;
     this.climbShaftTx = -1;
@@ -4006,6 +4060,7 @@ export class Player {
     this.vx = Math.max(-this.stats.maxAirSpeed, Math.min(this.stats.maxAirSpeed, this.vx));
     this.onGround = false;
     this.landingLockFrames = 0;
+    this.crouchQueuedFromLanding = false;
     this.crouchJumpMode = false;
     this.normalJumpAirborne = true;
     this.walkOffLedgeActive = false;

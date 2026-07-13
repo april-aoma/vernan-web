@@ -9,8 +9,10 @@ const BULLET_SPEED = 150;
 const MUZZLE_OFF_X = 10;
 const MUZZLE_OFF_Y = -2;
 const BULLET_HALF = 3;
+/** Matches Java {@code LIL_BULLET_DIE_FRAME_SEC} / {@code LIL_BULLET_DIE_FRAME_COUNT}. */
 const DIE_FRAME_SEC = 0.18;
-const DIE_MAX_AGE = DIE_FRAME_SEC * 2;
+const DIE_FRAME_COUNT = 3;
+const DIE_MAX_AGE = DIE_FRAME_SEC * DIE_FRAME_COUNT;
 
 export type PossessedHeadBullet = {
   x: number;
@@ -38,7 +40,7 @@ export class PossessedHeadController {
   private prevSwordActive = false;
 
   /**
-   * @param swordActiveRising true when `player.attackPhase === 2` this frame and was not last frame
+   * @param swordActiveRising true on rising edge of sword-active (attackPhase 2 or disc04 heavy hit frame)
    */
   tick(
     dt: number,
@@ -79,11 +81,13 @@ export class PossessedHeadController {
     }
   }
 
-  /** Rising-edge helper for mount (phase 2). */
-  consumeSwordActiveEdge(attackPhase: number): boolean {
-    const active = attackPhase === 2;
-    const edge = active && !this.prevSwordActive;
-    this.prevSwordActive = active;
+  /**
+   * Rising-edge helper for mount.
+   * Sword-active = normal attackPhase 2, or disc04 heavy on its hit frame (Java whipCombatActive analog).
+   */
+  consumeSwordActiveEdge(swordActive: boolean): boolean {
+    const edge = swordActive && !this.prevSwordActive;
+    this.prevSwordActive = swordActive;
     return edge;
   }
 
@@ -136,7 +140,7 @@ export class PossessedHeadController {
   }
 }
 
-/** Draw living head bullets + brief die strip (lil bullet art preferred). */
+/** Draw living head bullets + die strip using lil possessed bullet art (Java drawPossessedHeadBulletsDevice). */
 export function drawPossessedHeadBullets(
   g: CanvasRenderingContext2D,
   ctrl: PossessedHeadController,
@@ -166,7 +170,7 @@ export function drawPossessedHeadBullets(
     }
   }
   for (const fx of ctrl.dieFx) {
-    const fi = Math.min(1, Math.floor(fx.age / DIE_FRAME_SEC));
+    const fi = Math.min(DIE_FRAME_COUNT - 1, Math.floor(fx.age / DIE_FRAME_SEC));
     const left = fx.x - frameW * 0.5;
     const top = fx.y - frameW * 0.5;
     const dx = camera.worldToDeviceX(left);

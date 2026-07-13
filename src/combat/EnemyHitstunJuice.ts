@@ -14,10 +14,22 @@ export function applyStrikeElectrocuteJuice(
   strike: WeaponStrike,
   state: ElectrocuteJuiceState,
 ): void {
-  if (strike.knockKind === "black_heart_burst") return;
+  if (strike.knockKind === "black_heart_burst") {
+    // Callers that early-return on burst still set flags via queueBlackHeartBurstKnock.
+    state.hitlagSolidRed = true;
+    state.hitlagElectrocute = false;
+    return;
+  }
   const electrocute = isElectrocutionKnock(strike.knockKind);
   state.hitlagElectrocute = electrocute;
-  if (electrocute) state.hitlagSolidRed = false;
+  // Sticky like Java hitstunSolidRedFlag = !electrocute (hitstun tick must not re-force).
+  state.hitlagSolidRed = !electrocute;
+}
+
+/** Projectile / non-electrocute hitstun flash (Java hitstunSolidRedFlag = true). */
+export function applySolidRedHitstunJuice(state: ElectrocuteJuiceState): void {
+  state.hitlagElectrocute = false;
+  state.hitlagSolidRed = true;
 }
 
 export function hitstunElectrocuteBw(state: ElectrocuteJuiceState, hitstunSec: number): boolean {

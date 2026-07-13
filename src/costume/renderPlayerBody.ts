@@ -9,6 +9,7 @@ import type { CostumeDrawConfig } from "./CostumeDrawConfig";
 import { costumeBodyOverridesFromProfile } from "./CostumeBodyOverrides";
 import { buildVernanBodyDrawContext } from "../vernan/VernanBodyCompositor";
 import type { VernanBodyLibrary } from "../vernan/VernanBodyLibrary";
+import { VernanFeetAnchor } from "../vernan/VernanFeetAnchor";
 import { drawLayeredVernanWithCostumes } from "./drawLayeredPlayer";
 import {
   idleBlinkFrameActive,
@@ -29,6 +30,11 @@ export type AttackOverlayDraw = {
   stickCentered: boolean;
   frameIndex: number;
   bodyFrameW: number;
+  /** When set (e.g. disc04 {@code attack1}), pin overlay with VernanFeetAnchor stand-bottom-left. */
+  layoutAnimKey?: string;
+  /** Player origin X for VernanFeetAnchor (required when layoutAnimKey is stand-bottom-left). */
+  playerOriginX?: number;
+  playerWidth?: number;
 };
 
 export type RenderLayeredPlayerOpts = {
@@ -68,7 +74,12 @@ export function tryRenderLayeredPlayer(opts: RenderLayeredPlayerOpts): boolean {
   });
   if (!pose) return false;
 
-  const airborne = !player.onGround && !holdCarry && pose.costumeState !== "CLIMB";
+  const airborne =
+    pose.costumeState === "AIR_HEAVY_ATTACK"
+      ? true
+      : pose.costumeState === "HEAVY_ATTACK"
+        ? false
+        : !player.onGround && !holdCarry && pose.costumeState !== "CLIMB";
   const blink = idleBlinkFrameActive(pose.costumeState, player.walkFrame());
   const bodyCtx = buildVernanBodyDrawContext(
     overrides,
@@ -148,6 +159,32 @@ function drawAttackWeaponOverlays(
     );
   }
   if (!overlay.sword) return;
+
+  const layoutKey = overlay.layoutAnimKey ?? "";
+  if (VernanFeetAnchor.usesStandBottomLeftLayout(layoutKey)) {
+    const originX = overlay.playerOriginX ?? player.x;
+    const width = overlay.playerWidth ?? player.w;
+    const worldLeft = VernanFeetAnchor.canvasWorldOriginX(
+      originX,
+      width,
+      overlay.sword.frameW,
+      player.facing,
+      layoutKey,
+    );
+    drawStripFrameFeetPinned(
+      g,
+      overlay.sword,
+      overlay.frameIndex,
+      worldLeft,
+      feetWorldY,
+      player.facing,
+      camera,
+      overlayJuice,
+      VernanFeetAnchor.feetRowPx(layoutKey, overlay.sword.frameH),
+    );
+    return;
+  }
+
   const overlayLeft = overlay.stickCentered
     ? bodyLeft + bodyW * 0.5 - overlay.sword.frameW * 0.5
     : player.facing >= 0

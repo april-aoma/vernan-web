@@ -24,7 +24,8 @@ const CROUCH_ATTACK0_HANDLE_ROT_DEG = [5.4, -94.3, -96.0, -130.6];
 const CROUCH_ATTACK0_TIP_REST_X = [6.5];
 const CROUCH_ATTACK0_TIP_REST_Y = [31.5];
 const CROUCH_ATTACK0_TIP_REST_ROT_DEG = [0.0];
-const ATTACK1_HANDLE_X = [7.5, 7.5, 38.5, 31.5, 28.5, 29.5, 29.5, 21.5];
+// Frames 2–7 −2 vs prior: matches attack1 strip art (cells 2–7 shifted left 2px).
+const ATTACK1_HANDLE_X = [7.5, 7.5, 36.5, 29.5, 26.5, 27.5, 27.5, 19.5];
 const ATTACK1_HANDLE_Y = [22.5, 24.5, 45.5, 44.5, 44.5, 43.5, 42.5, 42.5];
 const ATTACK1_HANDLE_ROT_DEG = [31.0, 23.5, -84.6, -83.7, -78.6, -78.1, -77.4, -77.4];
 const ATTACK1_TIP_REST_X = [6.5, 6.5];

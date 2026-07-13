@@ -52,6 +52,11 @@ function psychicFloatZBehindPlayer(b: BrickChunk, timeSec: number): boolean {
   return psychicFloatZDepth01(b, timeSec) < 0.5;
 }
 
+/** True when this chunk draws in the in-front pass (covers Vernan). */
+export function brickChunkDrawsInFrontOfPlayer(b: BrickChunk, timeSec: number): boolean {
+  return !(b.telekinesis() === "float" && psychicFloatZBehindPlayer(b, timeSec));
+}
+
 function isHomingWaitDraw(b: BrickChunk, dashTarget: BrickChunk | null): boolean {
   return b.telekinesis() === "homing" && b !== dashTarget;
 }
