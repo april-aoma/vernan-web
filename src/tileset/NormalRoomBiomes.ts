@@ -11,7 +11,6 @@ import {
 } from "./TilesetProject";
 
 const PICK_SALT = 0xb10eb10en;
-const BIOME_EXCLUSIVE = new Set([1, 5, 3, 4]); // SOLID, BREAKABLE, PLATFORM, LADDER
 
 export type BiomeResolution = {
   biomeId: string;
@@ -78,12 +77,10 @@ export function resolveBiome(
   // Java buildOverlayProceduralRoot → filterPoolEntriesToSheet
   const decoPool = project.filterPoolEntriesToSheet(decoPoolRaw, sheetId);
   const terrainPool = project.filterPoolEntriesToSheet(row.terrainBridgePool, sheetId);
-  const bridge = buildBiomeTerrainBridge(
-    project,
-    baseBridge,
-    { ...row, terrainBridgePool: terrainPool },
-    isDefault,
-  );
+  const bridge = buildBiomeTerrainBridge(project, baseBridge, {
+    ...row,
+    terrainBridgePool: terrainPool,
+  });
   return {
     biomeId: row.id,
     sheetId,
@@ -144,11 +141,11 @@ export function pickBiomeId(biomes: BiomeRow[], contentSeed: bigint): string {
   return biomes[biomes.length - 1]!.id;
 }
 
+/** Matches Java: exclusive only for terrains the sheet-filtered pool actually replaced. */
 function buildBiomeTerrainBridge(
   project: TilesetProject,
   base: TerrainTileBridge,
   row: BiomeRow,
-  defaultBiome: boolean,
 ): TerrainTileBridge {
   if (!row.terrainBridgePool.length) return base.copy();
 
@@ -186,9 +183,6 @@ function buildBiomeTerrainBridge(
   }
 
   const codesToClear = new Set(overrides.keys());
-  if (!defaultBiome) {
-    for (const c of BIOME_EXCLUSIVE) codesToClear.add(c);
-  }
 
   return base
     .withoutNormalDisplayChoicesForTerrainCodes(codesToClear)
