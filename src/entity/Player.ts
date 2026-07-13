@@ -137,6 +137,8 @@ import type { CarryPayload } from "../carry/CarryPayload";
 import { PlayerStats } from "./PlayerStats";
 import type { SubweaponHost } from "./SubweaponHost";
 import { SquashStretch } from "../render/SquashStretch";
+import type { VernanPosePack } from "../vernan/VernanPosePack";
+import { posePackAnimKey } from "../vernan/VernanPosePack";
 import {
   vernanAnimCueApplyVx,
   vernanAnimCueApplyVy,
@@ -149,6 +151,15 @@ import {
   HURT_TINT_SECONDS,
   sampleShake,
 } from "../combat/HitlagState";
+
+const BORED_SQUASH_X = 1.2;
+const BORED_SQUASH_RECOVER_FRAMES = 10;
+const BORED_ENTER_IDLE_SEC = 5;
+const BORED_ANIM_FPS = 6;
+const BORED_PACK_SWAP_SEC = 8;
+const IDLE_BLINK_FRAMES = 8;
+const IDLE_BLINK_COOLDOWN_MIN_SEC = 2.2;
+const IDLE_BLINK_COOLDOWN_MAX_SEC = 5.5;
 
 /**
  * Vernan: walk / crouch / jumpsquat jump / climb / sword attack.
@@ -193,6 +204,15 @@ export class Player {
   hitlagFrames = 0;
   /** True when crouch height is active (for art). */
   crouching = false;
+
+  /** Sit / leg-swing idle (Java boredPoseActive). */
+  private boredPoseActive = false;
+  private boredPosePackId: VernanPosePack = "A";
+  private boredAnimPhaseSec = 0;
+  private boredPackSwapSec = 0;
+  private boredIdleAccumSec = 0;
+  private idleBlinkFramesLeft = 0;
+  private idleBlinkCooldownSec = 3;
 
   /** Subweapon throw anim (Java subweaponAnimPhase / frame ticks). */
   private subweaponAnimPhase = 0;
@@ -403,6 +423,9 @@ export class Player {
     this.defensiveHitstunRemaining = 0;
     this.pendingHurtKnockSign = 0;
     this.squash.reset();
+    this.cancelBoredPose();
+    this.idleBlinkFramesLeft = 0;
+    this.idleBlinkCooldownSec = 3;
     this.shyMaskCharge.reset();
     this.heelys.reset();
     this.ponchoFlapCooldown = 0;
@@ -1476,6 +1499,140 @@ export class Player {
     return this.lemonPoseSecondsRemaining > 0;
   }
 
+  isBoredPoseActive(): boolean {
+    return this.boredPoseActive;
+  }
+
+  boredPosePack(): VernanPosePack {
+    return this.boredPosePackId;
+  }
+
+  boredAnimFrameIndex(frameCount: number): number {
+    const count = Math.max(1, frameCount);
+    const frame = Math.floor(this.boredAnimPhaseSec * BORED_ANIM_FPS) % count;
+    return Math.max(0, frame);
+  }
+
+  beginBoredPose(pack: VernanPosePack = "A"): void {
+    this.boredPoseActive = true;
+    this.boredPosePackId = pack;
+    this.boredAnimPhaseSec = 0;
+    this.boredPackSwapSec = 0;
+    this.boredIdleAccumSec = 0;
+    this.squash.applyStretchX(BORED_SQUASH_X, BORED_SQUASH_RECOVER_FRAMES);
+  }
+
+  setBoredPosePack(pack: VernanPosePack): void {
+    this.boredPosePackId = pack;
+  }
+
+  cancelBoredPose(): void {
+    this.boredPoseActive = false;
+    this.boredIdleAccumSec = 0;
+    this.boredAnimPhaseSec = 0;
+    this.boredPackSwapSec = 0;
+  }
+
+  /** Advance bored sit + idle blink (Java GamePanel tickBoredPose / tickIdleBlink). */
+  tickBoredAndIdleBlink(
+    dt: number,
+    opts: {
+      boredReady: boolean;
+      idleBlinkReady: boolean;
+      packBlinkReady: (packKey: string) => boolean;
+      packReady: (pack: VernanPosePack) => boolean;
+    },
+  ): void {
+    this.tickIdleBlink(dt, opts);
+    this.tickBoredPose(dt, opts);
+  }
+
+  private tickIdleBlink(
+    dt: number,
+    opts: {
+      idleBlinkReady: boolean;
+      packBlinkReady: (packKey: string) => boolean;
+    },
+  ): void {
+    if (this.idleBlinkFramesLeft > 0) {
+      this.idleBlinkFramesLeft--;
+      return;
+    }
+    if (!this.canIdleBlink()) return;
+    this.idleBlinkCooldownSec -= dt;
+    if (this.idleBlinkCooldownSec > 0) return;
+    if (opts.idleBlinkReady) {
+      this.idleBlinkFramesLeft = IDLE_BLINK_FRAMES;
+    } else if (this.boredPoseActive) {
+      const packKey = posePackAnimKey("bored", this.boredPosePackId);
+      if (opts.packBlinkReady(packKey)) {
+        this.idleBlinkFramesLeft = IDLE_BLINK_FRAMES;
+      }
+    }
+    const span = IDLE_BLINK_COOLDOWN_MAX_SEC - IDLE_BLINK_COOLDOWN_MIN_SEC;
+    this.idleBlinkCooldownSec = IDLE_BLINK_COOLDOWN_MIN_SEC + Math.random() * span;
+  }
+
+  private tickBoredPose(
+    dt: number,
+    opts: {
+      boredReady: boolean;
+      packReady: (pack: VernanPosePack) => boolean;
+    },
+  ): void {
+    if (!opts.boredReady) {
+      this.cancelBoredPose();
+      return;
+    }
+    if (!this.canEnterOrHoldBoredPose()) {
+      this.cancelBoredPose();
+      return;
+    }
+    if (this.boredPoseActive) {
+      this.boredAnimPhaseSec += dt;
+      this.boredPackSwapSec += dt;
+      if (this.boredPackSwapSec >= BORED_PACK_SWAP_SEC) {
+        this.boredPackSwapSec = 0;
+        const next: VernanPosePack = this.boredPosePackId === "A" ? "B" : "A";
+        if (opts.packReady(next)) {
+          this.boredPosePackId = next;
+        }
+      }
+      return;
+    }
+    this.boredIdleAccumSec += dt;
+    if (this.boredIdleAccumSec < BORED_ENTER_IDLE_SEC) return;
+    let pack: VernanPosePack = "A";
+    if (!opts.packReady("A") && opts.packReady("B")) pack = "B";
+    if (!opts.packReady(pack) && !opts.boredReady) return;
+    this.beginBoredPose(pack);
+  }
+
+  private canIdleBlink(): boolean {
+    if (this.isGrabHeld()) return false;
+    if (this.heelys.isGlidePoseHold()) return false;
+    if (!this.onGround || this.crouching || this.isAttacking()) return false;
+    if (this.climbing || this.isHurtLocked() || this.walkOffLedgeActive) return false;
+    if (this.disc.wallSlideActive) return false;
+    if (this.usesJumpCollisionHull()) return false;
+    return Math.abs(this.vx) <= 8;
+  }
+
+  private canEnterOrHoldBoredPose(): boolean {
+    if (!this.canIdleBlink()) return false;
+    if (this.isLemonPoseActive()) return false;
+    if (this.carryHoldOverhead() || this.isCarryHolding()) return false;
+    if (this.isGetupPoseActive()) return false;
+    return true;
+  }
+
+  idleBlinkFrameActive(costumeState: string): boolean {
+    if (this.idleBlinkFramesLeft <= 0) return false;
+    if (costumeState === "IDLE") return true;
+    if (costumeState === "BORED") return true;
+    return false;
+  }
+
   usesLemonBuster(): boolean {
     return this.swordVisual === "lemon";
   }
@@ -2258,6 +2415,10 @@ export class Player {
 
   carryHoldOverhead(): boolean {
     return this.carry.holdOverhead();
+  }
+
+  isCarryHolding(): boolean {
+    return this.carry.isHolding();
   }
 
   carryThrowStartedOnGround(): boolean {
@@ -3550,6 +3711,9 @@ export class Player {
     let targetH = PLAYER_STAND_H;
     // Short crouch-jump hitbox only after lift-off — not during jumpsquat (Java).
     if (this.crouchJumpMode && !this.onGround && this.jumpSquatRemaining === 0) {
+      targetH = PLAYER_CROUCH_H;
+    } else if (this.boredPoseActive && this.onGround) {
+      // Sit uses crouch height without setting crouching (Down remains duck).
       targetH = PLAYER_CROUCH_H;
     } else if (this.headband.isCrouchKick() && this.onGround) {
       targetH = PLAYER_CROUCH_H;

@@ -40,8 +40,9 @@ export class VernanBodyLibrary {
     frameIndex: number,
   ): ImageBitmap | null {
     const frames = this.byAnim.get(animKey)?.get(part)?.get(variant);
-    if (!frames || frameIndex < 0 || frameIndex >= frames.length) return null;
-    return frames[frameIndex] ?? null;
+    if (!frames || frames.length === 0 || frameIndex < 0) return null;
+    // Short strips (pose-pack faces) hold the last cel across a longer parent loop.
+    return frames[Math.min(frameIndex, frames.length - 1)] ?? null;
   }
 
   static async load(assets: AssetLoader, manifestPaths: string[]): Promise<VernanBodyLibrary> {
@@ -89,10 +90,23 @@ async function loadStripQuiet(
     const sheet = await assets.loadImage(relPath);
     const sw = sheet.width;
     const sh = sheet.height;
-    if (sw < frameCount || sh < 1) return null;
-    const fw = Math.floor(sw / frameCount);
+    if (sw < 1 || sh < 1) return null;
+    const expected = Math.max(1, frameCount);
+    let actualCount = expected;
+    let fw: number;
+    if (sw % expected === 0) {
+      fw = Math.floor(sw / expected);
+    } else if (sw % 32 === 0) {
+      // Short / native strips (pose packs): hold one cel across a longer parent loop.
+      actualCount = Math.max(1, Math.floor(sw / 32));
+      fw = 32;
+    } else {
+      fw = Math.max(1, Math.floor(sw / expected));
+      actualCount = Math.max(1, Math.floor(sw / fw));
+    }
+    if (fw < 1 || actualCount * fw > sw) return null;
     const out: ImageBitmap[] = [];
-    for (let i = 0; i < frameCount; i++) {
+    for (let i = 0; i < actualCount; i++) {
       out.push(await createImageBitmap(sheet, i * fw, 0, fw, sh));
     }
     return out;

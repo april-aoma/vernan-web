@@ -6,7 +6,14 @@ import {
   groundedCostumeFallback,
   type CostumeState,
 } from "./CostumeState";
-import { COSTUME_ALL, COSTUME_LEMON_ALL, stripPathCandidates } from "./CostumeNaming";
+import {
+  COSTUME_ALL,
+  COSTUME_LEMON_ALL,
+  animKeyForCostumeState,
+  fileStem,
+  stripPathCandidates,
+} from "./CostumeNaming";
+import { VERNAN_POSE_PACKS, posePackAnimKey } from "../vernan/VernanPosePack";
 import {
   costumeLayerRoutingForFolder,
   costumeLayerRoutingForItem,
@@ -35,6 +42,8 @@ export class CostumeArtCache {
   private readonly partStrips = new Map<string, PartStrips>();
   private readonly partLemonStrips = new Map<string, PartStrips>();
   private readonly partHoldStrips = new Map<string, PartStrips>();
+  /** folder → packAnimKey (boredA) → token → frames */
+  private readonly posePackStrips = new Map<string, Map<string, Map<string, CostumeFrameStrip>>>();
   private readonly routingByFolder = new Map<string, CostumeLayerRouting>();
   private readonly loadedFolders = new Set<string>();
   private anyLoaded = false;
@@ -198,6 +207,17 @@ export class CostumeArtCache {
         this.partHoldStrips.set(folder, perPartHold);
         this.anyLoaded = true;
       }
+
+      const packs = await loadPosePackStrips(
+        assets,
+        folder,
+        routing,
+        manifestSet,
+      );
+      if (packs && packs.size > 0) {
+        this.posePackStrips.set(folder, packs);
+        this.anyLoaded = true;
+      }
       this.loadedFolders.add(folder);
     }
   }
@@ -209,7 +229,16 @@ export class CostumeArtCache {
     lemon: boolean,
     holdOverhead: boolean,
     partToken: string | null,
+    posePackAnimKey: string | null = null,
   ): ImageBitmap | null {
+    if (posePackAnimKey) {
+      const pack = this.posePackFrame(
+        folderName,
+        posePackAnimKey,
+        partToken ?? COSTUME_ALL,
+      );
+      if (pack) return pack;
+    }
     let img = this.frameForState(folderName, state, frameIndex, lemon, holdOverhead, partToken);
     if (img) return img;
     const grounded = groundedCostumeFallback(state);
@@ -217,6 +246,22 @@ export class CostumeArtCache {
       img = this.frameForState(folderName, grounded, frameIndex, lemon, holdOverhead, partToken);
     }
     return img;
+  }
+
+  private posePackFrame(
+    folderName: string,
+    posePackAnimKey: string,
+    token: string,
+  ): ImageBitmap | null {
+    const packs = this.posePackStrips.get(folderName);
+    const tokens = packs?.get(posePackAnimKey);
+    if (!tokens) return null;
+    let frames = tokens.get(token);
+    if ((!frames || frames.length === 0) && token !== COSTUME_ALL) {
+      frames = tokens.get(COSTUME_ALL);
+    }
+    if (!frames || frames.length === 0) return null;
+    return frames[0] ?? null;
   }
 
   private frameForState(
@@ -272,8 +317,8 @@ export class CostumeArtCache {
     frameIndex: number,
   ): ImageBitmap | null {
     const frames = perState?.get(state);
-    if (!frames || frameIndex < 0 || frameIndex >= frames.length) return null;
-    return frames[frameIndex] ?? null;
+    if (!frames || frames.length === 0 || frameIndex < 0) return null;
+    return frames[Math.min(frameIndex, frames.length - 1)] ?? null;
   }
 
   private partFromMap(
@@ -283,8 +328,8 @@ export class CostumeArtCache {
     frameIndex: number,
   ): ImageBitmap | null {
     const frames = perState?.get(state)?.get(partToken);
-    if (!frames || frameIndex < 0 || frameIndex >= frames.length) return null;
-    return frames[frameIndex] ?? null;
+    if (!frames || frames.length === 0 || frameIndex < 0) return null;
+    return frames[Math.min(frameIndex, frames.length - 1)] ?? null;
   }
 }
 
@@ -330,6 +375,42 @@ async function tryLoadPartStrip(
   }
 }
 
+async function loadPosePackStrips(
+  assets: AssetLoader,
+  folder: string,
+  routing: CostumeLayerRouting,
+  manifestSet: ReadonlySet<string>,
+): Promise<Map<string, Map<string, CostumeFrameStrip>> | null> {
+  const parent = animKeyForCostumeState("BORED");
+  const base = `sprites/costume/${folder}/`;
+  let out: Map<string, Map<string, CostumeFrameStrip>> | null = null;
+  for (const pack of VERNAN_POSE_PACKS) {
+    const packKey = posePackAnimKey(parent, pack);
+    let tokens: Map<string, CostumeFrameStrip> | null = null;
+    const allPath = `${base}${fileStem(packKey, COSTUME_ALL)}.png`;
+    if (manifestSet.has(allPath)) {
+      const frames = await loadStripQuiet(assets, allPath, 1);
+      if (frames) {
+        tokens = new Map();
+        tokens.set(COSTUME_ALL, frames);
+      }
+    }
+    for (const route of routing.parts) {
+      const partPath = `${base}${fileStem(packKey, route.fileToken)}.png`;
+      if (!manifestSet.has(partPath)) continue;
+      const frames = await loadStripQuiet(assets, partPath, 1);
+      if (!frames) continue;
+      if (!tokens) tokens = new Map();
+      tokens.set(route.fileToken, frames);
+    }
+    if (tokens) {
+      if (!out) out = new Map();
+      out.set(packKey, tokens);
+    }
+  }
+  return out;
+}
+
 async function loadStripQuiet(
   assets: AssetLoader,
   relPath: string,
@@ -339,10 +420,22 @@ async function loadStripQuiet(
     const sheet = await assets.loadImage(relPath);
     const sw = sheet.width;
     const sh = sheet.height;
-    if (sw < frameCount || sh < 1) return null;
-    const fw = Math.floor(sw / frameCount);
+    if (sw < 1 || sh < 1) return null;
+    const expected = Math.max(1, frameCount);
+    let actualCount = expected;
+    let fw: number;
+    if (sw % expected === 0) {
+      fw = Math.floor(sw / expected);
+    } else if (sw % 32 === 0) {
+      actualCount = Math.max(1, Math.floor(sw / 32));
+      fw = 32;
+    } else {
+      fw = Math.max(1, Math.floor(sw / expected));
+      actualCount = Math.max(1, Math.floor(sw / fw));
+    }
+    if (fw < 1 || actualCount * fw > sw) return null;
     const out: ImageBitmap[] = [];
-    for (let i = 0; i < frameCount; i++) {
+    for (let i = 0; i < actualCount; i++) {
       out.push(await createImageBitmap(sheet, i * fw, 0, fw, sh));
     }
     return out;

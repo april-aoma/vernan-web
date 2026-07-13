@@ -4,6 +4,7 @@ import type { CostumeState } from "./CostumeState";
 import type { VernanBodyDrawContext } from "../vernan/VernanBodyDrawContext";
 import { vernanBodyAnimForCostumeState } from "../vernan/VernanBodyAnim";
 import type { VernanBodyLibrary } from "../vernan/VernanBodyLibrary";
+import { posePackAnimKey } from "../vernan/VernanPosePack";
 import { DoorTransitionPose } from "../world/roomFade";
 
 export type PlayerCostumePose = {
@@ -60,6 +61,16 @@ export function resolvePlayerCostumePose(
     const frameCount = bodyLibrary.frameCount("getup");
     const frame = player.getupAnimFrameIndex(frameCount);
     return pose("GETUP", frame, "getup", bodyCtx, player.facing, VERNAN_BODY_SPRITE_H, 0);
+  }
+
+  if (player.isBoredPoseActive() && !hurtAirPose && layeredBodyAnimReady(bodyLibrary, "bored")) {
+    const packKey = posePackAnimKey("bored", player.boredPosePack());
+    const frame = player.boredAnimFrameIndex(bodyLibrary.frameCount("bored"));
+    const packCtx = {
+      ...bodyCtx,
+      posePackAnimKey: bodyLibrary.hasAnim(packKey) ? packKey : null,
+    };
+    return pose("BORED", frame, "bored", packCtx, player.facing, VERNAN_BODY_SPRITE_H, 0);
   }
 
   if (player.isGrabHeld()) {
@@ -283,6 +294,18 @@ function pose(
   return { costumeState, frameIndex, animKey, bodyCtx, facing, feetAnchorBodyH, yOff };
 }
 
-export function idleBlinkFrameActive(state: CostumeState, walkFrame: number): boolean {
-  return state === "IDLE" && (walkFrame === 2 || walkFrame === 3);
+export function idleBlinkFrameActive(
+  player: Player,
+  state: CostumeState,
+  bodyLibrary: VernanBodyLibrary,
+): boolean {
+  if (!player.idleBlinkFrameActive(state)) return false;
+  if (state === "IDLE") {
+    return bodyLibrary.hasVariant("idle", "face", "blink");
+  }
+  if (state === "BORED") {
+    const packKey = posePackAnimKey("bored", player.boredPosePack());
+    return bodyLibrary.hasVariant(packKey, "face", "blink");
+  }
+  return false;
 }

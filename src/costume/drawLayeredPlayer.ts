@@ -3,7 +3,7 @@ import type { WorldCamera } from "../camera/WorldCamera";
 import { drawJuicedImage, type JuiceDrawOpts } from "../render/JuiceDraw";
 import { ownedPaletteEmpty } from "../vernan/OwnedPaletteRuntime";
 import { VERNAN_BODY_PARTS, type VernanBodyPart } from "../vernan/VernanBodyPart";
-import { vernanBodyLayerImage } from "../vernan/VernanBodyCompositor";
+import { vernanBodyLayerImage, faceUnderHair } from "../vernan/VernanBodyCompositor";
 import type { VernanBodyLibrary } from "../vernan/VernanBodyLibrary";
 import type { VernanBodyDrawContext } from "../vernan/VernanBodyDrawContext";
 import { VernanFeetAnchor } from "../vernan/VernanFeetAnchor";
@@ -34,6 +34,8 @@ export type LayeredPlayerDrawOpts = {
   lemon: boolean;
   holdOverhead: boolean;
   feetAnchorBodyH: number;
+  /** Optional pose-pack costume overlay key (boredA / boredB). */
+  posePackAnimKey?: string | null;
   overlayBeforeTopmost?: () => void;
 };
 
@@ -52,12 +54,19 @@ export function drawLayeredVernanWithCostumes(opts: LayeredPlayerDrawOpts): void
   drawBodyPart(opts, "arm");
   drawCostumeSlot(opts, "AFTER_ARM");
 
-  drawBodyPart(opts, "hair");
-  drawBodyPart(opts, "hat-hair");
-  drawCostumeSlot(opts, "AFTER_HAIR");
-
-  drawBodyPart(opts, "face");
-  drawCostumeSlot(opts, "AFTER_FACE");
+  if (faceUnderHair(opts.animKey, opts.bodyCtx)) {
+    drawBodyPart(opts, "face");
+    drawBodyPart(opts, "hair");
+    drawBodyPart(opts, "hat-hair");
+    drawCostumeSlot(opts, "AFTER_HAIR");
+    drawCostumeSlot(opts, "AFTER_FACE");
+  } else {
+    drawBodyPart(opts, "hair");
+    drawBodyPart(opts, "hat-hair");
+    drawCostumeSlot(opts, "AFTER_HAIR");
+    drawBodyPart(opts, "face");
+    drawCostumeSlot(opts, "AFTER_FACE");
+  }
 
   opts.overlayBeforeTopmost?.();
   drawCostumeSlot(opts, "TOPMOST");
@@ -126,6 +135,7 @@ function drawCostumeSlot(opts: LayeredPlayerDrawOpts, slot: CostumeSlot): void {
           lemon,
           holdOverhead,
           route.fileToken,
+          opts.posePackAnimKey ?? null,
         );
         drawCostumeFrame(
           g,
@@ -156,6 +166,7 @@ function drawCostumeSlot(opts: LayeredPlayerDrawOpts, slot: CostumeSlot): void {
       lemon,
       holdOverhead,
       null,
+      opts.posePackAnimKey ?? null,
     );
     drawCostumeFrame(
       g,

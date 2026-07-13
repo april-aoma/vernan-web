@@ -80,13 +80,19 @@ export function tryRenderLayeredPlayer(opts: RenderLayeredPlayerOpts): boolean {
       : pose.costumeState === "HEAVY_ATTACK"
         ? false
         : !player.onGround && !holdCarry && pose.costumeState !== "CLIMB";
-  const blink = idleBlinkFrameActive(pose.costumeState, player.walkFrame());
+  const blink = idleBlinkFrameActive(player, pose.costumeState, bundle.bodyLibrary);
+  const posePackAnimKey =
+    pose.bodyCtx.posePackAnimKey ??
+    (pose.costumeState === "BORED"
+      ? `bored${player.boredPosePack()}`
+      : null);
   const bodyCtx = buildVernanBodyDrawContext(
     overrides,
     lemon,
     blink,
     holdCarry ? false : airborne,
     holdCarry,
+    posePackAnimKey,
   );
 
   const feet = player.spriteFeetWorldY();
@@ -112,6 +118,7 @@ export function tryRenderLayeredPlayer(opts: RenderLayeredPlayerOpts): boolean {
     lemon,
     holdOverhead: holdCarry,
     feetAnchorBodyH: pose.feetAnchorBodyH,
+    posePackAnimKey,
     overlayBeforeTopmost:
       opts.attackOverlay != null || opts.drawWhipOverlay != null
         ? () => {

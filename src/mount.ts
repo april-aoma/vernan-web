@@ -3493,6 +3493,19 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         session.enemies,
         gardeningGlovesSupport,
       );
+      if (costumeBundle) {
+        if (session.transition.pose !== DoorTransitionPose.NONE) {
+          player.cancelBoredPose();
+        } else {
+          const lib = costumeBundle.bodyLibrary;
+          player.tickBoredAndIdleBlink(FIXED_DT, {
+            boredReady: lib.hasAnim("bored") && lib.hasVariant("bored", "base", "default"),
+            idleBlinkReady: lib.hasVariant("idle", "face", "blink"),
+            packBlinkReady: (packKey) => lib.hasVariant(packKey, "face", "blink"),
+            packReady: (pack) => lib.hasAnim(`bored${pack}`),
+          });
+        }
+      }
       player.bindFrameCombatHooks(null);
       CrawlerHatRiding.correctHullPenetration(player, session.enemies, crawlerHatStacks);
       const wallDust = player.disc.consumeWallSlideDustSpawn();

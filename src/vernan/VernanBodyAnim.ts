@@ -36,6 +36,8 @@ export const VERNAN_BODY_ANIMS: VernanBodyAnimDef[] = [
   { folderPrefix: "getup", frameCount: 1, costumeState: "GETUP" },
   { folderPrefix: "airdodge", frameCount: 3, costumeState: "AIR_DODGE" },
   { folderPrefix: "leveltransition", frameCount: 11, costumeState: "LEVEL_TRANSITION" },
+  /** Sit / leg-swing idle; hair+face from boredA/boredB pose packs. */
+  { folderPrefix: "bored", frameCount: 6, costumeState: "BORED" },
 ];
 
 const BY_COSTUME_STATE = new Map<CostumeState, VernanBodyAnimDef>();

@@ -220,7 +220,8 @@ Default recommendation if you don’t have a preference: **D (Possessed rig)** o
 - **BACKPACK**: Shift+X cycles owned primaries (+ vanilla sword); Shift+C cycles owned subweapons; queues until not attacking / subweapon anim / lemon pose; clears psychic telekinesis on subweapon swap; HUD weapon slot shows active weapon pickup icon
 - Jump buffer already existed; presses also latch during hitlag
 - **Browser input machine** (Java `Input` parity): press edges survive key-up; lag-stash when sim skips a frame; `primeLagInputBuffers` during timestop; window capture listeners
-- **Costumes**: layered body + costume slot interleave for idle/walk/jump/crouch/turn/climb/hurt/attack/special/headband/carry/door/getup; lemon + hold-overhead variants; fuzzy hat → hat-hair body override
+- **Costumes**: layered body + costume slot interleave for idle/walk/jump/crouch/turn/climb/hurt/attack/special/headband/carry/door/getup/**bored**; lemon + hold-overhead variants; fuzzy hat → hat-hair body override
+- **Bored sit** (`bored` + pose packs `boredA`/`boredB`): auto-enter after ~5s still idle; 6 FPS leg loop; A↔B swap ~8s; pack face/hair held; face-under-hair draw; crouch hull without `crouching`; enter squash X 1.2 / 10f; idle blink via pack `b-face`
 - Stubbed: turn/hurt/airdodge full routes where layered anims missing, backpack HUD preview ghosts
   - **DISC01–04**: slide / wall-jump / air-dodge (Shift) / heavy (X+C) — `DiscMechanics.ts` + layered `vernan/` strips
   - **WHIP**: Verlet chain sim (`src/combat/whip/`) + tip/chain hits + `whip part.png` draw; stack reach + crouch/heavy anchors

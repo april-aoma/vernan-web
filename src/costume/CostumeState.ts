@@ -32,7 +32,8 @@ export type CostumeState =
   | "DOOR_EXIT"
   | "GETUP"
   | "AIR_DODGE"
-  | "LEVEL_TRANSITION";
+  | "LEVEL_TRANSITION"
+  | "BORED";
 
 export type CostumeStateDef = {
   fileName: string;
@@ -71,6 +72,7 @@ export const COSTUME_STATES: Record<CostumeState, CostumeStateDef> = {
   GETUP: { fileName: "getup", frameCount: 1 },
   AIR_DODGE: { fileName: "airdodge", frameCount: 3 },
   LEVEL_TRANSITION: { fileName: "leveltransition", frameCount: 11 },
+  BORED: { fileName: "bored", frameCount: 6 },
 };
 
 export const ALL_COSTUME_STATES = Object.keys(COSTUME_STATES) as CostumeState[];

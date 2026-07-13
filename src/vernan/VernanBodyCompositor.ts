@@ -5,8 +5,46 @@ import {
   resolveBodyVariant,
   type VernanBodyDrawContext,
 } from "./VernanBodyDrawContext";
+import { isPosePackPart } from "./VernanPosePack";
 
 export { VERNAN_BODY_PARTS as VERNAN_BODY_DRAW_ORDER };
+
+/**
+ * When face includes the head mass (bored packs), hair/hat-hair draw on top.
+ * Java VernanBodyCompositor.DRAW_ORDER_FACE_UNDER_HAIR.
+ */
+export const VERNAN_BODY_DRAW_ORDER_FACE_UNDER_HAIR: readonly VernanBodyPart[] = [
+  "base",
+  "legs",
+  "arm",
+  "face",
+  "hair",
+  "hat-hair",
+] as const;
+
+export function faceUnderHair(animKey: string, ctx: VernanBodyDrawContext | null): boolean {
+  if (ctx?.posePackAnimKey) return true;
+  return animKey === "bored";
+}
+
+export function vernanBodyDrawOrder(
+  animKey: string,
+  ctx: VernanBodyDrawContext | null,
+): readonly VernanBodyPart[] {
+  return faceUnderHair(animKey, ctx)
+    ? VERNAN_BODY_DRAW_ORDER_FACE_UNDER_HAIR
+    : VERNAN_BODY_PARTS;
+}
+
+function packHasPart(library: VernanBodyLibrary, packKey: string, part: VernanBodyPart): boolean {
+  return (
+    library.hasVariant(packKey, part, "default") ||
+    library.hasVariant(packKey, part, "blink") ||
+    library.hasVariant(packKey, part, "hold") ||
+    library.hasVariant(packKey, part, "lemon") ||
+    library.hasVariant(packKey, part, "air")
+  );
+}
 
 export function vernanBodyLayerImage(
   library: VernanBodyLibrary,
@@ -23,14 +61,26 @@ export function vernanBodyLayerImage(
     return null;
   }
 
-  if (ctx.holdOverhead && library.hasVariant(animKey, part, "hold")) {
-    const hold = library.frame(animKey, part, "hold", frameIndex);
+  let layerAnim = animKey;
+  let layerFrame = frameIndex;
+  if (
+    ctx.posePackAnimKey &&
+    isPosePackPart(part) &&
+    library.hasAnim(ctx.posePackAnimKey) &&
+    packHasPart(library, ctx.posePackAnimKey, part)
+  ) {
+    layerAnim = ctx.posePackAnimKey;
+    layerFrame = 0;
+  }
+
+  if (ctx.holdOverhead && library.hasVariant(layerAnim, part, "hold")) {
+    const hold = library.frame(layerAnim, part, "hold", layerFrame);
     if (hold) return hold;
     if (part === "face") return null;
   }
 
-  const variant = resolveBodyVariant(ctx, part, library, animKey);
-  return library.frame(animKey, part, variant, frameIndex);
+  const variant = resolveBodyVariant(ctx, part, library, layerAnim);
+  return library.frame(layerAnim, part, variant, layerFrame);
 }
 
 export function vernanBodyLayerImages(
@@ -41,7 +91,7 @@ export function vernanBodyLayerImages(
   visibleParts?: ReadonlySet<VernanBodyPart>,
 ): Map<VernanBodyPart, ImageBitmap> {
   const out = new Map<VernanBodyPart, ImageBitmap>();
-  for (const part of VERNAN_BODY_PARTS) {
+  for (const part of vernanBodyDrawOrder(animKey, ctx)) {
     if (visibleParts && !visibleParts.has(part)) continue;
     const img = vernanBodyLayerImage(library, animKey, frameIndex, part, ctx);
     if (img) out.set(part, img);
@@ -55,6 +105,14 @@ export function buildVernanBodyDrawContext(
   blinkFrame: boolean,
   airborne: boolean,
   holdOverhead: boolean,
+  posePackAnimKey: string | null = null,
 ): VernanBodyDrawContext {
-  return buildVernanBodyContext(overrides, lemonPose, blinkFrame, airborne, holdOverhead);
+  return buildVernanBodyContext(
+    overrides,
+    lemonPose,
+    blinkFrame,
+    airborne,
+    holdOverhead,
+    posePackAnimKey,
+  );
 }

@@ -7,6 +7,8 @@ export type VernanBodyDrawContext = {
   blinkFrame: boolean;
   airborne: boolean;
   holdOverhead: boolean;
+  /** When set (e.g. boredA), hair/face load from this pack anim with frame hold. */
+  posePackAnimKey: string | null;
   suppressParts: ReadonlySet<VernanBodyPart>;
   enableParts: ReadonlySet<VernanBodyPart>;
 };
@@ -17,12 +19,14 @@ export function buildVernanBodyContext(
   blinkFrame: boolean,
   airborne: boolean,
   holdOverhead: boolean,
+  posePackAnimKey: string | null = null,
 ): VernanBodyDrawContext {
   return {
     lemonPose,
     blinkFrame,
     airborne,
     holdOverhead,
+    posePackAnimKey: posePackAnimKey && posePackAnimKey.length > 0 ? posePackAnimKey : null,
     suppressParts: overrides.suppress,
     enableParts: overrides.enable,
   };

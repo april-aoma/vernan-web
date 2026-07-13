@@ -1,3 +1,5 @@
+import { isPosePackKey } from "./VernanPosePack";
+
 /** Feet-pin row within Vernan frame art (Java VernanFeetAnchor). */
 export const VernanFeetAnchor = {
   EXTENDED_FEET_ROW_PX: 32,
@@ -10,7 +12,12 @@ export const VernanFeetAnchor = {
   feetRowPx(animKey: string, frameHeight: number): number {
     if (frameHeight <= 0) return this.EXTENDED_FEET_ROW_PX;
     if (this.usesStandBottomLeftLayout(animKey)) return frameHeight;
-    if (animKey === "leveltransition" || animKey === "getup") {
+    if (
+      animKey === "leveltransition" ||
+      animKey === "getup" ||
+      animKey === "bored" ||
+      isPosePackKey(animKey)
+    ) {
       return Math.min(this.EXTENDED_FEET_ROW_PX, frameHeight);
     }
     return frameHeight;
