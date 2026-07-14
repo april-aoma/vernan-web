@@ -32,5 +32,7 @@ export interface PeerWalkingEnemy extends CombatEnemy {
 }
 
 export function isPeerWalkingEnemy(e: CombatEnemy): e is PeerWalkingEnemy {
-  return typeof (e as PeerWalkingEnemy).collisionPoseAt === "function";
+  // Prefer peerRidingBehavior over collisionPoseAt — RollingHead also exposes
+  // collisionPoseAt but is not a peer-deck walker (no Kuribo corpse / platform APIs).
+  return typeof (e as PeerWalkingEnemy).peerRidingBehavior === "function";
 }

@@ -111,6 +111,10 @@ export function pickupPhysicsPivotX(kind: PickupKind): number {
 export const ENEMY_CRAWLER_LOCAL = [-1, 0, 9, 0, 9, 12, -1, 12];
 export const ENEMY_CRAWLER_PIVOT_X = 4;
 
+/** Air collision while hop-airborne — raised lead foot (facing +X), trail at stand bottom. */
+export const ENEMY_CRAWLER_HOP_LOCAL = [-1, 0, 9, 0, 9, 5, 3, 10, -1, 12];
+export const ENEMY_CRAWLER_HOP_PIVOT_X = 4;
+
 export const ENEMY_CRAWLER_HIT_LOCAL = [-1, 0, 9, 0, 9, 12, -1, 12];
 export const ENEMY_CRAWLER_HIT_PIVOT_X = 4;
 

@@ -24,8 +24,6 @@ import {
   CRAWLER_HOP_VX_MAX,
   CRAWLER_HOP_VY,
   CRAWLER_HOP_VY_MIN,
-  CRAWLER_HOP_WALL_PASS_CHANCE,
-  CRAWLER_HOP_WALL_PASS_FOOT_BAND_PX,
   CRAWLER_JUMPSQUAT_FRAMES,
   CRAWLER_MAX_HP,
   CRAWLER_WALK_SPEED,
@@ -34,6 +32,8 @@ import {
 import {
   ENEMY_CRAWLER_HIT_LOCAL,
   ENEMY_CRAWLER_HIT_PIVOT_X,
+  ENEMY_CRAWLER_HOP_LOCAL,
+  ENEMY_CRAWLER_HOP_PIVOT_X,
   ENEMY_CRAWLER_HURT_LOCAL,
   ENEMY_CRAWLER_HURT_PIVOT_X,
   ENEMY_CRAWLER_LOCAL,
@@ -42,7 +42,7 @@ import {
 import {
   embeddedAsideFromFootprintFloor,
   nudgeCrawlerVerticallyIfEmbedded,
-  resolveHorizontalCrawler,
+  resolveHorizontalPolygonEnemy,
   resolveVerticalCrawler,
 } from "../collision/EnemyCollision";
 import { HitboxPose } from "../collision/HitboxPose";
@@ -61,7 +61,7 @@ import { HURT_TINT_PEAK_ALPHA, HURT_TINT_SECONDS } from "../combat/HitlagState";
 
 /**
  * Slim Crawler (Java Enemy.java hop/walk).
- * Physics AABB from ENEMY_CRAWLER; contact/hurt from HIT/HURT polys.
+ * Stand/hop collision from ENEMY_CRAWLER / ENEMY_CRAWLER_HOP; contact/hurt from HIT/HURT polys.
  */
 export class Crawler implements PeerWalkingEnemy {
   x: number;
@@ -88,8 +88,8 @@ export class Crawler implements PeerWalkingEnemy {
   private kuriboStompCorpseSec = 0;
   /** Java horizontalWallResolvedThisStep — wall snap this tick (turn after move). */
   private horizontalWallResolvedThisStep = false;
-  /** Java ignoreHorizontalSolidsThisHop — hop ascent may phase through walls above foot band. */
-  private ignoreHorizontalSolidsThisHop = false;
+  /** Like Vernan normalJumpAirborne — gates ENEMY_CRAWLER_HOP collision until land. */
+  private hopAirborne = false;
   private hurtLocked = false;
   private peerCarryAnchorX = 0;
   private peerCarryAnchorY = 0;
@@ -194,11 +194,10 @@ export class Crawler implements PeerWalkingEnemy {
         const missing =
           1.0 - (hopVy - CRAWLER_HOP_VY_MIN) / Math.max(1e-6, CRAWLER_HOP_VY - CRAWLER_HOP_VY_MIN);
         const hopVx = CRAWLER_HOP_VX + (CRAWLER_HOP_VX_MAX - CRAWLER_HOP_VX) * missing;
-        this.ignoreHorizontalSolidsThisHop =
-          !this.hurtLocked && this.hitstun <= 0 && Math.random() < CRAWLER_HOP_WALL_PASS_CHANCE;
         this.vx = this.facing * hopVx;
         this.vy = -hopVy;
         this.onGround = false;
+        this.hopAirborne = true;
         this.squash.applyStretchY(1.2, 20);
         this.hopCooldown =
           CRAWLER_HOP_COOLDOWN_MIN +
@@ -231,7 +230,7 @@ export class Crawler implements PeerWalkingEnemy {
       );
     }
     this.onGround = isGrounded(this, map, roomEnemies);
-    if (this.onGround) this.ignoreHorizontalSolidsThisHop = false;
+    if (this.onGround) this.hopAirborne = false;
     if (landed && wasAirborneBeforeMove) {
       this.squash.applyStretchX(1.2, Math.abs(impactVy) >= 24 ? 20 : 5);
     }
@@ -284,8 +283,12 @@ export class Crawler implements PeerWalkingEnemy {
     return new HitboxPose(local, ax, ay, this.facing, pivotLocalX);
   }
 
+  private usesHopCollisionHull(): boolean {
+    return this.hopAirborne && !this.hurtLocked;
+  }
+
   hitboxPose(): HitboxPose {
-    return this.crawlerPose(ENEMY_CRAWLER_LOCAL, ENEMY_CRAWLER_PIVOT_X);
+    return this.collisionPoseAt(this.x, this.y);
   }
 
   rect(): Aabb {
@@ -508,6 +511,9 @@ export class Crawler implements PeerWalkingEnemy {
   }
 
   collisionPoseAt(ax: number, ay: number): HitboxPose {
+    if (this.usesHopCollisionHull()) {
+      return this.crawlerPose(ENEMY_CRAWLER_HOP_LOCAL, ENEMY_CRAWLER_HOP_PIVOT_X, ax, ay);
+    }
     return this.crawlerPose(ENEMY_CRAWLER_LOCAL, ENEMY_CRAWLER_PIVOT_X, ax, ay);
   }
 
@@ -538,20 +544,13 @@ export class Crawler implements PeerWalkingEnemy {
     const poseAt = (ax: number, ay: number) => this.collisionPoseAt(ax, ay);
     const xBefore = this.x;
     this.x += this.vx * dt;
-    const horz = resolveHorizontalCrawler(
+    const horz = resolveHorizontalPolygonEnemy(
       map,
       poseAt,
-      () => this.rect(),
       xBefore,
       this.x,
       this.y,
       this.vx,
-      this.vy,
-      {
-        ignoreHorizontalSolidsThisHop: this.ignoreHorizontalSolidsThisHop,
-        hurtLocked: this.hurtLocked,
-        footBandPx: CRAWLER_HOP_WALL_PASS_FOOT_BAND_PX,
-      },
     );
     this.x = horz.x;
     this.vx = horz.vx;

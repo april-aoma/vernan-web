@@ -44,9 +44,6 @@ export const CRAWLER_HOP_VY_MIN = 85;
 export const CRAWLER_HOP_COOLDOWN_MIN = 2.2;
 export const CRAWLER_HOP_COOLDOWN_MAX = 4.2;
 export const CRAWLER_JUMPSQUAT_FRAMES = 18;
-/** Hop ascent may phase through solids above the foot band (Java Enemy HOP_WALL_PASS_*). */
-export const CRAWLER_HOP_WALL_PASS_CHANCE = 0.18;
-export const CRAWLER_HOP_WALL_PASS_FOOT_BAND_PX = 2.0;
 
 /** Mouse (Java Mouse.java) — floor walker; spawn H matches RoomGenerator.ENEMY_SPAWN_HITBOX_H. */
 export const MOUSE_W = 12;

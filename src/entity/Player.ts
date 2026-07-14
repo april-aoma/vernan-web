@@ -1010,7 +1010,7 @@ export class Player {
       this.disc.reconcileFullWavedashGround();
       this.disc.applyFullWavedashPendingAerial(this.discHost());
       this.disc.applyMovementOverrides(this.discHost(), steerDir);
-      this.applyHorizontalIntent(dt, input, crouchHeld, landingLocked);
+      this.applyHorizontalIntent(dt, input, landingLocked);
       const groundJumpClaimsJump =
         this.jumpBufferTimer > 0 && (this.onGround || this.coyoteTimer > 0);
       this.applyJumpLogic(dt, crouchHeld, map, left, right);
@@ -3753,7 +3753,6 @@ export class Player {
   private applyHorizontalIntent(
     dt: number,
     input: Input,
-    crouchHeld: boolean,
     landingLocked: boolean,
   ): void {
     const st = this.stats;
@@ -3770,9 +3769,12 @@ export class Player {
     const carryMoveLock = this.carry.blocksMovement();
     const grounded = this.onGround || this.jumpSquatRemaining > 0;
     const traction = this.tickFeetOnIce ? ICE_TRACTION_MULT : 1;
+    // Use crouch *state* (incl. forced under ceiling), not Down alone — Java parity.
+    const crouchBlocksGroundMove =
+      this.crouching && this.jumpSquatRemaining === 0 && this.onGround;
 
     let dir = 0;
-    if (!(crouchHeld && this.jumpSquatRemaining === 0 && this.onGround)) {
+    if (!crouchBlocksGroundMove) {
       if (input.left) dir -= 1;
       if (input.right) dir += 1;
     }
@@ -3837,7 +3839,7 @@ export class Player {
       return;
     }
 
-    if (grounded && crouchHeld && this.jumpSquatRemaining === 0) {
+    if (grounded && crouchBlocksGroundMove) {
       if (heelysOwned) {
         this.heelys.cancelPumpTap();
         this.vx = this.heelys.applyBrake(dt, this.vx, st, traction);
