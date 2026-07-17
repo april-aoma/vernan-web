@@ -5465,6 +5465,7 @@ export class Player {
   /**
    * Leading-column solids that stop horizontal motion, with deck-top exemptions so landing
    * does not zero vx before vertical resolve (Java polygonOverlapsHorizontalBlockingSolids).
+   * Resting-deck dismissal requires feet span ∩ tile column (not Y-only), matching Java.
    */
   private polygonOverlapsHorizontalBlockingSolids(
     pose: HitboxPose,
@@ -5588,6 +5589,11 @@ export class Player {
     return true;
   }
 
+  /**
+   * False when feet rest on / are landing on a deck (not a side wall).
+   * Deck dismissal requires the feet span to overlap this tile's column — matching feet Y to the
+   * tile top alone also matched jump side-hits on ledge faces and let the hull slide in (Java parity).
+   */
   private solidTileBlocksHorizontalWall(
     pose: HitboxPose,
     map: TileMap,
@@ -5604,20 +5610,23 @@ export class Player {
     }
     const deckTop = ty * TILE_SIZE;
     const feet = this.poseForFeetSupport().bounds();
-    if (feet.y + feet.h >= deckTop - 1e-3 && feet.y + feet.h <= deckTop + PLATFORM_DECK_SLACK_PX) {
+    const feetBottom = feet.y + feet.h;
+    if (
+      feetBottom >= deckTop - 1e-3 &&
+      feetBottom <= deckTop + PLATFORM_DECK_SLACK_PX &&
+      JumpFoot.feetSpanOverlapsTileColumn(feet.x, feet.x + feet.w, tx)
+    ) {
       return false;
     }
     if (map.isPlatformTile(tx, ty) && !this.dropsThroughOneWayPlatformTile(map, tx, ty)) {
-      if (JumpFoot.eitherJumpFootNearDeck(pose, deckTop)) {
+      if (
+        JumpFoot.eitherJumpFootNearDeck(pose, deckTop) &&
+        JumpFoot.feetSpanOverlapsTileColumn(feet.x, feet.x + feet.w, tx)
+      ) {
         return false;
       }
     }
-    const pb = pose.bounds();
-    const feetOnDeck =
-      this.vy >= 0 &&
-      pb.y + pb.h >= deckTop - 1e-3 &&
-      pb.y + pb.h <= deckTop + PLATFORM_DECK_SLACK_PX + 1e-3;
-    return !feetOnDeck;
+    return true;
   }
 
   private overlapsSolid(map: TileMap, pose: HitboxPose = this.hitboxPose()): boolean {

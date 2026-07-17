@@ -25,6 +25,7 @@ import {
   rollGrassItemForRun,
   type PluckOutcome,
 } from "../world/PluckLootRoll";
+import { pickupSpriteFile, pickupSpriteSize } from "../world/WorldPickup";
 import type { Player } from "../entity/Player";
 import { CarryKind } from "./CarryKind";
 import {
@@ -185,7 +186,7 @@ function drawPickupGhost(
   if (!bmp) return;
   const cx = tx * TILE_SIZE + TILE_SIZE * 0.5;
   const cy = ty * TILE_SIZE + TILE_SIZE * 0.5;
-  drawCenteredBitmap(g, ctx.camera, bmp, cx, cy);
+  drawCenteredPickup(g, ctx.camera, bmp, kind, cx, cy);
 }
 
 function drawGrassLootGhost(
@@ -245,19 +246,21 @@ function ghostPickupKind(outcome: PluckOutcome): PickupKind | null {
   }
 }
 
-function pickupSpriteFile(kind: PickupKind): string {
-  switch (kind) {
-    case PickupKind.HEART:
-      return "heart.png";
-    case PickupKind.KEY:
-      return "key.png";
-    case PickupKind.COIN_1:
-      return "coin.png";
-    case PickupKind.COIN_5:
-      return "coin 5.png";
-    case PickupKind.COIN_10:
-      return "coin 10.png";
-  }
+function drawCenteredPickup(
+  g: CanvasRenderingContext2D,
+  camera: WorldCamera,
+  bmp: ImageBitmap,
+  kind: PickupKind,
+  cx: number,
+  cy: number,
+): void {
+  const { w: sw, h: sh } = pickupSpriteSize(kind);
+  const dx = camera.worldToDeviceX(cx - sw * 0.5);
+  const dy = camera.worldToDeviceY(cy - sh * 0.5);
+  const dw = Math.floor(CAMERA_ZOOM * sw);
+  const dh = Math.floor(CAMERA_ZOOM * sh);
+  g.imageSmoothingEnabled = false;
+  drawPickupSource(g, bmp, kind, dx, dy, dw, dh);
 }
 
 function drawCenteredBitmap(
@@ -274,6 +277,25 @@ function drawCenteredBitmap(
   const dw = Math.floor(CAMERA_ZOOM * sw);
   const dh = Math.floor(CAMERA_ZOOM * sh);
   g.drawImage(bmp, dx, dy, dw, dh);
+}
+
+/** heart.png is 128×16 — eight 16×16 frames; other pickups are single-cell sheets. */
+function drawPickupSource(
+  g: CanvasRenderingContext2D,
+  bmp: ImageBitmap,
+  kind: PickupKind,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+): void {
+  if (kind === PickupKind.HEART) {
+    const fw = Math.max(1, Math.floor(bmp.width / 8));
+    const fh = bmp.height;
+    g.drawImage(bmp, 0, 0, fw, fh, dx, dy, dw, dh);
+    return;
+  }
+  g.drawImage(bmp, 0, 0, bmp.width, bmp.height, dx, dy, dw, dh);
 }
 
 function hiddenBreakableRestoreTile(
@@ -406,22 +428,38 @@ function drawPluckPreviewOverhead(
   const left = cx - TILE_SIZE * 0.5;
   if (preview.outcomeKind === PluckOutcomeKind.HEART) {
     const bmp = pickupBitmaps?.get(pickupSpriteFile(PickupKind.HEART));
-    if (bmp) drawPickupBmpAt(g, camera, bmp, left, top);
+    if (bmp) drawPickupBmpAt(g, camera, bmp, PickupKind.HEART, left, top);
     return;
   }
   if (preview.outcomeKind === PluckOutcomeKind.COIN_10 || preview.outcomeKind === PluckOutcomeKind.COIN_ANY) {
     const kind = preview.coinKind ?? PickupKind.COIN_1;
     const bmp = pickupBitmaps?.get(pickupSpriteFile(kind));
-    if (bmp) drawPickupBmpAt(g, camera, bmp, left, top);
+    if (bmp) drawPickupBmpAt(g, camera, bmp, kind, left, top);
     return;
   }
   if (preview.outcomeKind === PluckOutcomeKind.ITEM && preview.itemId && catalog && itemBitmaps) {
     const bmp = itemBitmaps.get(catalog.def(preview.itemId).spriteFileName);
-    if (bmp) drawPickupBmpAt(g, camera, bmp, left, top);
+    if (bmp) drawItemBmpAt(g, camera, bmp, left, top);
   }
 }
 
 function drawPickupBmpAt(
+  g: CanvasRenderingContext2D,
+  camera: WorldCamera,
+  bmp: ImageBitmap,
+  kind: PickupKind,
+  left: number,
+  top: number,
+): void {
+  const dx = camera.worldToDeviceX(left);
+  const dy = camera.worldToDeviceY(top);
+  const dw = Math.floor(CAMERA_ZOOM * TILE_SIZE);
+  const dh = dw;
+  g.imageSmoothingEnabled = false;
+  drawPickupSource(g, bmp, kind, dx, dy, dw, dh);
+}
+
+function drawItemBmpAt(
   g: CanvasRenderingContext2D,
   camera: WorldCamera,
   bmp: ImageBitmap,

@@ -40,11 +40,11 @@ import {
   ENEMY_CRAWLER_PIVOT_X,
 } from "../config/HitboxValues";
 import {
-  embeddedAsideFromFootprintFloor,
-  nudgeCrawlerVerticallyIfEmbedded,
+  nudgeMouseEmbedAfterMove,
   resolveHorizontalPolygonEnemy,
   resolveVerticalCrawler,
 } from "../collision/EnemyCollision";
+import { tryResolveIceHorizontal, tryResolveIceVertical } from "../collision/EnemyIceSolids";
 import { HitboxPose } from "../collision/HitboxPose";
 import { GRAVITY, MAX_FALL } from "../config/Physics";
 import type { TileMap } from "../world/TileMap";
@@ -219,16 +219,6 @@ export class Crawler implements PeerWalkingEnemy {
     }
     const impactVy = this.vy;
     const landed = this.moveAndCollide(dt, map, roomEnemies);
-    if (
-      embeddedAsideFromFootprintFloor(map, (ax, ay) => this.collisionPoseAt(ax, ay), this.x, this.y)
-    ) {
-      this.y = nudgeCrawlerVerticallyIfEmbedded(
-        map,
-        (ax, ay) => this.collisionPoseAt(ax, ay),
-        this.x,
-        this.y,
-      );
-    }
     this.onGround = isGrounded(this, map, roomEnemies);
     if (this.onGround) this.hopAirborne = false;
     if (landed && wasAirborneBeforeMove) {
@@ -555,6 +545,12 @@ export class Crawler implements PeerWalkingEnemy {
     this.x = horz.x;
     this.vx = horz.vx;
     this.horizontalWallResolvedThisStep = horz.wallResolved;
+    const iceH = tryResolveIceHorizontal(poseAt(this.x, this.y), this.vx);
+    if (iceH) {
+      this.x += iceH.deltaX;
+      this.vx = 0;
+      this.horizontalWallResolvedThisStep = true;
+    }
 
     const before = this.hitboxPose().bounds();
     const prevBottom = before.y + before.h;
@@ -574,7 +570,20 @@ export class Crawler implements PeerWalkingEnemy {
     );
     this.y = vert.y;
     this.vy = vert.vy;
-    this.onGround = vert.onGround;
-    return vert.landed;
+    let landed = vert.landed;
+    const iceV = tryResolveIceVertical(poseAt(this.x, this.y), this.vy, prevBottom, prevTop, landed);
+    if (iceV) {
+      this.y += iceV.deltaY;
+      this.vy = 0;
+      if (iceV.landed) landed = true;
+    }
+    this.onGround = vert.onGround || iceV?.landed === true;
+
+    // Side-wall embeds (spawn overhang / fire drag): XY nudge like Mouse — Y-only left crawlers
+    // stuck in walls after polygon horz resolve, flipping every frame on false wall hits.
+    const nudged = nudgeMouseEmbedAfterMove(map, poseAt, this.x, this.y);
+    this.x = nudged.x;
+    this.y = nudged.y;
+    return landed;
   }
 }

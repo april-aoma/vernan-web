@@ -40,6 +40,7 @@ import {
   resolveHorizontalPolygonEnemy,
   resolveVerticalPolygonEnemy,
 } from "../collision/EnemyCollision";
+import { tryResolveIceHorizontal, tryResolveIceVertical } from "../collision/EnemyIceSolids";
 import { HitboxPose } from "../collision/HitboxPose";
 import { GRAVITY, MAX_FALL } from "../config/Physics";
 import type { TileMap } from "../world/TileMap";
@@ -552,6 +553,12 @@ export class Mouse implements PeerWalkingEnemy {
     this.x = horz.x;
     this.vx = horz.vx;
     this.horizontalWallResolvedThisStep = horz.wallResolved;
+    const iceH = tryResolveIceHorizontal(poseAt(this.x, this.y), this.vx);
+    if (iceH) {
+      this.x += iceH.deltaX;
+      this.vx = 0;
+      this.horizontalWallResolvedThisStep = true;
+    }
 
     const before = this.hitboxPose().bounds();
     const prevBottom = before.y + before.h;
@@ -574,11 +581,18 @@ export class Mouse implements PeerWalkingEnemy {
     );
     this.y = vert.y;
     this.vy = vert.vy;
-    if (vert.landed) this.onGround = true;
+    let landed = vert.landed;
+    const iceV = tryResolveIceVertical(poseAt(this.x, this.y), this.vy, prevBottom, prevTop, landed);
+    if (iceV) {
+      this.y += iceV.deltaY;
+      this.vy = 0;
+      if (iceV.landed) landed = true;
+    }
+    if (landed) this.onGround = true;
 
     const nudged = nudgeMouseEmbedAfterMove(map, poseAt, this.x, this.y);
     this.x = nudged.x;
     this.y = nudged.y;
-    return vert.landed;
+    return landed;
   }
 }

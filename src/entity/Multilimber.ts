@@ -38,6 +38,7 @@ import {
   resolveVerticalPolygonEnemy,
   polygonOverlapsSolidWallTiles,
 } from "../collision/EnemyCollision";
+import { tryResolveIceHorizontal, tryResolveIceVertical } from "../collision/EnemyIceSolids";
 import { HitboxPose } from "../collision/HitboxPose";
 import { GRAVITY, MAX_FALL } from "../config/Physics";
 import { TILE_SIZE } from "../specs";
@@ -583,7 +584,12 @@ export class Multilimber implements CombatEnemy {
   }
 
   applyWeaponStrike(strike: WeaponStrike): boolean {
-    if (this.isDead() || this.lastStruckPart < 0) return false;
+    if (this.isDead()) return false;
+    // Room-wide black-heart / HoD bursts skip intersectsAttack — route to topmost living part.
+    if (strike.knockKind === "black_heart_burst") {
+      this.lastStruckPart = this.topmostLivingPart();
+    }
+    if (this.lastStruckPart < 0) return false;
     if (this.hitstun > 0 && strike.knockKind !== "black_heart_burst") return false;
     if (!this.applyPartDamage(this.lastStruckPart, strike.damage)) return false;
     if (strike.knockKind === "black_heart_burst") {
@@ -842,6 +848,12 @@ export class Multilimber implements CombatEnemy {
       this.vx = horz.vx;
       this.horizontalWallResolvedThisStep = horz.wallResolved;
     }
+    const iceH = tryResolveIceHorizontal(poseAt(this.x, this.y), this.vx);
+    if (iceH) {
+      this.x += iceH.deltaX;
+      this.vx = 0;
+      this.horizontalWallResolvedThisStep = true;
+    }
 
     const hullBeforeStep = poseAt(this.x, this.y).bounds();
     const prevFeetBottom = hullBeforeStep.y + hullBeforeStep.h;
@@ -862,6 +874,19 @@ export class Multilimber implements CombatEnemy {
     );
     this.y = vert.y;
     this.vy = vert.vy;
+    let landed = vert.landed;
+    const iceV = tryResolveIceVertical(
+      poseAt(this.x, this.y),
+      this.vy,
+      prevFeetBottom,
+      hullBeforeStep.y,
+      landed,
+    );
+    if (iceV) {
+      this.y += iceV.deltaY;
+      this.vy = 0;
+      if (iceV.landed) landed = true;
+    }
 
     const nudged = nudgePenismanEmbedAfterMove(map, poseAt, anchorX0, anchorY0, this.x, this.y);
     this.x = nudged.x;
@@ -869,7 +894,7 @@ export class Multilimber implements CombatEnemy {
     if (nudged.clearVx) this.vx = 0;
 
     feetCrossedOntoFloorThisStep(map, this, peers, this.vy, prevFeetBottom);
-    return vert.landed;
+    return landed;
   }
 
   private shouldResolveHorizontal(map: TileMap, peers: readonly CombatEnemy[]): boolean {

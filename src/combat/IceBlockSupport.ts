@@ -56,6 +56,20 @@ export function intersectsAnyIce(blocks: readonly IceBlock[], pose: HitboxPose):
   return false;
 }
 
+/** Ledge probe: ice deck under a foot X at the rider's standing height (Java IceBlockSupport.deckUnderFootX). */
+export function deckUnderFootX(
+  blocks: readonly IceBlock[],
+  footX: number,
+  riderFeetY: number,
+): boolean {
+  for (const block of blocks) {
+    const deck = block.rect();
+    if (footX < deck.x - 0.5 || footX > deck.x + deck.w + 0.5) continue;
+    if (Math.abs(riderFeetY - block.deckTopY()) <= ICE_STAND_EPS_PX + 2) return true;
+  }
+  return false;
+}
+
 export function findBreakableIceHit(blocks: readonly IceBlock[], hit: Aabb): IceBlock | null {
   for (const block of blocks) {
     if (!block.breakableNow()) continue;

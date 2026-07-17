@@ -91,6 +91,7 @@ import { drawMultilimber } from "./entity/drawMultilimber";
 import type { PenismanBullet } from "./entity/PenismanBullet";
 import { drawPenisBulletDieFx, drawPenismanBullets } from "./entity/drawPenisman";
 import { tickEnemyPeerPhysics } from "./entity/EnemyPeerTick";
+import { setTickIceBlocks } from "./entity/EnemyPeerPlatforms";
 import type { CombatEnemy } from "./entity/CombatEnemy";
 import { FrisbeeAimSnapshot } from "./entity/FrisbeeAimSnapshot";
 import { FrisbeeProjectile } from "./entity/FrisbeeProjectile";
@@ -3219,7 +3220,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
         risingDustFx.length = 0;
         possessedHead.clear();
         player.resetSubweaponAnim();
-        player.dropCarryForSubweaponSwitch();
+        // Held gardening-glove payload stays on Vernan through doors (Java parity).
         const prevRoom = roomBeforeTransition;
         if (prevRoom !== s.roomId) {
           roomPersistedIceBlocks.set(prevRoom, [...iceBlocks]);
@@ -3393,6 +3394,7 @@ export function mount(root: string | HTMLElement, options: MountOptions = {}): V
       }
       // Ice solids before enemy motion (Java GamePanel: ice tick → enemies → player).
       for (const block of iceBlocks) block.tick(FIXED_DT);
+      setTickIceBlocks(iceBlocks);
       tickEnemyPeerPhysics(session.enemies, map, player.x + player.w * 0.5, FIXED_DT);
       for (const e of session.enemies) {
         if (e instanceof Multilimber) {

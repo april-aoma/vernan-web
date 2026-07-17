@@ -35,6 +35,7 @@ import {
   resolveHorizontalPolygonEnemy,
   resolveVerticalPolygonEnemy,
 } from "../collision/EnemyCollision";
+import { tryResolveIceHorizontal, tryResolveIceVertical } from "../collision/EnemyIceSolids";
 import { HitboxPose } from "../collision/HitboxPose";
 import { GRAVITY, MAX_FALL } from "../config/Physics";
 import { TILE_SIZE } from "../specs";
@@ -957,6 +958,12 @@ export class JackBlue implements PeerWalkingEnemy {
       this.vx = horz.vx;
       this.horizontalWallResolvedThisStep = horz.wallResolved;
     }
+    const iceH = tryResolveIceHorizontal(poseAt(this.x, this.y), this.vx);
+    if (iceH) {
+      this.x += iceH.deltaX;
+      this.vx = 0;
+      this.horizontalWallResolvedThisStep = true;
+    }
 
     const before = this.hitboxPose().bounds();
     const prevBottom = before.y + before.h;
@@ -978,12 +985,19 @@ export class JackBlue implements PeerWalkingEnemy {
     );
     this.y = vert.y;
     this.vy = vert.vy;
+    let landed = vert.landed;
+    const iceV = tryResolveIceVertical(poseAt(this.x, this.y), this.vy, prevBottom, prevTop, landed);
+    if (iceV) {
+      this.y += iceV.deltaY;
+      this.vy = 0;
+      if (iceV.landed) landed = true;
+    }
 
     const nudged = nudgePenismanEmbedAfterMove(map, poseAt, anchorX0, anchorY0, this.x, this.y);
     this.x = nudged.x;
     this.y = nudged.y;
     if (nudged.clearVx) this.vx = 0;
-    return vert.landed;
+    return landed;
   }
 
   private shouldResolveHorizontal(map: TileMap, peers: readonly CombatEnemy[]): boolean {

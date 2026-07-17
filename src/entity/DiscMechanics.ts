@@ -13,6 +13,7 @@ import {
   ATTACK_WINDUP_FRAMES,
 } from "../config/CombatStats";
 import { PLAYER_CROUCH_H, PLAYER_STAND_H, PLATFORM_DECK_SLACK_PX } from "../config/Physics";
+import { feetSpanOverlapsTileColumn } from "../collision/JumpFootProbe";
 import { SLIDE_KICK_ACTIVE_LOCAL, SLIDE_KICK_ACTIVE_PIVOT_X } from "../config/HitboxValues";
 import { enemyIntersectsMelee } from "../combat/MeleeIntersection";
 import { ICE_TRACTION_MULT } from "../combat/IceBlockFx";
@@ -1317,7 +1318,11 @@ export class DiscMechanics {
         const tile = { x: col * ts, y: ty * ts, w: ts, h: ts };
         if (!pose.intersectsRect(tile)) continue;
         const deckTop = tile.y;
-        if (feet.y + feet.h >= deckTop - 1e-3 && feet.y + feet.h <= deckTop + PLATFORM_DECK_SLACK_PX) {
+        if (
+          feet.y + feet.h >= deckTop - 1e-3 &&
+          feet.y + feet.h <= deckTop + PLATFORM_DECK_SLACK_PX &&
+          feetSpanOverlapsTileColumn(feet.x, feet.x + feet.w, col)
+        ) {
           continue;
         }
         return true;

@@ -27,6 +27,7 @@ import {
   polygonOverlapsFloorBlockingTiles,
   polygonOverlapsSolidWallTiles,
 } from "../collision/EnemyCollision";
+import { tryResolveIceHorizontal, tryResolveIceVertical } from "../collision/EnemyIceSolids";
 import { HitboxPose } from "../collision/HitboxPose";
 import { nudgePositionOutOfSolidTiles } from "../physics/SolidOverlap";
 import { GRAVITY, MAX_FALL, TILE_SEPARATION_ITERATIONS } from "../config/Physics";
@@ -449,13 +450,38 @@ export class RollingHead implements CombatEnemy {
     const xBefore = this.x;
     this.x += this.vx * dt;
     this.resolveHorizontalElastic(map, poseAt, xBefore);
+    const iceH = tryResolveIceHorizontal(poseAt(this.x, this.y), this.vx);
+    if (iceH) {
+      this.x += iceH.deltaX;
+      const impactVx = this.vx;
+      const resumeVx = -impactVx;
+      const resumeVy = this.vy;
+      this.patrolDir = resumeVx >= 0 ? 1 : -1;
+      const wallSide = impactVx > 0 ? 1 : -1;
+      this.beginBounceSquash("wall", resumeVx, resumeVy, () => {
+        this.squash.applyStretchYWallAnchored(BOUNCE_SQUASH_PEAK, BOUNCE_SQUASH_FRAMES, wallSide);
+      });
+    }
 
     const before = poseAt(this.x, this.y).bounds();
     const prevBottom = before.y + before.h;
     const prevTop = before.y;
     const yBefore = this.y;
     this.y += this.vy * dt;
-    const landed = this.resolveVerticalElastic(map, peers, poseAt, yBefore, prevBottom, prevTop);
+    let landed = this.resolveVerticalElastic(map, peers, poseAt, yBefore, prevBottom, prevTop);
+    const iceV = tryResolveIceVertical(poseAt(this.x, this.y), this.vy, prevBottom, prevTop, landed);
+    if (iceV) {
+      this.y += iceV.deltaY;
+      if (iceV.landed) {
+        this.onFloorBounce();
+        landed = true;
+      } else {
+        const resumeVy = this.downwardBounceVy(this.vy);
+        this.beginBounceSquash("ceiling", this.vx, resumeVy, () => {
+          this.squash.applyStretchY(BOUNCE_SQUASH_PEAK, BOUNCE_SQUASH_FRAMES);
+        });
+      }
+    }
     this.resolvePeerBounces(peers);
 
     if (embeddedAsideFromFootprintFloor(map, poseAt, this.x, this.y)) {

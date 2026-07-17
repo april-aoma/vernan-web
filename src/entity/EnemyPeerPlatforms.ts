@@ -1,4 +1,6 @@
 import type { Aabb } from "../combat/CombatMath";
+import { deckUnderFootX as iceDeckUnderFootX } from "../combat/IceBlockSupport";
+import type { IceBlock } from "./IceBlock";
 import { TILE_SIZE } from "../specs";
 import type { TileMap } from "../world/TileMap";
 import type { CombatEnemy } from "./CombatEnemy";
@@ -8,6 +10,17 @@ import { isPeerWalkingEnemy, type PeerWalkingEnemy } from "./PeerWalkingEnemy";
 export const PEER_STAND_EPS_PX = 3.0;
 const MIN_STACK_OVERLAP_PX = 0.25;
 const FOOT_AHEAD_PROBE_DROP_PX = 1.0;
+
+let tickIce: readonly IceBlock[] = [];
+
+/** Per-tick ice decks / solids ({@link setTickIceBlocks} from mount before enemy updates). */
+export function setTickIceBlocks(blocks: readonly IceBlock[] | null | undefined): void {
+  tickIce = blocks ?? [];
+}
+
+export function tickIceBlocks(): readonly IceBlock[] {
+  return tickIce;
+}
 
 function rectLeft(r: Aabb): number {
   return r.x;
@@ -35,7 +48,7 @@ export function canSupport(e: CombatEnemy): boolean {
   );
 }
 
-/** Highest peer hull top the entity may land on this step, or NaN if none. */
+/** Highest peer/ice hull top the entity may land on this step, or NaN if none. */
 export function landingSurfaceY(
   self: CombatEnemy,
   peers: readonly CombatEnemy[],
@@ -49,6 +62,17 @@ export function landingSurfaceY(
     const ob = other.rect();
     if (!horizontalOverlap(r, ob)) continue;
     const top = rectTop(ob);
+    const crossedFromAbove = prevBottom <= top + 1e-3;
+    if (crossedFromAbove && nextBottom >= top - PEER_STAND_EPS_PX) {
+      if (Number.isNaN(bestTop) || top > bestTop) bestTop = top;
+    }
+  }
+  for (const iceBlock of tickIce) {
+    const ob = iceBlock.rect();
+    if (!horizontalOverlap(r, ob)) continue;
+    const top = iceBlock.deckTopY();
+    // Already embedded in the ice hull (e.g. spawn overlap) — do not snap feet to the deck.
+    if (prevBottom > top + PEER_STAND_EPS_PX + 1e-3) continue;
     const crossedFromAbove = prevBottom <= top + 1e-3;
     if (crossedFromAbove && nextBottom >= top - PEER_STAND_EPS_PX) {
       if (Number.isNaN(bestTop) || top > bestTop) bestTop = top;
@@ -68,6 +92,11 @@ export function isStandingOnPeer(
     const ob = other.rect();
     if (!horizontalOverlap(r, ob)) continue;
     if (Math.abs(rectBottom(r) - rectTop(ob)) <= PEER_STAND_EPS_PX) return true;
+  }
+  for (const iceBlock of tickIce) {
+    const ob = iceBlock.rect();
+    if (!horizontalOverlap(r, ob)) continue;
+    if (Math.abs(rectBottom(r) - iceBlock.deckTopY()) <= PEER_STAND_EPS_PX) return true;
   }
   return false;
 }
@@ -205,7 +234,8 @@ export function solidUnderFootAhead(
   const tx = Math.floor(footX / TILE_SIZE);
   const ty = Math.floor(probeY / TILE_SIZE);
   if (map.isSolidTile(tx, ty) || map.isPlatformTile(tx, ty)) return true;
-  return deckUnderFootX(self, peers, footX, rectBottom(r));
+  if (deckUnderFootX(self, peers, footX, rectBottom(r))) return true;
+  return iceDeckUnderFootX(tickIce, footX, rectBottom(r));
 }
 
 function deckUnderFootX(

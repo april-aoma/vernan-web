@@ -117,7 +117,7 @@ export function polygonOverlapsCeilingSolidTiles(pose: HitboxPose, map: TileMap)
   return false;
 }
 
-/** Binary-search horizontal separation for polygon floor walkers (Mouse / Penisman). */
+/** Binary-search horizontal separation for polygon floor walkers (Mouse / Penisman / Crawler). */
 export function resolveHorizontalPolygonEnemy(
   map: TileMap,
   poseAt: PoseAtAnchor,
@@ -129,6 +129,11 @@ export function resolveHorizontalPolygonEnemy(
   if (vx === 0) return { x, vx, wallResolved: false };
   if (!polygonOverlapsSolidWallTiles(poseAt(x, y), map)) {
     return { x, vx, wallResolved: false };
+  }
+  // Already embedded before the step (e.g. spawn 1px into a side wall) — binary search within
+  // [xBefore, x] cannot eject; leave patrol flip alone and let post-move nudge clear the embed.
+  if (polygonOverlapsSolidWallTiles(poseAt(xBefore, y), map)) {
+    return { x, vx: 0, wallResolved: false };
   }
   if (vx > 0) {
     let lo = Math.min(xBefore, x);
@@ -356,24 +361,4 @@ export function resolveVerticalCrawler(
     }
   }
   return { y, vy, landed, onGround };
-}
-
-/**
- * Fire carry can bury the hull without moveAndCollide — crawlers only nudge on Y
- * (Java Enemy.nudgeCrawlerVerticallyIfEmbedded).
- */
-export function nudgeCrawlerVerticallyIfEmbedded(
-  map: TileMap,
-  poseAt: PoseAtAnchor,
-  x: number,
-  y: number,
-): number {
-  if (!embeddedAsideFromFootprintFloor(map, poseAt, x, y)) return y;
-  const step = 2;
-  const maxSteps = 64;
-  let outY = y;
-  for (let i = 0; i < maxSteps && embeddedAsideFromFootprintFloor(map, poseAt, x, outY); i++) {
-    outY -= step;
-  }
-  return outY;
 }
